@@ -21,7 +21,13 @@ export default function LandingPage() {
   return (
     <div className="min-h-svh bg-background text-foreground flex flex-col">
       <nav className="fixed top-0 inset-x-0 z-50 flex items-center justify-between px-6 lg:px-8 h-14">
-        <span className="text-sm font-semibold tracking-tight">supavault</span>
+        <span className="flex items-center gap-2 text-sm font-semibold tracking-tight">
+          <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 32 32">
+            <rect width="32" height="32" rx="7" fill="currentColor" className="text-foreground" />
+            <polyline points="11,8 21,16 11,24" fill="none" stroke="currentColor" className="text-background" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+          supavault
+        </span>
         <div className="flex items-center gap-4">
           <Link
             href="https://github.com/lucasastorian/supavault"
