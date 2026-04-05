@@ -53,9 +53,14 @@ function OAuthConsentContent() {
     setError(null)
     try {
       const supabase = createClient()
-      const { error: approveError } = await (supabase.auth as any).oauth.approveAuthorization(authorizationId)
-      if (approveError) throw approveError
-      setSuccess('Access granted successfully.')
+      const result = await (supabase.auth as any).oauth.approveAuthorization(authorizationId)
+      if (result.error) throw result.error
+      const redirectUrl = result.data?.redirect_to || result.data?.redirect_uri || result.data?.url
+      if (redirectUrl) {
+        window.location.href = redirectUrl
+      } else {
+        setSuccess('Access granted successfully.')
+      }
     } catch (err: any) {
       setError(err?.message || 'Failed to approve authorization.')
     } finally {
@@ -69,9 +74,14 @@ function OAuthConsentContent() {
     setError(null)
     try {
       const supabase = createClient()
-      const { error: denyError } = await (supabase.auth as any).oauth.denyAuthorization(authorizationId)
-      if (denyError) throw denyError
-      setSuccess('Access denied.')
+      const result = await (supabase.auth as any).oauth.denyAuthorization(authorizationId)
+      if (result.error) throw result.error
+      const redirectUrl = result.data?.redirect_to || result.data?.redirect_uri || result.data?.url
+      if (redirectUrl) {
+        window.location.href = redirectUrl
+      } else {
+        setSuccess('Access denied.')
+      }
     } catch (err: any) {
       setError(err?.message || 'Failed to deny authorization.')
     } finally {

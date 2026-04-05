@@ -32,8 +32,13 @@ class SupabaseTokenVerifier(TokenVerifier):
             logger.warning("JWT has no sub claim")
             return None
 
+        scopes = []
+        scope_str = payload.get("scope", "")
+        if isinstance(scope_str, str) and scope_str:
+            scopes = scope_str.split()
+
         logger.info("MCP auth: %s", sub)
-        return AccessToken(token=token, client_id=sub, scopes=[])
+        return AccessToken(token=token, client_id=sub, scopes=scopes)
 
     async def _decode_jwt(self, token: str) -> dict | None:
         if settings.SUPABASE_URL:
@@ -43,8 +48,8 @@ class SupabaseTokenVerifier(TokenVerifier):
                 )
                 payload = pyjwt.decode(
                     token, signing_key.key,
-                    algorithms=["ES256", "RS256"],
-                    audience="authenticated",
+                    algorithms=["RS256", "ES256"],
+                    options={"verify_aud": False},
                 )
                 return payload
             except Exception as e:
@@ -56,7 +61,7 @@ class SupabaseTokenVerifier(TokenVerifier):
                     token,
                     settings.SUPABASE_JWT_SECRET,
                     algorithms=["HS256"],
-                    audience="authenticated",
+                    options={"verify_aud": False},
                 )
                 return payload
             except pyjwt.PyJWTError as e:

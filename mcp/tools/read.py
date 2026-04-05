@@ -2,7 +2,7 @@ import json
 import logging
 
 from mcp.server.fastmcp import FastMCP, Context
-from fastmcp.utilities.types import Image
+from mcp.server.fastmcp.utilities.types import Image
 
 from db import scoped_query, scoped_queryrow
 from .helpers import (
