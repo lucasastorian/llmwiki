@@ -1,5 +1,5 @@
 mcp==1.27.0
-fastmcp==2.8.0
+fastmcp==3.2.0
 asyncpg==0.30.0
 pyjwt[crypto]==2.10.1
 pydantic==2.11.3
