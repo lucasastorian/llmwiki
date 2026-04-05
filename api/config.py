@@ -21,5 +21,8 @@ class Settings(BaseSettings):
     APP_URL: str = "http://localhost:3000"
     API_URL: str = "http://localhost:8000"
 
+    QUOTA_MAX_PAGES: int = 1000
+    QUOTA_MAX_STORAGE_BYTES: int = 2_147_483_648  # 2 GB
+
 
 settings = Settings()

@@ -10,8 +10,14 @@ from dataclasses import dataclass, field
 from fastapi import APIRouter, Request, HTTPException, Response
 
 from auth import get_current_user
+from config import settings
 
 logger = logging.getLogger(__name__)
+
+
+def _append_file(path: Path, data: bytes):
+    with open(path, "ab") as f:
+        f.write(data)
 
 TUS_VERSION = "1.0.0"
 MAX_SIZE = 104_857_600  # 100 MB
@@ -210,6 +216,20 @@ async def tus_create(request: Request):
     if not kb_id:
         raise HTTPException(status_code=400, detail="Missing knowledge_base_id in Upload-Metadata")
 
+    pool = request.app.state.pool
+    current_bytes = await pool.fetchval(
+        "SELECT COALESCE(SUM(file_size), 0) FROM documents WHERE user_id = $1 AND NOT archived",
+        user_id,
+    )
+    in_progress_bytes = sum(u.upload_length for u in _uploads.values() if u.user_id == user_id)
+    if current_bytes + in_progress_bytes + upload_length > settings.QUOTA_MAX_STORAGE_BYTES:
+        used_mb = current_bytes / (1024 * 1024)
+        max_mb = settings.QUOTA_MAX_STORAGE_BYTES / (1024 * 1024)
+        raise HTTPException(
+            status_code=413,
+            detail=f"Storage quota exceeded. Using {used_mb:.0f} MB of {max_mb:.0f} MB. Delete some files to free up space.",
+        )
+
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     upload_id = str(uuid4())
     temp_path = UPLOAD_DIR / upload_id
@@ -266,10 +286,20 @@ async def tus_patch(upload_id: str, request: Request):
     if client_offset != upload.upload_offset:
         raise HTTPException(status_code=409, detail="Offset mismatch")
 
-    with open(upload.temp_path, "ab") as f:
-        async for chunk in request.stream():
-            f.write(chunk)
-            upload.upload_offset += len(chunk)
+    FLUSH_SIZE = 1_048_576
+    buf = bytearray()
+    bytes_written = 0
+    async for chunk in request.stream():
+        buf.extend(chunk)
+        if len(buf) >= FLUSH_SIZE:
+            await asyncio.to_thread(_append_file, upload.temp_path, bytes(buf))
+            bytes_written += len(buf)
+            buf.clear()
+
+    if buf:
+        await asyncio.to_thread(_append_file, upload.temp_path, bytes(buf))
+        bytes_written += len(buf)
+    upload.upload_offset += bytes_written
 
     upload.last_activity = time.time()
 

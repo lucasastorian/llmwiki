@@ -5,7 +5,7 @@ import { createClient } from '@/lib/supabase/client'
 import { toast } from 'sonner'
 import type { DocumentListItem } from '@/lib/types'
 
-const DOC_LIST_COLUMNS = 'id, filename, title, file_type, file_size, status, path, tags, date, metadata, error_message, version, document_number, archived, created_at, updated_at, knowledge_base_id, user_id, url, page_count'
+const DOC_LIST_COLUMNS = 'id, filename, title, file_type, file_size, status, path, tags, date, metadata, error_message, version, document_number, sort_order, archived, created_at, updated_at, knowledge_base_id, user_id, url, page_count'
 
 export function useKBDocuments(knowledgeBaseId: string) {
   const [documents, setDocuments] = React.useState<DocumentListItem[]>([])

@@ -556,15 +556,34 @@ class Parser:
     _EMBED_TIMEOUT = 10                   # seconds per image
     _EMBED_CONCURRENCY = 8
 
-    async def embed_images(self) -> None:
-        """Download external images and replace src with base64 data URIs.
+    _ALLOWED_SCHEMES = {"http", "https"}
 
-        Call after parse(). Modifies the DOM in-place so html() returns
-        self-contained HTML with embedded images.
-        """
+    @staticmethod
+    def _is_safe_url(url: str) -> bool:
+        from urllib.parse import urlparse
+        import ipaddress
+        try:
+            parsed = urlparse(url)
+            if parsed.scheme not in Parser._ALLOWED_SCHEMES:
+                return False
+            host = parsed.hostname or ""
+            if not host:
+                return False
+            try:
+                ip = ipaddress.ip_address(host)
+                if ip.is_private or ip.is_loopback or ip.is_reserved or ip.is_link_local:
+                    return False
+            except ValueError:
+                if host in ("localhost", "localhost.localdomain") or host.endswith(".local"):
+                    return False
+            return True
+        except Exception:
+            return False
+
+    async def embed_images(self) -> None:
         imgs = [
             img for img in self.soup.find_all("img")
-            if img.get("src") and not img["src"].startswith("data:")
+            if img.get("src") and not img["src"].startswith("data:") and self._is_safe_url(img["src"])
         ]
         if not imgs:
             return
@@ -577,7 +596,7 @@ class Parser:
             src = img_tag["src"]
             async with sem:
                 try:
-                    async with httpx.AsyncClient(follow_redirects=True) as client:
+                    async with httpx.AsyncClient(follow_redirects=False) as client:
                         resp = await client.get(
                             src, headers={"User-Agent": "Mozilla/5.0"},
                             timeout=self._EMBED_TIMEOUT,

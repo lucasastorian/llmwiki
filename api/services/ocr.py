@@ -28,8 +28,13 @@ class OCRService:
     def __init__(self, s3: S3Service, pool: asyncpg.Pool):
         self._s3 = s3
         self._pool = pool
+        self._semaphore = asyncio.Semaphore(3)
 
     async def process_document(self, document_id: str, user_id: str):
+        async with self._semaphore:
+            await self._do_process(document_id, user_id)
+
+    async def _do_process(self, document_id: str, user_id: str):
         try:
             await self._set_status(document_id, "processing")
 
@@ -219,6 +224,18 @@ class OCRService:
         await self._s3.upload_bytes(f"{user_id}/{document_id}/ocr.json", ocr_json_bytes, "application/json")
 
         pages = ocr_result.get("pages", [])
+
+        current_pages = await self._pool.fetchval(
+            "SELECT COALESCE(SUM(page_count), 0) FROM documents "
+            "WHERE user_id = $1 AND NOT archived AND id != $2",
+            user_id, document_id,
+        )
+        if current_pages + len(pages) > settings.QUOTA_MAX_PAGES:
+            raise ValueError(
+                f"Page quota exceeded: {current_pages} existing + {len(pages)} new "
+                f"exceeds limit of {settings.QUOTA_MAX_PAGES}. "
+                f"Delete some documents to free up pages."
+            )
 
         for page in pages:
             for img in page.get("images", []):

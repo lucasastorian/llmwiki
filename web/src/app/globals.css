@@ -315,30 +315,54 @@
   outline-offset: 2px;
 }
 
-/* Wiki markdown content */
-.wiki-content h1 { @apply text-2xl font-bold tracking-tight mt-8 mb-4 first:mt-0; }
-.wiki-content h2 { @apply text-xl font-semibold tracking-tight mt-7 mb-3; }
-.wiki-content h3 { @apply text-lg font-medium tracking-tight mt-6 mb-2; }
-.wiki-content h4 { @apply text-base font-medium mt-5 mb-2; }
-.wiki-content p { @apply my-3 leading-relaxed; }
-.wiki-content ul { @apply my-3 space-y-1 list-disc pl-5; }
-.wiki-content ol { @apply my-3 space-y-1 list-decimal pl-5; }
-.wiki-content li { @apply my-0.5; }
-.wiki-content hr { @apply my-6 border-border; }
-.wiki-content img { @apply max-w-full h-auto rounded-md my-4; }
+/* Wiki markdown content — polished documentation typography */
+.wiki-content {
+  @apply text-[15px] leading-[1.8];
+}
+.wiki-content h1 { @apply text-2xl font-bold tracking-tight mt-10 mb-4 first:mt-0 scroll-mt-20; }
+.wiki-content h2 { @apply text-xl font-semibold tracking-tight mt-10 mb-4 pt-4 border-t border-border/50 first:border-0 first:pt-0 scroll-mt-20; }
+.wiki-content h3 { @apply text-lg font-medium tracking-tight mt-8 mb-3 scroll-mt-20; }
+.wiki-content h4 { @apply text-base font-medium mt-6 mb-2 scroll-mt-20; }
+.wiki-content p { @apply my-4 leading-[1.8] text-foreground/90; }
+.wiki-content ul { @apply my-4 space-y-1.5 list-disc pl-5; }
+.wiki-content ol { @apply my-4 space-y-1.5 list-decimal pl-5; }
+.wiki-content li { @apply my-1 leading-[1.8]; }
+.wiki-content hr { @apply my-8 border-border/60; }
+.wiki-content img { @apply max-w-full h-auto rounded-lg my-5 border border-border/30; }
 .wiki-content blockquote {
-  @apply border-l-3 border-muted-foreground/30 pl-4 my-4 text-muted-foreground italic;
+  @apply border-l-[3px] border-accent-blue/40 pl-4 my-6 py-1 rounded-r-md;
+  background: hsl(var(--accent-blue) / 0.03);
+  color: hsl(var(--muted-foreground));
+}
+.wiki-content blockquote p {
+  @apply my-2;
 }
 .wiki-content strong { @apply font-semibold text-foreground; }
+.wiki-content a { @apply text-accent-blue underline underline-offset-2 decoration-accent-blue/30 hover:decoration-accent-blue transition-colors; }
 
-/* Blockquote styles */
+/* Wiki tables */
+.wiki-content table { @apply w-full border-collapse text-sm; }
+.wiki-content thead { @apply bg-muted/50; }
+.wiki-content th { @apply text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground px-3 py-2 border-b border-border; }
+.wiki-content td { @apply text-sm px-3 py-2 border-b border-border/50; }
+.wiki-content tr:last-child td { @apply border-b-0; }
+
+/* Wiki footnotes section */
+.wiki-content .footnotes { @apply mt-12 pt-6 border-t border-border; }
+.wiki-content .footnotes ol { @apply space-y-2; }
+.wiki-content .footnotes li { @apply text-sm text-muted-foreground; }
+
+/* Blockquote styles (legacy) */
 .markdown-blockquote {
-  border-left: 3px solid hsl(var(--muted-foreground) / 0.3) !important;
+  border-left: 3px solid hsl(var(--accent-blue) / 0.4) !important;
   padding-left: 16px !important;
   margin-left: 0 !important;
   margin-right: 0 !important;
-  margin-top: 16px !important;
-  margin-bottom: 16px !important;
+  margin-top: 24px !important;
+  margin-bottom: 24px !important;
   color: hsl(var(--muted-foreground)) !important;
-  font-style: italic !important;
+  background: hsl(var(--accent-blue) / 0.03) !important;
+  border-radius: 0 6px 6px 0 !important;
+  padding-top: 4px !important;
+  padding-bottom: 4px !important;
 }

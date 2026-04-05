@@ -2,24 +2,61 @@
 
 import * as React from 'react'
 import { useSearchParams, useRouter } from 'next/navigation'
-import { Upload as UploadIcon, BookOpen, ArrowUpRight, Loader2, FileText } from 'lucide-react'
+import { Upload as UploadIcon, BookOpen, ArrowUpRight, Loader2 } from 'lucide-react'
 import * as tus from 'tus-js-client'
 import { useUserStore } from '@/stores'
 import { useKBDocuments } from '@/hooks/useKBDocuments'
 import { apiFetch } from '@/lib/api'
 import { toast } from 'sonner'
+import { KBSidenav } from '@/components/kb/KBSidenav'
+import { SelectionActionBar } from '@/components/kb/SelectionActionBar'
+import { WikiContent, extractTocFromMarkdown } from '@/components/wiki/WikiContent'
+import { NoteEditor } from '@/components/editor/NoteEditor'
+import {
+  PdfDocViewer, ImageViewer, HtmlDocViewer, ContentViewer,
+  UnsupportedViewer, ProcessingViewer, FailedViewer,
+} from '@/components/kb/DocViewers'
+import type { DocumentListItem, WikiNode, WikiSubsection } from '@/lib/types'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
-import dynamic from 'next/dynamic'
-import { KBSidenav } from '@/components/kb/KBSidenav'
-import { WikiContent } from '@/components/wiki/WikiContent'
-import { NoteEditor } from '@/components/editor/NoteEditor'
-import type { WikiNode } from '@/components/wiki/WikiSidenav'
-import type { DocumentListItem } from '@/lib/types'
-
-const PdfViewer = dynamic(() => import('@/components/viewer/PdfViewer'), { ssr: false })
 
 const wikiPathCache = new Map<string, string>()
+
+function getWikiPathStorageKey(kbId: string): string {
+  return `llmwiki:active-wiki-path:${kbId}`
+}
+
+function readCachedWikiPath(kbId: string): string | null {
+  const cached = wikiPathCache.get(kbId)
+  if (cached) return cached
+  if (typeof window === 'undefined') return null
+
+  try {
+    return window.sessionStorage.getItem(getWikiPathStorageKey(kbId))
+  } catch {
+    return null
+  }
+}
+
+function writeCachedWikiPath(kbId: string, path: string | null): void {
+  if (path) {
+    wikiPathCache.set(kbId, path)
+  } else {
+    wikiPathCache.delete(kbId)
+  }
+
+  if (typeof window === 'undefined') return
+
+  try {
+    if (path) {
+      window.sessionStorage.setItem(getWikiPathStorageKey(kbId), path)
+    } else {
+      window.sessionStorage.removeItem(getWikiPathStorageKey(kbId))
+    }
+  } catch {
+    // Ignore storage failures and fall back to in-memory cache only.
+  }
+}
 
 function isNoteFile(doc: DocumentListItem): boolean {
   const ft = doc.file_type
@@ -27,10 +64,14 @@ function isNoteFile(doc: DocumentListItem): boolean {
 }
 
 function buildTreeFromDocs(docs: DocumentListItem[]): WikiNode[] {
-  const groups = new Map<string, WikiNode[]>()
-  const topLevel: WikiNode[] = []
+  // Sort all docs by sort_order first
+  const sorted = [...docs].sort((a, b) => (a.sort_order ?? 999) - (b.sort_order ?? 999))
 
-  for (const doc of docs) {
+  // Separate top-level pages (/wiki/X.md) and child pages (/wiki/folder/X.md)
+  const topLevel: Array<{ title: string; path: string; slug: string }> = []
+  const childPages = new Map<string, Array<{ title: string; path: string }>>()
+
+  for (const doc of sorted) {
     const relative = (doc.path + doc.filename).replace(/^\/wiki\/?/, '')
     const parts = relative.split('/')
     const title =
@@ -38,26 +79,42 @@ function buildTreeFromDocs(docs: DocumentListItem[]): WikiNode[] {
       parts[parts.length - 1].replace(/\.(md|txt|json)$/, '').replace(/[-_]/g, ' ')
 
     if (parts.length === 1) {
-      topLevel.push({ title, path: relative })
+      // Top-level: overview.md → slug "overview", path "overview.md"
+      const slug = parts[0].replace(/\.(md|txt|json)$/, '')
+      topLevel.push({ title, path: relative, slug })
     } else {
-      const folder = parts.slice(0, -1).join('/')
-      if (!groups.has(folder)) groups.set(folder, [])
-      groups.get(folder)!.push({ title, path: relative })
+      // Child: overview/investment-philosophy.md → folder "overview"
+      const folder = parts[0]
+      if (!childPages.has(folder)) childPages.set(folder, [])
+      childPages.get(folder)!.push({ title, path: relative })
     }
   }
 
+  // Build tree: parent pages with matching child folders become expandable
   const tree: WikiNode[] = []
-  const overviewIdx = topLevel.findIndex(
-    (n) => n.path === 'index.md' || n.path === 'overview.md' || n.path === 'README.md',
-  )
-  if (overviewIdx >= 0) tree.push(topLevel.splice(overviewIdx, 1)[0])
+  const usedFolders = new Set<string>()
 
-  for (const [folder, children] of groups) {
-    const folderTitle = folder.split('/').pop()!.replace(/[-_]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
-    tree.push({ title: folderTitle, children: children.sort((a, b) => a.title.localeCompare(b.title)) })
+  for (const parent of topLevel) {
+    const children = childPages.get(parent.slug)
+    if (children && children.length > 0) {
+      usedFolders.add(parent.slug)
+      tree.push({
+        title: parent.title,
+        path: parent.path,
+        children: children.map((c) => ({ title: c.title, path: c.path })),
+      })
+    } else {
+      tree.push({ title: parent.title, path: parent.path })
+    }
   }
 
-  tree.push(...topLevel.sort((a, b) => a.title.localeCompare(b.title)))
+  // Orphan folders without a parent page
+  for (const [folder, children] of childPages) {
+    if (usedFolders.has(folder)) continue
+    const folderTitle = folder.replace(/[-_]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+    tree.push({ title: folderTitle, children: children.map((c) => ({ title: c.title, path: c.path })) })
+  }
+
   return tree
 }
 
@@ -74,11 +131,11 @@ function findFirstPath(nodes: WikiNode[]): string | null {
 
 type Props = {
   kbId: string
-  kbSlug: string
+  kbSlug?: string
   kbName: string
 }
 
-export function KBDetail({ kbId, kbSlug, kbName }: Props) {
+export function KBDetail({ kbId, kbName }: Props) {
   const router = useRouter()
   const searchParams = useSearchParams()
   const token = useUserStore((s) => s.accessToken)
@@ -87,25 +144,28 @@ export function KBDetail({ kbId, kbSlug, kbName }: Props) {
 
   // Split documents into wiki and sources
   const wikiDocs = React.useMemo(
-    () => documents.filter((d) => d.path === '/wiki/' || d.path.startsWith('/wiki/')),
+    () => documents.filter((d) => (d.path === '/wiki/' || d.path.startsWith('/wiki/')) && !d.archived && d.file_type === 'md'),
     [documents],
   )
   const sourceDocs = React.useMemo(
     () => documents.filter((d) => !d.path.startsWith('/wiki/') && !d.archived),
     [documents],
   )
-  const hasWiki = wikiDocs.length > 0
 
   // Wiki state
   const indexDoc = wikiDocs.find((d) => d.filename === 'index.json' && d.path === '/wiki/')
-  const [wikiTree, setWikiTree] = React.useState<WikiNode[]>([])
-  const [wikiActivePath, setWikiActivePath] = React.useState<string | null>(
-    () => wikiPathCache.get(kbId) ?? null,
+  const hasNavigableWiki = React.useMemo(
+    () => wikiDocs.some((d) => d.id !== indexDoc?.id),
+    [wikiDocs, indexDoc?.id],
   )
+  const [wikiTree, setWikiTree] = React.useState<WikiNode[]>([])
+  const [wikiActivePath, setWikiActivePath] = React.useState<string | null>(null)
   const [pageContent, setPageContent] = React.useState('')
   const [pageTitle, setPageTitle] = React.useState('')
   const [pageLoading, setPageLoading] = React.useState(false)
+  const [pageLoadedPath, setPageLoadedPath] = React.useState<string | null>(null)
   const [indexLoaded, setIndexLoaded] = React.useState(false)
+  const [selectionHydrated, setSelectionHydrated] = React.useState(false)
 
   // Source doc selection state — synced with ?doc= query param
   const [activeSourceDocId, setActiveSourceDocId] = React.useState<string | null>(null)
@@ -113,31 +173,140 @@ export function KBDetail({ kbId, kbSlug, kbName }: Props) {
     () => activeSourceDocId ? sourceDocs.find((d) => d.id === activeSourceDocId) ?? null : null,
     [activeSourceDocId, sourceDocs],
   )
+  const docParam = searchParams.get('doc')
+  const pageParam = searchParams.get('page')
+
+  // Token helper (used by multiple handlers below)
+  const getToken = () => {
+    const t = useUserStore.getState().accessToken
+    if (!t) { toast.error('Not authenticated'); return null }
+    return t
+  }
+
+  // Multi-selection state
+  const [selectedIds, setSelectedIds] = React.useState<Set<string>>(new Set())
+  const lastSelectedIdRef = React.useRef<string | null>(null)
+
+  // Flat ordered list of source doc IDs for shift-select range
+  const sourceDocIds = React.useMemo(() => sourceDocs.map((d) => d.id), [sourceDocs])
+
+  const handleSelect = React.useCallback((docId: string, e: React.MouseEvent) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+
+      if (e.shiftKey && lastSelectedIdRef.current) {
+        // Range select
+        const lastIdx = sourceDocIds.indexOf(lastSelectedIdRef.current)
+        const currIdx = sourceDocIds.indexOf(docId)
+        if (lastIdx !== -1 && currIdx !== -1) {
+          const [start, end] = lastIdx < currIdx ? [lastIdx, currIdx] : [currIdx, lastIdx]
+          for (let i = start; i <= end; i++) {
+            next.add(sourceDocIds[i])
+          }
+        } else {
+          next.add(docId)
+        }
+      } else if (e.metaKey || e.ctrlKey) {
+        // Toggle single
+        if (next.has(docId)) {
+          next.delete(docId)
+        } else {
+          next.add(docId)
+        }
+      } else {
+        // Plain click — select only this one
+        next.clear()
+        next.add(docId)
+      }
+
+      lastSelectedIdRef.current = docId
+      return next
+    })
+  }, [sourceDocIds])
+
+  const clearSelection = React.useCallback(() => {
+    setSelectedIds(new Set())
+    lastSelectedIdRef.current = null
+  }, [])
+
+  // ESC clears selection
+  React.useEffect(() => {
+    if (selectedIds.size === 0) return
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') clearSelection()
+    }
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [selectedIds.size, clearSelection])
+
+  const handleDeleteSelected = async () => {
+    const t = getToken()
+    if (!t) return
+    const ids = Array.from(selectedIds)
+    const count = ids.length
+    if (!window.confirm(`Delete ${count} selected document${count > 1 ? 's' : ''}?`)) return
+
+    const results = await Promise.allSettled(
+      ids.map((id) => apiFetch(`/v1/documents/${id}`, t, { method: 'DELETE' }))
+    )
+
+    const succeeded = ids.filter((_, i) => results[i].status === 'fulfilled')
+    const failed = ids.filter((_, i) => results[i].status === 'rejected')
+
+    if (succeeded.length > 0) {
+      setDocuments((prev) => prev.filter((d) => !succeeded.includes(d.id)))
+      if (activeSourceDocId && succeeded.includes(activeSourceDocId)) {
+        setActiveSourceDocId(null)
+      }
+    }
+    if (failed.length > 0) {
+      toast.error(`Failed to delete ${failed.length} document${failed.length > 1 ? 's' : ''}`)
+    }
+    clearSelection()
+  }
 
   // Restore from URL on initial load
-  const hasDocParam = !!searchParams.get('doc')
-  const [urlRestored, setUrlRestored] = React.useState(!hasDocParam)
+  const hasSelectionParam = !!docParam || !!pageParam
+  const [urlRestored, setUrlRestored] = React.useState(!hasSelectionParam)
   React.useEffect(() => {
-    if (urlRestored || loading || !documents.length) return
-    const docNum = searchParams.get('doc')
-    if (docNum) {
-      const num = parseInt(docNum, 10)
+    if (urlRestored || loading) return
+
+    if (docParam) {
+      if (!documents.length) return
+      const num = parseInt(docParam, 10)
       const doc = documents.find((d) => d.document_number === num)
       if (doc) {
         setActiveSourceDocId(doc.id)
         setWikiActivePath(null)
       }
+      setUrlRestored(true)
+      return
     }
+
+    if (pageParam) {
+      setActiveSourceDocId(null)
+      setWikiActivePath(pageParam.replace(/^\/wiki\/?/, ''))
+      setUrlRestored(true)
+      return
+    }
+
+    if (!documents.length) return
     setUrlRestored(true)
-  }, [loading, documents, searchParams, urlRestored])
+  }, [docParam, pageParam, loading, documents, urlRestored])
 
   // Sync selection to URL
-  const updateUrl = React.useCallback((docNumber: number | null) => {
+  const updateUrl = React.useCallback((selection: { docNumber?: number | null; pagePath?: string | null }) => {
+    const { docNumber = null, pagePath = null } = selection
     const url = new URL(window.location.href)
     if (docNumber) {
       url.searchParams.set('doc', String(docNumber))
     } else {
       url.searchParams.delete('doc')
+    }
+    if (pagePath) {
+      url.searchParams.set('page', pagePath)
+    } else {
+      url.searchParams.delete('page')
     }
     router.replace(url.pathname + url.search, { scroll: false })
   }, [router])
@@ -145,25 +314,58 @@ export function KBDetail({ kbId, kbSlug, kbName }: Props) {
   const handleWikiSelect = React.useCallback((path: string) => {
     setWikiActivePath(path)
     setActiveSourceDocId(null)
-    updateUrl(null)
+    updateUrl({ pagePath: path })
   }, [updateUrl])
 
   const handleSourceSelect = React.useCallback((doc: DocumentListItem) => {
     setActiveSourceDocId(doc.id)
     setWikiActivePath(null)
-    updateUrl(doc.document_number)
-  }, [updateUrl])
+    clearSelection()
+    updateUrl({ docNumber: doc.document_number })
+  }, [updateUrl, clearSelection])
+
+  const handleCitationSourceClick = React.useCallback((source: string) => {
+    // Source may include page ref like "file.pdf, p.3" — strip it
+    const filename = source.replace(/,\s*p\.?\s*.+$/, '').trim()
+    const lower = filename.toLowerCase()
+
+    const match = sourceDocs.find((d) => {
+      const fn = d.filename.toLowerCase()
+      const title = (d.title || '').toLowerCase()
+      return (
+        fn === lower ||
+        title === lower ||
+        fn === lower + '.md' ||
+        fn.replace(/\.md$/, '') === lower
+      )
+    })
+    if (match) handleSourceSelect(match)
+  }, [sourceDocs, handleSourceSelect])
+
+  // Restore the last-opened wiki page after a hard reload.
+  React.useEffect(() => {
+    if (!docParam && !pageParam) {
+      const cachedPath = readCachedWikiPath(kbId)
+      if (cachedPath) setWikiActivePath((prev) => prev ?? cachedPath)
+    }
+    setSelectionHydrated(true)
+  }, [kbId, docParam, pageParam])
 
   // Cache active path
   React.useEffect(() => {
-    if (wikiActivePath) wikiPathCache.set(kbId, wikiActivePath)
-  }, [kbId, wikiActivePath])
+    if (!selectionHydrated) return
+    writeCachedWikiPath(kbId, wikiActivePath)
+  }, [kbId, wikiActivePath, selectionHydrated])
 
   // Build wiki tree
   React.useEffect(() => {
+    let cancelled = false
+    setIndexLoaded(false)
+
     if (indexDoc && token) {
       apiFetch<{ content: string }>(`/v1/documents/${indexDoc.id}/content`, token)
         .then((res) => {
+          if (cancelled) return
           try {
             const parsed = JSON.parse(res.content)
             setWikiTree(parsed.tree || [])
@@ -173,6 +375,7 @@ export function KBDetail({ kbId, kbSlug, kbName }: Props) {
           setIndexLoaded(true)
         })
         .catch(() => {
+          if (cancelled) return
           setWikiTree(buildTreeFromDocs(wikiDocs.filter((d) => d.id !== indexDoc.id)))
           setIndexLoaded(true)
         })
@@ -180,19 +383,27 @@ export function KBDetail({ kbId, kbSlug, kbName }: Props) {
       setWikiTree(buildTreeFromDocs(wikiDocs))
       setIndexLoaded(true)
     }
-  }, [indexDoc?.id, token, wikiDocs.length])
+
+    return () => { cancelled = true }
+  }, [indexDoc?.id, token, wikiDocs])
 
   // Auto-select first wiki page
   React.useEffect(() => {
-    if (indexLoaded && !wikiActivePath && wikiTree.length) {
+    if (indexLoaded && urlRestored && !activeSourceDocId && !wikiActivePath && wikiTree.length) {
       const first = findFirstPath(wikiTree)
-      if (first) setWikiActivePath(first)
+      if (first) {
+        setWikiActivePath(first)
+        updateUrl({ pagePath: first })
+      }
     }
-  }, [indexLoaded, wikiTree, wikiActivePath])
+  }, [indexLoaded, wikiTree, wikiActivePath, activeSourceDocId, urlRestored, updateUrl])
 
   // Fetch wiki page content
   React.useEffect(() => {
-    if (!wikiActivePath || !token) return
+    if (!wikiActivePath || !token) {
+      setPageLoadedPath(null)
+      return
+    }
 
     const doc = wikiDocs.find((d) => {
       const relative = (d.path + d.filename).replace(/^\/wiki\/?/, '')
@@ -202,24 +413,30 @@ export function KBDetail({ kbId, kbSlug, kbName }: Props) {
     if (!doc) {
       setPageContent(`Page not found: ${wikiActivePath}`)
       setPageTitle('')
+      setPageLoadedPath(wikiActivePath)
       return
     }
 
     setPageLoading(true)
+    setPageLoadedPath(null)
     setPageTitle(doc.title || doc.filename.replace(/\.(md|txt)$/, ''))
     apiFetch<{ content: string }>(`/v1/documents/${doc.id}/content`, token)
       .then((res) => setPageContent(res.content || ''))
       .catch(() => setPageContent('Failed to load page content.'))
-      .finally(() => setPageLoading(false))
+      .finally(() => {
+        setPageLoading(false)
+        setPageLoadedPath(wikiActivePath)
+      })
   }, [wikiActivePath, token, wikiDocs])
 
   const handleWikiNavigate = React.useCallback(
     (path: string) => {
+      let nextPath = path
       setActiveSourceDocId(null)
       if (path.startsWith('/wiki/')) {
-        setWikiActivePath(path.replace(/^\/wiki\/?/, ''))
+        nextPath = path.replace(/^\/wiki\/?/, '')
       } else if (path.startsWith('/')) {
-        setWikiActivePath(path.slice(1))
+        nextPath = path.slice(1)
       } else if (wikiActivePath) {
         const dir = wikiActivePath.includes('/')
           ? wikiActivePath.substring(0, wikiActivePath.lastIndexOf('/'))
@@ -232,21 +449,15 @@ export function KBDetail({ kbId, kbSlug, kbName }: Props) {
         while (resolved.includes('../')) {
           resolved = resolved.replace(/[^/]*\/\.\.\//, '')
         }
-        setWikiActivePath(resolved)
-      } else {
-        setWikiActivePath(path)
+        nextPath = resolved
       }
+      setWikiActivePath(nextPath)
+      updateUrl({ pagePath: nextPath })
     },
-    [wikiActivePath],
+    [wikiActivePath, updateUrl],
   )
 
   // Document actions
-  const getToken = () => {
-    const t = useUserStore.getState().accessToken
-    if (!t) { toast.error('Not authenticated'); return null }
-    return t
-  }
-
   const handleCreateNote = async () => {
     const t = getToken()
     if (!t || !userId) return
@@ -258,7 +469,7 @@ export function KBDetail({ kbId, kbSlug, kbName }: Props) {
       setDocuments((prev) => [data, ...prev])
       setActiveSourceDocId(data.id)
       setWikiActivePath(null)
-      updateUrl(data.document_number)
+      updateUrl({ docNumber: data.document_number })
     } catch {
       toast.error('Failed to create note')
     }
@@ -276,7 +487,7 @@ export function KBDetail({ kbId, kbSlug, kbName }: Props) {
         setDocuments((prev) => [data, ...prev])
         setActiveSourceDocId(data.id)
         setWikiActivePath(null)
-        updateUrl(data.document_number)
+        updateUrl({ docNumber: data.document_number })
       })
       .catch(() => toast.error('Failed to create folder'))
   }
@@ -324,7 +535,7 @@ export function KBDetail({ kbId, kbSlug, kbName }: Props) {
   const handleUploadClick = () => {
     const input = document.createElement('input')
     input.type = 'file'
-    input.accept = '.md,.txt,.pdf,.pptx,.ppt,.docx,.doc,.png,.jpg,.jpeg,.webp,.gif,.xlsx,.xls,.csv,.html,.htm'
+    input.accept = '.md,.txt,.pdf,.pptx,.ppt,.docx,.doc,.png,.jpg,.jpeg,.webp,.gif,.svg,.xlsx,.xls,.csv,.html,.htm'
     input.multiple = true
     input.onchange = () => {
       if (input.files) uploadFiles(Array.from(input.files))
@@ -392,6 +603,20 @@ export function KBDetail({ kbId, kbSlug, kbName }: Props) {
     })
   }, [kbId, userId, tusUploadFile])
 
+  // Extract H2 subsections from wiki page content for the sidenav
+  const wikiActiveSubsections: WikiSubsection[] = React.useMemo(() => {
+    if (!pageContent || !wikiActivePath) return []
+    const toc = extractTocFromMarkdown(pageContent)
+    return toc
+      .filter((item) => item.level === 2)
+      .map((item) => ({ id: item.id, title: item.text }))
+  }, [pageContent, wikiActivePath])
+
+  const handleSubsectionClick = React.useCallback((id: string) => {
+    const el = document.getElementById(id)
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }, [])
+
   // File drag-and-drop
   const [fileDragOver, setFileDragOver] = React.useState(false)
   const dragCounterRef = React.useRef(0)
@@ -421,6 +646,13 @@ export function KBDetail({ kbId, kbSlug, kbName }: Props) {
     if (files.length > 0) uploadFiles(files)
   }
 
+  const showMainLoading =
+    loading ||
+    !selectionHydrated ||
+    !urlRestored ||
+    (!activeSourceDocId && hasNavigableWiki && !wikiActivePath) ||
+    (!activeSourceDocId && !!wikiActivePath && pageLoadedPath !== wikiActivePath)
+
   return (
     <div
       className="flex flex-col h-full relative"
@@ -446,10 +678,12 @@ export function KBDetail({ kbId, kbSlug, kbName }: Props) {
             wikiTree={wikiTree}
             wikiActivePath={wikiActivePath}
             onWikiNavigate={handleWikiSelect}
+            wikiActiveSubsections={wikiActiveSubsections}
+            onWikiSubsectionClick={handleSubsectionClick}
             sourceDocs={sourceDocs}
             activeSourceDocId={activeSourceDocId}
             onSourceSelect={handleSourceSelect}
-            hasWiki={hasWiki}
+            hasWiki={hasNavigableWiki}
             loading={loading}
             onCreateNote={handleCreateNote}
             onCreateFolder={handleCreateFolder}
@@ -457,10 +691,12 @@ export function KBDetail({ kbId, kbSlug, kbName }: Props) {
             onDeleteDocument={handleDeleteDocument}
             onRenameDocument={handleRenameDocument}
             onMoveDocument={handleMoveDocument}
+            selectedIds={selectedIds}
+            onSelect={handleSelect}
           />
         </div>
         <div className="flex-1 min-w-0">
-          {!urlRestored ? (
+          {showMainLoading ? (
             <div className="flex items-center justify-center h-full">
               <Loader2 className="size-5 animate-spin text-muted-foreground" />
             </div>
@@ -476,67 +712,31 @@ export function KBDetail({ kbId, kbSlug, kbName }: Props) {
                 embedded
               />
             ) : activeSourceDoc.status === 'pending' || activeSourceDoc.status === 'processing' ? (
-              <div className="flex flex-col items-center justify-center h-full gap-4 p-8">
-                <Loader2 className="size-8 animate-spin text-muted-foreground" />
-                <div className="text-center">
-                  <h1 className="text-lg font-medium">{activeSourceDoc.title || activeSourceDoc.filename}</h1>
-                  <p className="text-xs text-muted-foreground mt-2">Processing document...</p>
-                </div>
-              </div>
+              <ProcessingViewer title={activeSourceDoc.title || activeSourceDoc.filename} />
             ) : activeSourceDoc.status === 'failed' ? (
-              <div className="flex flex-col items-center justify-center h-full gap-4 p-8">
-                <div className="flex items-center justify-center w-16 h-16 rounded-xl bg-destructive/10">
-                  <FileText size={28} className="text-destructive" />
-                </div>
-                <div className="text-center">
-                  <h1 className="text-lg font-medium">{activeSourceDoc.title || activeSourceDoc.filename}</h1>
-                  <p className="text-xs text-destructive mt-2">Processing failed</p>
-                  {activeSourceDoc.error_message && (
-                    <p className="text-xs text-muted-foreground mt-1 max-w-sm">{activeSourceDoc.error_message}</p>
-                  )}
-                </div>
-              </div>
+              <FailedViewer title={activeSourceDoc.title || activeSourceDoc.filename} errorMessage={activeSourceDoc.error_message} />
             ) : ['pdf', 'pptx', 'ppt', 'docx', 'doc'].includes(activeSourceDoc.file_type) ? (
-              <PdfDocViewer
-                documentId={activeSourceDocId}
-                title={activeSourceDoc.title || activeSourceDoc.filename}
-              />
+              <PdfDocViewer documentId={activeSourceDocId} title={activeSourceDoc.title || activeSourceDoc.filename} />
             ) : ['png', 'jpg', 'jpeg', 'webp', 'gif'].includes(activeSourceDoc.file_type) ? (
-              <ImageViewer
-                documentId={activeSourceDocId}
-                title={activeSourceDoc.title || activeSourceDoc.filename}
-              />
+              <ImageViewer documentId={activeSourceDocId} title={activeSourceDoc.title || activeSourceDoc.filename} />
             ) : ['html', 'htm'].includes(activeSourceDoc.file_type) ? (
-              <HtmlDocViewer
-                documentId={activeSourceDocId}
-                title={activeSourceDoc.title || activeSourceDoc.filename}
-              />
+              <HtmlDocViewer documentId={activeSourceDocId} title={activeSourceDoc.title || activeSourceDoc.filename} />
             ) : ['xlsx', 'xls', 'csv'].includes(activeSourceDoc.file_type) ? (
-              <ContentViewer
-                documentId={activeSourceDocId}
-                title={activeSourceDoc.title || activeSourceDoc.filename}
-                fileType={activeSourceDoc.file_type}
-              />
+              <ContentViewer documentId={activeSourceDocId} title={activeSourceDoc.title || activeSourceDoc.filename} fileType={activeSourceDoc.file_type} />
             ) : (
-              <div className="flex flex-col items-center justify-center h-full gap-4 p-8">
-                <div className="flex items-center justify-center w-16 h-16 rounded-xl bg-muted">
-                  <FileText size={28} className="text-muted-foreground" />
-                </div>
-                <div className="text-center">
-                  <h1 className="text-lg font-medium">{activeSourceDoc.title || activeSourceDoc.filename}</h1>
-                  <p className="text-xs text-muted-foreground mt-2">File viewer coming soon</p>
-                </div>
-              </div>
+              <UnsupportedViewer title={activeSourceDoc.title || activeSourceDoc.filename} />
             )
           ) : pageLoading ? (
             <div className="flex items-center justify-center h-full">
               <Loader2 className="size-5 animate-spin text-muted-foreground" />
             </div>
-          ) : hasWiki && wikiActivePath ? (
+          ) : hasNavigableWiki && wikiActivePath ? (
             <WikiContent
               content={pageContent}
               title={pageTitle}
               onNavigate={handleWikiNavigate}
+              onSourceClick={handleCitationSourceClick}
+              documents={documents}
             />
           ) : (
             <div className="flex flex-col items-center justify-center h-full gap-4 px-6">
@@ -569,182 +769,13 @@ export function KBDetail({ kbId, kbSlug, kbName }: Props) {
           )}
         </div>
       </div>
-    </div>
-  )
-}
 
-function PdfDocViewer({ documentId, title }: { documentId: string; title: string }) {
-  const token = useUserStore((s) => s.accessToken)
-  const [fileUrl, setFileUrl] = React.useState<string | null>(null)
-  const [error, setError] = React.useState(false)
-
-  React.useEffect(() => {
-    if (!token) return
-    let cancelled = false
-    apiFetch<{ url: string }>(`/v1/documents/${documentId}/url`, token)
-      .then((res) => { if (!cancelled) setFileUrl(res.url) })
-      .catch(() => { if (!cancelled) setError(true) })
-    return () => { cancelled = true }
-  }, [documentId, token])
-
-  if (error) {
-    return (
-      <div className="flex items-center justify-center h-full">
-        <p className="text-sm text-destructive">Failed to load PDF</p>
-      </div>
-    )
-  }
-
-  if (!fileUrl) {
-    return (
-      <div className="flex items-center justify-center h-full">
-        <Loader2 className="size-5 animate-spin text-muted-foreground" />
-      </div>
-    )
-  }
-
-  return <PdfViewer fileUrl={fileUrl} title={title} />
-}
-
-function ImageViewer({ documentId, title }: { documentId: string; title: string }) {
-  const token = useUserStore((s) => s.accessToken)
-  const [imageUrl, setImageUrl] = React.useState<string | null>(null)
-  const [error, setError] = React.useState(false)
-
-  React.useEffect(() => {
-    if (!token) return
-    let cancelled = false
-    apiFetch<{ url: string }>(`/v1/documents/${documentId}/url`, token)
-      .then((res) => { if (!cancelled) setImageUrl(res.url) })
-      .catch(() => { if (!cancelled) setError(true) })
-    return () => { cancelled = true }
-  }, [documentId, token])
-
-  if (error) {
-    return (
-      <div className="flex items-center justify-center h-full">
-        <p className="text-sm text-destructive">Failed to load image</p>
-      </div>
-    )
-  }
-
-  if (!imageUrl) {
-    return (
-      <div className="flex items-center justify-center h-full">
-        <Loader2 className="size-5 animate-spin text-muted-foreground" />
-      </div>
-    )
-  }
-
-  return (
-    <div className="h-full flex flex-col">
-      <div className="flex items-center px-4 py-1.5 border-b border-border text-xs text-muted-foreground shrink-0">
-        <span className="truncate text-foreground">{title}</span>
-      </div>
-      <div className="flex-1 overflow-auto flex items-center justify-center p-4 bg-muted/30">
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src={imageUrl} alt={title} className="max-w-full max-h-full object-contain rounded-md" />
-      </div>
-    </div>
-  )
-}
-
-function HtmlDocViewer({ documentId, title }: { documentId: string; title: string }) {
-  const token = useUserStore((s) => s.accessToken)
-  const [htmlUrl, setHtmlUrl] = React.useState<string | null>(null)
-  const [error, setError] = React.useState(false)
-
-  React.useEffect(() => {
-    if (!token) return
-    let cancelled = false
-    apiFetch<{ url: string }>(`/v1/documents/${documentId}/url`, token)
-      .then((res) => { if (!cancelled) setHtmlUrl(res.url) })
-      .catch(() => { if (!cancelled) setError(true) })
-    return () => { cancelled = true }
-  }, [documentId, token])
-
-  if (error) {
-    return (
-      <div className="flex items-center justify-center h-full">
-        <p className="text-sm text-destructive">Failed to load HTML</p>
-      </div>
-    )
-  }
-
-  if (!htmlUrl) {
-    return (
-      <div className="flex items-center justify-center h-full">
-        <Loader2 className="size-5 animate-spin text-muted-foreground" />
-      </div>
-    )
-  }
-
-  return (
-    <div className="h-full flex flex-col">
-      <div className="flex items-center px-4 py-1.5 border-b border-border text-xs text-muted-foreground shrink-0">
-        <span className="truncate text-foreground">{title}</span>
-      </div>
-      <iframe
-        src={htmlUrl}
-        sandbox="allow-same-origin"
-        className="flex-1 w-full bg-white"
-        title={title}
+      <SelectionActionBar
+        count={selectedIds.size}
+        onDelete={handleDeleteSelected}
+        onClear={clearSelection}
       />
     </div>
   )
 }
 
-function ContentViewer({ documentId, title, fileType }: { documentId: string; title: string; fileType: string }) {
-  const token = useUserStore((s) => s.accessToken)
-  const [content, setContent] = React.useState<string | null>(null)
-  const [error, setError] = React.useState(false)
-
-  React.useEffect(() => {
-    if (!token) return
-    let cancelled = false
-    apiFetch<{ content: string }>(`/v1/documents/${documentId}/content`, token)
-      .then((res) => { if (!cancelled) setContent(res.content ?? '') })
-      .catch(() => { if (!cancelled) setError(true) })
-    return () => { cancelled = true }
-  }, [documentId, token])
-
-  if (error) {
-    return (
-      <div className="flex items-center justify-center h-full">
-        <p className="text-sm text-destructive">Failed to load content</p>
-      </div>
-    )
-  }
-
-  if (content === null) {
-    return (
-      <div className="flex items-center justify-center h-full">
-        <Loader2 className="size-5 animate-spin text-muted-foreground" />
-      </div>
-    )
-  }
-
-  const isHtml = fileType === 'html' || fileType === 'htm'
-
-  return (
-    <div className="h-full flex flex-col">
-      <div className="flex items-center px-4 py-1.5 border-b border-border text-xs text-muted-foreground shrink-0">
-        <span className="truncate text-foreground">{title}</span>
-      </div>
-      {isHtml ? (
-        <iframe
-          srcDoc={content}
-          sandbox="allow-same-origin"
-          className="flex-1 w-full bg-white"
-          title={title}
-        />
-      ) : (
-        <div className="flex-1 overflow-auto">
-          <div className="max-w-3xl mx-auto px-8 py-6 prose prose-sm dark:prose-invert">
-            <pre className="whitespace-pre-wrap text-sm font-mono">{content}</pre>
-          </div>
-        </div>
-      )}
-    </div>
-  )
-}

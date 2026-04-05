@@ -49,6 +49,7 @@ CREATE TABLE documents (
     metadata JSONB,
     error_message TEXT,
     version INTEGER DEFAULT 0 NOT NULL,
+    sort_order INTEGER DEFAULT 0,
     archived BOOLEAN DEFAULT false NOT NULL,
     created_at TIMESTAMPTZ DEFAULT now() NOT NULL,
     updated_at TIMESTAMPTZ DEFAULT now() NOT NULL
@@ -87,6 +88,10 @@ CREATE INDEX idx_documents_date ON documents(date) WHERE date IS NOT NULL;
 CREATE INDEX idx_api_keys_user_id ON api_keys(user_id);
 CREATE INDEX idx_chunks_kb ON document_chunks(knowledge_base_id);
 CREATE INDEX idx_chunks_doc ON document_chunks(document_id);
+
+CREATE EXTENSION IF NOT EXISTS pgroonga;
+CREATE INDEX idx_chunks_content_pgroonga ON document_chunks USING pgroonga (content);
+CREATE INDEX idx_documents_content_pgroonga ON documents USING pgroonga (content);
 
 ALTER TABLE users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE api_keys ENABLE ROW LEVEL SECURITY;

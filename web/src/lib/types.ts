@@ -29,6 +29,7 @@ export interface Document {
   url: string | null
   version: number
   document_number: number | null
+  sort_order: number | null
   archived: boolean
   created_at: string
   updated_at: string
@@ -45,3 +46,14 @@ export interface TypedProperty {
 }
 
 export type PropertyMap = Record<string, TypedProperty>
+
+export interface WikiNode {
+  title: string
+  path?: string
+  children?: WikiNode[]
+}
+
+export interface WikiSubsection {
+  id: string
+  title: string
+}

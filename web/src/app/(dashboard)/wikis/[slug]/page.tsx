@@ -35,5 +35,5 @@ export default function KBPage() {
     )
   }
 
-  return <KBDetail kbId={kb.id} kbSlug={kb.slug} kbName={kb.name} />
+  return <KBDetail key={kb.id} kbId={kb.id} kbSlug={kb.slug} kbName={kb.name} />
 }

@@ -1,5 +1,7 @@
+import asyncio
 import json
 import logging
+from pathlib import Path
 
 import aioboto3
 
@@ -22,18 +24,16 @@ class S3Service:
             await s3.put_object(Bucket=self._bucket, Key=key, Body=data, ContentType=content_type)
 
     async def upload_file(self, key: str, file_path: str, content_type: str = "application/octet-stream"):
-        async with self._session.client("s3") as s3:
-            with open(file_path, "rb") as f:
-                await s3.put_object(Bucket=self._bucket, Key=key, Body=f.read(), ContentType=content_type)
+        data = await asyncio.to_thread(Path(file_path).read_bytes)
+        await self.upload_bytes(key, data, content_type)
 
     async def generate_presigned_get(self, key: str, expires_in: int = 3600) -> str:
         async with self._session.client("s3") as s3:
-            url = await s3.generate_presigned_url(
+            return await s3.generate_presigned_url(
                 "get_object",
                 Params={"Bucket": self._bucket, "Key": key},
                 ExpiresIn=expires_in,
             )
-            return url
 
     async def download_bytes(self, key: str) -> bytes:
         async with self._session.client("s3") as s3:
@@ -42,8 +42,7 @@ class S3Service:
 
     async def download_to_file(self, key: str, file_path: str):
         data = await self.download_bytes(key)
-        with open(file_path, "wb") as f:
-            f.write(data)
+        await asyncio.to_thread(Path(file_path).write_bytes, data)
 
     async def download_json(self, key: str) -> dict:
         body = await self.download_bytes(key)

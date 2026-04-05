@@ -4,8 +4,16 @@ import * as React from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { useKBStore } from '@/stores'
 import { useKBDocuments } from '@/hooks/useKBDocuments'
-import { NoteEditor } from '@/components/editor/NoteEditor'
-import { Loader2, FileText, ChevronLeft, ChevronRight } from 'lucide-react'
+import { Loader2 } from 'lucide-react'
+
+function normalizeRequestedPath(pathSegments: string[] | undefined): string {
+  if (!pathSegments || pathSegments.length === 0) return '/'
+  return `/${pathSegments.map((segment) => decodeURIComponent(segment)).join('/')}`
+}
+
+function buildDocumentPath(path: string, filename: string): string {
+  return `${path}${filename}`.replace(/\/+/g, '/')
+}
 
 export default function FilePage() {
   const router = useRouter()
@@ -20,49 +28,50 @@ export default function FilePage() {
 
   const { documents, loading: docsLoading } = useKBDocuments(kb?.id ?? '')
 
-  const docNumber = parseInt(params.path?.[0] ?? '', 10)
+  const requestedPath = React.useMemo(
+    () => normalizeRequestedPath(params.path),
+    [params.path],
+  )
+  const legacyDocNumber = React.useMemo(
+    () => parseInt(params.path?.[0] ?? '', 10),
+    [params.path],
+  )
 
   const document = React.useMemo(() => {
-    if (!documents.length || isNaN(docNumber)) return null
-    return documents.find((d) => d.document_number === docNumber) ?? null
-  }, [documents, docNumber])
+    if (!documents.length) return null
 
-  if (kbLoading || (kb && docsLoading)) {
+    const exactMatch = documents.find((d) => buildDocumentPath(d.path, d.filename) === requestedPath)
+    if (exactMatch) return exactMatch
+
+    if (!Number.isNaN(legacyDocNumber)) {
+      return documents.find((d) => d.document_number === legacyDocNumber) ?? null
+    }
+
+    return null
+  }, [documents, requestedPath, legacyDocNumber])
+
+  React.useEffect(() => {
+    if (kbLoading || !kb || docsLoading || !document) return
+
+    const fullPath = buildDocumentPath(document.path, document.filename)
+    if (document.path.startsWith('/wiki/')) {
+      const wikiPath = fullPath.replace(/^\/wiki\/?/, '')
+      router.replace(`/wikis/${params.slug}?page=${encodeURIComponent(wikiPath)}`)
+      return
+    }
+
+    if (document.document_number != null) {
+      router.replace(`/wikis/${params.slug}?doc=${document.document_number}`)
+      return
+    }
+
+    router.replace(`/wikis/${params.slug}`)
+  }, [kbLoading, kb, docsLoading, document, params.slug, router])
+
+  if (kbLoading || (kb && docsLoading) || document) {
     return (
-      <div className="h-full flex flex-col bg-background">
-        <div className="flex items-center gap-1.5 px-5 py-4 shrink-0">
-          <button
-            onClick={() => router.push(`/wikis/${params.slug}`)}
-            className="p-1 rounded transition-colors hover:bg-accent cursor-pointer text-foreground"
-          >
-            <ChevronLeft className="size-4" />
-          </button>
-          <button disabled className="p-1 rounded text-muted-foreground/30 cursor-default">
-            <ChevronRight className="size-4" />
-          </button>
-          <nav className="flex items-center gap-1 text-sm">
-            <button
-              onClick={() => router.push('/wikis')}
-              className="px-1.5 py-0.5 rounded text-muted-foreground hover:text-foreground hover:bg-accent cursor-pointer truncate"
-            >
-              {kb?.name ?? params.slug}
-            </button>
-            <span className="text-muted-foreground/40">/</span>
-            <div className="h-4 w-48 bg-muted rounded animate-pulse" />
-          </nav>
-        </div>
-        <div className="flex-1 px-6">
-          <div className="max-w-4xl mx-auto bg-card rounded-2xl border border-border/40 shadow-sm min-h-full px-20 py-12">
-            <div className="h-8 w-80 bg-muted rounded animate-pulse mb-6" />
-            <div className="h-4 w-48 bg-muted rounded animate-pulse mb-4" />
-            <div className="h-4 w-64 bg-muted rounded animate-pulse mb-8" />
-            <div className="space-y-3">
-              <div className="h-4 w-full bg-muted/60 rounded animate-pulse" />
-              <div className="h-4 w-5/6 bg-muted/60 rounded animate-pulse" />
-              <div className="h-4 w-4/6 bg-muted/60 rounded animate-pulse" />
-            </div>
-          </div>
-        </div>
+      <div className="flex items-center justify-center h-full bg-background">
+        <Loader2 className="size-5 animate-spin text-muted-foreground" />
       </div>
     )
   }
@@ -80,7 +89,7 @@ export default function FilePage() {
       <div className="flex flex-col items-center justify-center h-full gap-2 bg-background">
         <h1 className="text-lg font-medium">Document not found</h1>
         <p className="text-sm text-muted-foreground">
-          Document #{docNumber} does not exist in this wiki.
+          {requestedPath} does not exist in this wiki.
         </p>
         <button
           onClick={() => router.push(`/wikis/${params.slug}`)}
@@ -91,36 +100,4 @@ export default function FilePage() {
       </div>
     )
   }
-
-  const isNote = document.file_type === 'md' || document.file_type === 'txt' || document.file_type === 'note'
-
-  if (isNote) {
-    return (
-      <NoteEditor
-        documentId={document.id}
-        initialTitle={document.title ?? document.filename}
-        initialTags={document.tags}
-        backLabel={kb.name}
-        onBack={() => router.push(`/wikis/${params.slug}`)}
-      />
-    )
-  }
-
-  return (
-    <div className="flex flex-col items-center justify-center h-full gap-4 p-8 bg-background">
-      <div className="flex items-center justify-center w-16 h-16 rounded-xl bg-muted">
-        <FileText size={28} className="text-muted-foreground" />
-      </div>
-      <div className="text-center">
-        <h1 className="text-lg font-medium">{document.title || document.filename}</h1>
-        <p className="text-xs text-muted-foreground mt-2">File viewer coming soon</p>
-      </div>
-      <button
-        onClick={() => router.push(`/wikis/${params.slug}`)}
-        className="text-sm text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
-      >
-        Back to {kb.name}
-      </button>
-    </div>
-  )
 }

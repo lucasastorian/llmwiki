@@ -23,7 +23,7 @@ mcp = FastMCP(
     token_verifier=SupabaseTokenVerifier(),
     auth=AuthSettings(
         issuer_url=AnyHttpUrl(f"{settings.SUPABASE_URL}/auth/v1"),
-        resource_server_url=AnyHttpUrl(settings.API_URL),
+        resource_server_url=AnyHttpUrl(settings.MCP_URL),
     ),
 )
 

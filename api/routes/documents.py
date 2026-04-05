@@ -10,32 +10,30 @@ from pydantic import BaseModel
 
 from deps import get_scoped_db
 from scoped_db import ScopedDB
+from services.chunker import chunk_text, store_chunks
 
 router = APIRouter(tags=["documents"])
 
 _FRONTMATTER_RE = re.compile(r"\A---[ \t]*\n(.+?\n)---[ \t]*\n", re.DOTALL)
 
+_DOC_COLUMNS = (
+    "id, knowledge_base_id, user_id, filename, path, title, "
+    "file_type, status, tags, date, metadata, error_message, "
+    "version, document_number, archived, created_at, updated_at"
+)
+
 
 def parse_frontmatter(content: str) -> tuple[dict, str]:
-    """Extract YAML frontmatter from content.
-
-    Returns (metadata_dict, body_without_frontmatter).
-    If no valid frontmatter is found, returns ({}, original_content).
-    """
     m = _FRONTMATTER_RE.match(content)
     if not m:
         return {}, content
-
     try:
         meta = yaml.safe_load(m.group(1))
     except yaml.YAMLError:
         return {}, content
-
     if not isinstance(meta, dict):
         return {}, content
-
-    body = content[m.end():]
-    return meta, body
+    return meta, content[m.end():]
 
 
 class CreateNote(BaseModel):
@@ -91,17 +89,14 @@ async def list_documents(
 ):
     if path:
         rows = await db.fetch(
-            "SELECT id, knowledge_base_id, user_id, filename, path, title, "
-            "file_type, status, tags, date, metadata, error_message, version, document_number, archived, created_at, updated_at "
+            f"SELECT {_DOC_COLUMNS} "
             "FROM documents WHERE knowledge_base_id = $1 AND archived = false AND path = $2 "
             "ORDER BY filename",
-            kb_id,
-            path,
+            kb_id, path,
         )
     else:
         rows = await db.fetch(
-            "SELECT id, knowledge_base_id, user_id, filename, path, title, "
-            "file_type, status, tags, date, metadata, error_message, version, document_number, archived, created_at, updated_at "
+            f"SELECT {_DOC_COLUMNS} "
             "FROM documents WHERE knowledge_base_id = $1 AND archived = false "
             "ORDER BY filename",
             kb_id,
@@ -133,14 +128,8 @@ async def create_note(
         "INSERT INTO documents (knowledge_base_id, user_id, filename, path, title, "
         "file_type, status, content, tags) "
         "VALUES ($1, auth.uid(), $2, $3, $4, 'md', 'ready', $5, $6) "
-        "RETURNING id, knowledge_base_id, user_id, filename, path, title, "
-        "file_type, status, tags, date, metadata, error_message, version, document_number, archived, created_at, updated_at",
-        kb_id,
-        body.filename,
-        body.path,
-        title,
-        body.content,
-        tags,
+        f"RETURNING {_DOC_COLUMNS}",
+        kb_id, body.filename, body.path, title, body.content, tags,
     )
     return row
 
@@ -151,9 +140,7 @@ async def get_document(
     db: Annotated[ScopedDB, Depends(get_scoped_db)],
 ):
     row = await db.fetchrow(
-        "SELECT id, knowledge_base_id, user_id, filename, path, title, "
-        "file_type, status, tags, date, metadata, error_message, version, document_number, archived, created_at, updated_at "
-        "FROM documents WHERE id = $1",
+        f"SELECT {_DOC_COLUMNS} FROM documents WHERE id = $1",
         doc_id,
     )
     if not row:
@@ -216,8 +203,7 @@ async def update_document_content(
         "UPDATE documents SET content = $1, version = version + 1, updated_at = now() "
         "WHERE id = $2 "
         "RETURNING id, content, version",
-        body.content,
-        doc_id,
+        body.content, doc_id,
     )
     if not row:
         raise HTTPException(status_code=404, detail="Document not found")
@@ -225,9 +211,8 @@ async def update_document_content(
     doc_meta = await db.fetchrow(
         "SELECT user_id::text, knowledge_base_id::text FROM documents WHERE id = $1", doc_id,
     )
-    if doc_meta and body.content:
-        from services.chunker import chunk_text, store_chunks
-        chunks = chunk_text(body.content)
+    if doc_meta:
+        chunks = chunk_text(body.content) if body.content else []
         pool = request.app.state.pool
         await store_chunks(pool, str(doc_id), doc_meta["user_id"], doc_meta["knowledge_base_id"], chunks)
 
@@ -278,8 +263,7 @@ async def update_document_metadata(
     sql = (
         f"UPDATE documents SET {', '.join(updates)} "
         f"WHERE id = ${idx} "
-        f"RETURNING id, knowledge_base_id, user_id, filename, path, title, "
-        f"file_type, status, tags, date, metadata, error_message, version, document_number, archived, created_at, updated_at"
+        f"RETURNING {_DOC_COLUMNS}"
     )
     row = await db.fetchrow(sql, *params)
     if not row:

@@ -1,5 +1,4 @@
-"""Supabase JWT verification for MCP connections."""
-
+import asyncio
 import logging
 
 import jwt as pyjwt
@@ -24,7 +23,7 @@ def _get_jwks_client() -> PyJWKClient:
 class SupabaseTokenVerifier(TokenVerifier):
 
     async def verify_token(self, token: str) -> AccessToken | None:
-        payload = self._decode_jwt(token)
+        payload = await self._decode_jwt(token)
         if payload is None:
             return None
 
@@ -36,10 +35,12 @@ class SupabaseTokenVerifier(TokenVerifier):
         logger.info("MCP auth: %s", sub)
         return AccessToken(token=token, client_id=sub, scopes=[])
 
-    def _decode_jwt(self, token: str) -> dict | None:
+    async def _decode_jwt(self, token: str) -> dict | None:
         if settings.SUPABASE_URL:
             try:
-                signing_key = _get_jwks_client().get_signing_key_from_jwt(token)
+                signing_key = await asyncio.to_thread(
+                    _get_jwks_client().get_signing_key_from_jwt, token
+                )
                 payload = pyjwt.decode(
                     token, signing_key.key,
                     algorithms=["ES256", "RS256"],

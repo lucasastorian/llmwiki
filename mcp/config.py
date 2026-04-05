@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     STAGE: str = "dev"
     APP_URL: str = "http://localhost:3000"
     API_URL: str = "http://localhost:8000"
+    MCP_URL: str = "http://localhost:8080/mcp"
 
 
 settings = Settings()

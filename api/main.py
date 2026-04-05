@@ -18,8 +18,9 @@ if settings.LOGFIRE_TOKEN:
 from routes.health import router as health_router
 from routes.knowledge_bases import router as knowledge_bases_router
 from routes.documents import router as documents_router
-from routes.search import router as search_router
 from routes.api_keys import router as api_keys_router
+from routes.me import router as me_router
+from routes.usage import router as usage_router
 from infra.tus import router as tus_router, cleanup_stale_uploads
 
 
@@ -82,6 +83,7 @@ if settings.LOGFIRE_TOKEN:
 app.include_router(health_router)
 app.include_router(knowledge_bases_router)
 app.include_router(documents_router)
-app.include_router(search_router)
 app.include_router(api_keys_router)
+app.include_router(me_router)
+app.include_router(usage_router)
 app.include_router(tus_router)

@@ -14,7 +14,8 @@ logger = logging.getLogger(__name__)
 
 _jwks_cache: dict[str, PyJWK] = {}
 _jwks_last_fetch: float = 0
-_JWKS_REFRESH_INTERVAL = 300  # seconds
+_JWKS_REFRESH_INTERVAL = 300
+_JWKS_MIN_REFRESH = 10
 
 
 async def _fetch_jwks() -> None:
@@ -85,9 +86,10 @@ async def _try_jwt_jwks(token: str) -> str | None:
             return None
 
         if kid not in _jwks_cache:
-            if time.monotonic() - _jwks_last_fetch < _JWKS_REFRESH_INTERVAL:
+            if time.monotonic() - _jwks_last_fetch >= _JWKS_MIN_REFRESH:
+                await _fetch_jwks()
+            if kid not in _jwks_cache:
                 return None
-            await _fetch_jwks()
 
         jwk = _jwks_cache.get(kid)
         if not jwk:

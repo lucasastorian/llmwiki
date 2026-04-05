@@ -1,4 +1,4 @@
-"""Async connection pool for MCP tools."""
+import json
 
 import asyncpg
 
@@ -16,14 +16,17 @@ async def get_pool() -> asyncpg.Pool:
     return _pool
 
 
+async def _set_rls(conn, user_id: str):
+    claims = json.dumps({"sub": user_id})
+    await conn.execute("SET LOCAL ROLE authenticated")
+    await conn.execute("SELECT set_config('request.jwt.claims', $1, true)", claims)
+
+
 async def scoped_query(user_id: str, sql: str, *args) -> list[dict]:
-    """Execute a query scoped to a user via RLS."""
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.transaction():
-            await conn.execute("SET LOCAL ROLE authenticated")
-            claims = '{"sub":"' + user_id.replace('"', '') + '"}'
-            await conn.execute(f"SET LOCAL request.jwt.claims = '{claims}'")
+            await _set_rls(conn, user_id)
             rows = await conn.fetch(sql, *args)
             return [dict(r) for r in rows]
 
@@ -37,7 +40,5 @@ async def scoped_execute(user_id: str, sql: str, *args) -> str:
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.transaction():
-            await conn.execute("SET LOCAL ROLE authenticated")
-            claims = '{"sub":"' + user_id.replace('"', '') + '"}'
-            await conn.execute(f"SET LOCAL request.jwt.claims = '{claims}'")
+            await _set_rls(conn, user_id)
             return await conn.execute(sql, *args)
