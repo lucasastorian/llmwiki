@@ -559,31 +559,51 @@ class Parser:
     _ALLOWED_SCHEMES = {"http", "https"}
 
     @staticmethod
-    def _is_safe_url(url: str) -> bool:
-        from urllib.parse import urlparse
+    def _is_dangerous_ip(addr: str) -> bool:
         import ipaddress
+        try:
+            ip = ipaddress.ip_address(addr)
+            return ip.is_private or ip.is_loopback or ip.is_reserved or ip.is_link_local
+        except ValueError:
+            return True
+
+    @staticmethod
+    def _resolve_safe(url: str) -> tuple[str, str, int, str, str] | None:
+        """Resolve URL, validate all IPs are public.
+        Returns (safe_ip, host, port, scheme, path_with_query) or None.
+        """
+        from urllib.parse import urlparse
+        import socket
         try:
             parsed = urlparse(url)
             if parsed.scheme not in Parser._ALLOWED_SCHEMES:
-                return False
+                return None
             host = parsed.hostname or ""
             if not host:
-                return False
-            try:
-                ip = ipaddress.ip_address(host)
-                if ip.is_private or ip.is_loopback or ip.is_reserved or ip.is_link_local:
-                    return False
-            except ValueError:
-                if host in ("localhost", "localhost.localdomain") or host.endswith(".local"):
-                    return False
-            return True
+                return None
+            port = parsed.port or (443 if parsed.scheme == "https" else 80)
+            if host in ("localhost", "localhost.localdomain") or host.endswith(".local"):
+                return None
+            if Parser._is_dangerous_ip(host):
+                return None
+            addrs = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
+            if not addrs:
+                return None
+            for _fam, _type, _proto, _canon, sockaddr in addrs:
+                if Parser._is_dangerous_ip(sockaddr[0]):
+                    return None
+            safe_ip = addrs[0][4][0]
+            path = parsed.path or "/"
+            if parsed.query:
+                path += "?" + parsed.query
+            return safe_ip, host, port, parsed.scheme, path
         except Exception:
-            return False
+            return None
 
     async def embed_images(self) -> None:
         imgs = [
             img for img in self.soup.find_all("img")
-            if img.get("src") and not img["src"].startswith("data:") and self._is_safe_url(img["src"])
+            if img.get("src") and not img["src"].startswith("data:")
         ]
         if not imgs:
             return
@@ -594,11 +614,25 @@ class Parser:
         async def _download(img_tag: Tag) -> None:
             nonlocal total_bytes
             src = img_tag["src"]
+
+            resolved = await asyncio.to_thread(Parser._resolve_safe, src)
+            if not resolved:
+                return
+            safe_ip, host, port, scheme, path = resolved
+
+            ip_str = f"[{safe_ip}]" if ":" in safe_ip else safe_ip
+            default_port = 443 if scheme == "https" else 80
+            port_suffix = f":{port}" if port != default_port else ""
+            pinned_url = f"{scheme}://{ip_str}{port_suffix}{path}"
+
             async with sem:
                 try:
-                    async with httpx.AsyncClient(follow_redirects=False) as client:
+                    async with httpx.AsyncClient(
+                        follow_redirects=False, verify=False,
+                    ) as client:
                         resp = await client.get(
-                            src, headers={"User-Agent": "Mozilla/5.0"},
+                            pinned_url,
+                            headers={"Host": host, "User-Agent": "Mozilla/5.0"},
                             timeout=self._EMBED_TIMEOUT,
                         )
                         resp.raise_for_status()
@@ -619,7 +653,7 @@ class Parser:
                     img_tag["src"] = f"data:{mime};base64,{b64}"
 
                 except Exception:
-                    pass  # keep original URL on failure
+                    pass
 
         await asyncio.gather(*[_download(img) for img in imgs])
 

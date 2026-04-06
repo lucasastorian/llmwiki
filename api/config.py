@@ -21,12 +21,18 @@ class Settings(BaseSettings):
     APP_URL: str = "http://localhost:3000"
     API_URL: str = "http://localhost:8000"
 
-    QUOTA_MAX_PAGES: int = 1000
-    QUOTA_MAX_STORAGE_BYTES: int = 2_147_483_648  # 2 GB
+    QUOTA_MAX_PAGES: int = 500  # per-user page limit (free tier)
+    QUOTA_MAX_PAGES_PER_DOC: int = 300  # max pages per single document
+    QUOTA_MAX_STORAGE_BYTES: int = 1_073_741_824  # 1 GB per user
+
+    CONVERTER_URL: str = ""
+    CONVERTER_SECRET: str = ""
 
     GLOBAL_OCR_ENABLED: bool = True
     GLOBAL_MAX_PAGES: int = 50_000
     GLOBAL_MAX_USERS: int = 200
+
+    SENTRY_DSN: str = ""
 
 
 settings = Settings()

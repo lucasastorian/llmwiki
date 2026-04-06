@@ -3,7 +3,6 @@ import logging
 from fnmatch import fnmatch
 
 import aioboto3
-import jwt as pyjwt
 from mcp.server.fastmcp import Context
 from mcp.server.auth.middleware.auth_context import get_access_token
 
@@ -26,14 +25,6 @@ def get_user_id(ctx: Context) -> str:
     access_token = get_access_token()
     if not access_token:
         raise RuntimeError("Not authenticated")
-
-    try:
-        payload = pyjwt.decode(access_token.token, options={"verify_signature": False})
-        sub = payload.get("sub", "")
-        if sub:
-            return sub
-    except Exception:
-        pass
 
     if access_token.client_id:
         return access_token.client_id

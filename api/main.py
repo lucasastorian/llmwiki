@@ -4,12 +4,21 @@ from contextlib import asynccontextmanager
 
 import asyncpg
 import logfire
+import sentry_sdk
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from config import settings
 
 logger = logging.getLogger(__name__)
+
+if settings.SENTRY_DSN:
+    sentry_sdk.init(
+        dsn=settings.SENTRY_DSN,
+        send_default_pii=True,
+        traces_sample_rate=0.1,
+        environment=settings.STAGE,
+    )
 
 if settings.LOGFIRE_TOKEN:
     logfire.configure(token=settings.LOGFIRE_TOKEN, service_name="supavault-api")

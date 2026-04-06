@@ -16,10 +16,17 @@ async def get_pool(request: Request) -> asyncpg.Pool:
     return request.app.state.pool
 
 
+async def get_user_id(request: Request) -> str:
+    """Authenticate and return user_id. No RLS — for routes that use pool directly."""
+    pool = request.app.state.pool
+    return await get_current_user(request, pool)
+
+
 async def get_scoped_db(
     request: Request,
     pool: Annotated[asyncpg.Pool, Depends(get_pool)],
 ) -> AsyncGenerator[ScopedDB, None]:
+    """Read-only scoped DB with RLS enforced. For SELECT routes only."""
     user_id = await get_current_user(request, pool)
     conn = await pool.acquire()
     tr = conn.transaction()

@@ -1,7 +1,13 @@
 from mcp.server.fastmcp import FastMCP, Context
 
-from db import scoped_query, scoped_queryrow, scoped_execute
+from db import scoped_query, scoped_queryrow, service_execute
 from .helpers import get_user_id, resolve_kb, glob_match, resolve_path
+
+_PROTECTED_FILES = {("/wiki/", "overview.md"), ("/wiki/", "log.md")}
+
+
+def _is_protected(doc: dict) -> bool:
+    return (doc["path"], doc["filename"]) in _PROTECTED_FILES
 
 
 def register(mcp: FastMCP) -> None:
@@ -15,6 +21,7 @@ def register(mcp: FastMCP) -> None:
             "- `path=\"old-notes.md\"` — delete a single file\n"
             "- `path=\"/wiki/drafts/*\"` — delete all files in a folder\n"
             "- `path=\"/wiki/**\"` — delete the entire wiki\n\n"
+            "Note: overview.md and log.md are structural pages and cannot be deleted.\n"
             "Returns a list of deleted files. This action cannot be undone."
         ),
     )
@@ -57,15 +64,26 @@ def register(mcp: FastMCP) -> None:
         if not matched:
             return f"No documents matching `{path}` found in {knowledge_base}."
 
-        doc_ids = [str(d["id"]) for d in matched]
-        await scoped_execute(
-            user_id,
+        protected = [d for d in matched if _is_protected(d)]
+        deletable = [d for d in matched if not _is_protected(d)]
+
+        if not deletable:
+            names = ", ".join(f"`{d['path']}{d['filename']}`" for d in protected)
+            return f"Cannot delete {names} — these are structural wiki pages. Use `write` to edit their content instead."
+
+        doc_ids = [str(d["id"]) for d in deletable]
+        await service_execute(
             "UPDATE documents SET archived = true, updated_at = now() "
-            "WHERE id = ANY($1::uuid[])",
-            doc_ids,
+            "WHERE id = ANY($1::uuid[]) AND user_id = $2",
+            doc_ids, user_id,
         )
 
-        lines = [f"Deleted {len(matched)} document(s):\n"]
-        for d in matched:
+        lines = [f"Deleted {len(deletable)} document(s):\n"]
+        for d in deletable:
             lines.append(f"  {d['path']}{d['filename']}")
+
+        if protected:
+            names = ", ".join(f"`{d['path']}{d['filename']}`" for d in protected)
+            lines.append(f"\nSkipped (protected): {names}")
+
         return "\n".join(lines)

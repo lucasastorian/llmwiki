@@ -8,7 +8,7 @@ import yaml
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 
-from deps import get_scoped_db
+from deps import get_scoped_db, get_user_id
 from scoped_db import ScopedDB
 from services.chunker import chunk_text, store_chunks
 
@@ -81,6 +81,12 @@ class DocumentContent(BaseModel):
     version: int
 
 
+class BulkDelete(BaseModel):
+    ids: list[UUID]
+
+
+# ── Read routes (RLS-enforced via ScopedDB) ──
+
 @router.get("/v1/knowledge-bases/{kb_id}/documents", response_model=list[DocumentOut])
 async def list_documents(
     kb_id: UUID,
@@ -102,42 +108,6 @@ async def list_documents(
             kb_id,
         )
     return rows
-
-
-@router.post("/v1/knowledge-bases/{kb_id}/documents/note", response_model=DocumentOut, status_code=201)
-async def create_note(
-    kb_id: UUID,
-    body: CreateNote,
-    db: Annotated[ScopedDB, Depends(get_scoped_db)],
-    request: Request,
-):
-    kb = await db.fetchval("SELECT id FROM knowledge_bases WHERE id = $1", kb_id)
-    if not kb:
-        raise HTTPException(status_code=404, detail="Knowledge base not found")
-
-    meta, _ = parse_frontmatter(body.content)
-
-    title = body.filename
-    if isinstance(meta.get("title"), str) and meta["title"].strip():
-        title = meta["title"].strip()
-
-    tags: list[str] = []
-    if isinstance(meta.get("tags"), list):
-        tags = [str(t) for t in meta["tags"] if t is not None]
-
-    row = await db.fetchrow(
-        "INSERT INTO documents (knowledge_base_id, user_id, filename, path, title, "
-        "file_type, status, content, tags) "
-        "VALUES ($1, auth.uid(), $2, $3, $4, 'md', 'ready', $5, $6) "
-        f"RETURNING {_DOC_COLUMNS}",
-        kb_id, body.filename, body.path, title, body.content, tags,
-    )
-
-    if body.content:
-        chunks = chunk_text(body.content)
-        await store_chunks(db.conn, str(row["id"]), str(row["user_id"]), str(kb_id), chunks)
-
-    return row
 
 
 @router.get("/v1/documents/{doc_id}", response_model=DocumentOut)
@@ -198,39 +168,90 @@ async def get_document_content(
     return row
 
 
+# ── Write routes (service role via pool, explicit user_id auth) ──
+
+@router.post("/v1/knowledge-bases/{kb_id}/documents/note", response_model=DocumentOut, status_code=201)
+async def create_note(
+    kb_id: UUID,
+    body: CreateNote,
+    user_id: Annotated[str, Depends(get_user_id)],
+    request: Request,
+):
+    pool = request.app.state.pool
+
+    kb = await pool.fetchval(
+        "SELECT id FROM knowledge_bases WHERE id = $1 AND user_id = $2",
+        kb_id, user_id,
+    )
+    if not kb:
+        raise HTTPException(status_code=404, detail="Knowledge base not found")
+
+    meta, _ = parse_frontmatter(body.content)
+
+    title = body.filename
+    if isinstance(meta.get("title"), str) and meta["title"].strip():
+        title = meta["title"].strip()
+
+    tags: list[str] = []
+    if isinstance(meta.get("tags"), list):
+        tags = [str(t) for t in meta["tags"] if t is not None]
+
+    conn = await pool.acquire()
+    try:
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                "INSERT INTO documents (knowledge_base_id, user_id, filename, path, title, "
+                "file_type, status, content, tags) "
+                "VALUES ($1, $2, $3, $4, $5, 'md', 'ready', $6, $7) "
+                f"RETURNING {_DOC_COLUMNS}",
+                kb_id, user_id, body.filename, body.path, title, body.content, tags,
+            )
+            if body.content:
+                chunks = chunk_text(body.content)
+                await store_chunks(conn, str(row["id"]), user_id, str(kb_id), chunks)
+    finally:
+        await pool.release(conn)
+
+    return dict(row)
+
+
 @router.put("/v1/documents/{doc_id}/content", response_model=DocumentContent)
 async def update_document_content(
     doc_id: UUID,
     body: UpdateContent,
-    db: Annotated[ScopedDB, Depends(get_scoped_db)],
+    user_id: Annotated[str, Depends(get_user_id)],
     request: Request,
 ):
-    row = await db.fetchrow(
+    pool = request.app.state.pool
+
+    row = await pool.fetchrow(
         "UPDATE documents SET content = $1, version = version + 1, updated_at = now() "
-        "WHERE id = $2 "
+        "WHERE id = $2 AND user_id = $3 "
         "RETURNING id, content, version",
-        body.content, doc_id,
+        body.content, doc_id, user_id,
     )
     if not row:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    doc_meta = await db.fetchrow(
-        "SELECT user_id::text, knowledge_base_id::text FROM documents WHERE id = $1", doc_id,
+    kb_id = await pool.fetchval(
+        "SELECT knowledge_base_id::text FROM documents WHERE id = $1", doc_id,
     )
-    if doc_meta:
+    if kb_id:
         chunks = chunk_text(body.content) if body.content else []
-        pool = request.app.state.pool
-        await store_chunks(pool, str(doc_id), doc_meta["user_id"], doc_meta["knowledge_base_id"], chunks)
+        await store_chunks(pool, str(doc_id), user_id, kb_id, chunks)
 
-    return row
+    return dict(row)
 
 
 @router.patch("/v1/documents/{doc_id}", response_model=DocumentOut)
 async def update_document_metadata(
     doc_id: UUID,
     body: UpdateMetadata,
-    db: Annotated[ScopedDB, Depends(get_scoped_db)],
+    user_id: Annotated[str, Depends(get_user_id)],
+    request: Request,
 ):
+    pool = request.app.state.pool
+
     updates = []
     params = []
     idx = 1
@@ -265,43 +286,46 @@ async def update_document_metadata(
 
     updates.append("updated_at = now()")
     params.append(doc_id)
+    params.append(user_id)
 
     sql = (
         f"UPDATE documents SET {', '.join(updates)} "
-        f"WHERE id = ${idx} "
+        f"WHERE id = ${idx} AND user_id = ${idx + 1} "
         f"RETURNING {_DOC_COLUMNS}"
     )
-    row = await db.fetchrow(sql, *params)
+    row = await pool.fetchrow(sql, *params)
     if not row:
         raise HTTPException(status_code=404, detail="Document not found")
-    return row
-
-
-class BulkDelete(BaseModel):
-    ids: list[UUID]
+    return dict(row)
 
 
 @router.post("/v1/documents/bulk-delete", status_code=204)
 async def bulk_delete_documents(
     body: BulkDelete,
-    db: Annotated[ScopedDB, Depends(get_scoped_db)],
+    user_id: Annotated[str, Depends(get_user_id)],
+    request: Request,
 ):
     if not body.ids:
         return
-    await db.execute(
-        "UPDATE documents SET archived = true, updated_at = now() WHERE id = ANY($1::uuid[])",
-        [str(i) for i in body.ids],
+    pool = request.app.state.pool
+    await pool.execute(
+        "UPDATE documents SET archived = true, updated_at = now() "
+        "WHERE id = ANY($1::uuid[]) AND user_id = $2",
+        [str(i) for i in body.ids], user_id,
     )
 
 
 @router.delete("/v1/documents/{doc_id}", status_code=204)
 async def delete_document(
     doc_id: UUID,
-    db: Annotated[ScopedDB, Depends(get_scoped_db)],
+    user_id: Annotated[str, Depends(get_user_id)],
+    request: Request,
 ):
-    result = await db.execute(
-        "UPDATE documents SET archived = true, updated_at = now() WHERE id = $1",
-        doc_id,
+    pool = request.app.state.pool
+    result = await pool.execute(
+        "UPDATE documents SET archived = true, updated_at = now() "
+        "WHERE id = $1 AND user_id = $2",
+        doc_id, user_id,
     )
     if result == "UPDATE 0":
         raise HTTPException(status_code=404, detail="Document not found")

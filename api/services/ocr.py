@@ -97,31 +97,44 @@ class OCRService:
         await self._store_ocr_result(document_id, user_id, kb_id, ocr_result)
 
     async def _convert_and_process(self, document_id: str, user_id: str, kb_id: str, s3_source_key: str, ext: str):
-        """Download office file, convert to PDF via LibreOffice, upload PDF, then OCR the PDF."""
+        """Convert office file to PDF, then OCR the PDF."""
         if not settings.MISTRAL_API_KEY:
             raise ValueError("MISTRAL_API_KEY not configured — cannot process office documents")
-        with tempfile.TemporaryDirectory() as tmpdir:
-            source_path = Path(tmpdir) / f"source.{ext}"
-            await self._s3.download_to_file(s3_source_key, str(source_path))
 
-            result = await asyncio.to_thread(
-                subprocess.run,
-                ["libreoffice", "--headless", "--convert-to", "pdf", "--outdir", tmpdir, str(source_path)],
-                capture_output=True, timeout=120,
-            )
-            if result.returncode != 0:
-                raise RuntimeError(f"LibreOffice conversion failed: {result.stderr.decode()[:300]}")
+        pdf_key = f"{user_id}/{document_id}/converted.pdf"
 
-            pdf_path = Path(tmpdir) / f"source.pdf"
-            if not pdf_path.exists():
-                raise RuntimeError("LibreOffice did not produce a PDF")
+        if settings.CONVERTER_URL:
+            source_url = await self._s3.generate_presigned_get(s3_source_key)
+            result_url = await self._s3.generate_presigned_put(pdf_key)
+            headers = {}
+            if settings.CONVERTER_SECRET:
+                headers["Authorization"] = f"Bearer {settings.CONVERTER_SECRET}"
+            async with httpx.AsyncClient(timeout=httpx.Timeout(180.0, connect=10.0)) as client:
+                resp = await client.post(
+                    f"{settings.CONVERTER_URL}/convert",
+                    json={"source_url": source_url, "result_url": result_url, "source_ext": ext},
+                    headers=headers,
+                )
+                resp.raise_for_status()
+        else:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                source_path = Path(tmpdir) / f"source.{ext}"
+                await self._s3.download_to_file(s3_source_key, str(source_path))
+                result = await asyncio.to_thread(
+                    subprocess.run,
+                    ["libreoffice", "--headless", "--norestore", "--convert-to", "pdf", "--outdir", tmpdir, str(source_path)],
+                    capture_output=True, timeout=120,
+                )
+                if result.returncode != 0:
+                    raise RuntimeError(f"LibreOffice conversion failed: {result.stderr.decode()[:300]}")
+                pdf_path = Path(tmpdir) / "source.pdf"
+                if not pdf_path.exists():
+                    raise RuntimeError("LibreOffice did not produce a PDF")
+                await self._s3.upload_file(pdf_key, str(pdf_path), "application/pdf")
 
-            pdf_key = f"{user_id}/{document_id}/converted.pdf"
-            await self._s3.upload_file(pdf_key, str(pdf_path), "application/pdf")
-
-            presigned_url = await self._s3.generate_presigned_get(pdf_key)
-            ocr_result = await self._call_mistral_ocr(presigned_url, "document_url")
-            await self._store_ocr_result(document_id, user_id, kb_id, ocr_result)
+        presigned_url = await self._s3.generate_presigned_get(pdf_key)
+        ocr_result = await self._call_mistral_ocr(presigned_url, "document_url")
+        await self._store_ocr_result(document_id, user_id, kb_id, ocr_result)
 
     async def _process_image(self, document_id: str, user_id: str, s3_source_key: str, ext: str):
         """Images are stored as-is. No OCR. The MCP read tool returns them natively."""
@@ -239,16 +252,26 @@ class OCRService:
 
         pages = ocr_result.get("pages", [])
 
+        if len(pages) > settings.QUOTA_MAX_PAGES_PER_DOC:
+            raise ValueError(
+                f"Document has {len(pages)} pages, maximum is {settings.QUOTA_MAX_PAGES_PER_DOC}."
+            )
+
+        user_limits = await self._pool.fetchrow(
+            "SELECT page_limit, storage_limit_bytes FROM users WHERE id = $1",
+            user_id,
+        )
+        page_limit = user_limits["page_limit"] if user_limits else settings.QUOTA_MAX_PAGES
+
         current_pages = await self._pool.fetchval(
             "SELECT COALESCE(SUM(page_count), 0) FROM documents "
             "WHERE user_id = $1 AND id != $2",
             user_id, document_id,
         )
-        if current_pages + len(pages) > settings.QUOTA_MAX_PAGES:
+        if current_pages + len(pages) > page_limit:
             raise ValueError(
                 f"Page quota exceeded: {current_pages} existing + {len(pages)} new "
-                f"exceeds limit of {settings.QUOTA_MAX_PAGES}. "
-                f"Delete some documents to free up pages."
+                f"exceeds your limit of {page_limit} pages."
             )
 
         for page in pages:

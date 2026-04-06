@@ -3,7 +3,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 
-from deps import get_scoped_db
+from deps import get_scoped_db, get_user_id
 from scoped_db import ScopedDB
 
 router = APIRouter(tags=["me"])
@@ -30,8 +30,11 @@ async def get_me(
 
 @router.post("/v1/onboarding/complete", status_code=204)
 async def complete_onboarding(
-    db: Annotated[ScopedDB, Depends(get_scoped_db)],
+    user_id: Annotated[str, Depends(get_user_id)],
+    request: Request,
 ):
-    await db.execute(
-        "UPDATE users SET onboarded = true, updated_at = now() WHERE id = auth.uid()"
+    pool = request.app.state.pool
+    await pool.execute(
+        "UPDATE users SET onboarded = true, updated_at = now() WHERE id = $1",
+        user_id,
     )

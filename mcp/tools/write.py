@@ -4,7 +4,7 @@ from typing import Literal
 
 from mcp.server.fastmcp import FastMCP, Context
 
-from db import scoped_queryrow, scoped_execute
+from db import scoped_queryrow, service_queryrow, service_execute
 from .helpers import get_user_id, resolve_kb, deep_link, resolve_path
 
 _ASSET_EXTENSIONS = {".svg", ".csv", ".json", ".xml", ".html"}
@@ -41,13 +41,12 @@ async def _create_note(
 
     note_date = date_str or date.today().isoformat()
 
-    doc = await scoped_queryrow(
-        user_id,
+    doc = await service_queryrow(
         "INSERT INTO documents (knowledge_base_id, user_id, filename, title, path, "
         "file_type, status, content, tags, version) "
-        "VALUES ($1, auth.uid(), $2, $3, $4, $5, 'ready', $6, $7, 0) "
+        "VALUES ($1, $2, $3, $4, $5, $6, 'ready', $7, $8, 0) "
         "RETURNING id, filename, path",
-        kb["id"], filename, title, dir_path, file_type, content, tags,
+        kb["id"], user_id, filename, title, dir_path, file_type, content, tags,
     )
 
     link = deep_link(kb["slug"], doc["path"], doc["filename"])
@@ -89,10 +88,10 @@ async def _edit_note(user_id: str, kb: dict, path: str, old_text: str, new_text:
         return f"Error: found {count} matches for old_text. Provide more context to match exactly once."
 
     new_content = content.replace(old_text, new_text, 1)
-    await scoped_execute(
-        user_id,
-        "UPDATE documents SET content = $1, version = version + 1 WHERE id = $2",
-        new_content, doc["id"],
+    await service_execute(
+        "UPDATE documents SET content = $1, version = version + 1 "
+        "WHERE id = $2 AND user_id = $3",
+        new_content, doc["id"], user_id,
     )
 
     link = deep_link(kb["slug"], dir_path, filename)
@@ -112,10 +111,10 @@ async def _append_note(user_id: str, kb: dict, path: str, content: str) -> str:
         return f"Document '{path}' not found."
 
     new_content = (doc["content"] or "") + "\n\n" + content
-    await scoped_execute(
-        user_id,
-        "UPDATE documents SET content = $1, version = version + 1 WHERE id = $2",
-        new_content, doc["id"],
+    await service_execute(
+        "UPDATE documents SET content = $1, version = version + 1 "
+        "WHERE id = $2 AND user_id = $3",
+        new_content, doc["id"], user_id,
     )
 
     link = deep_link(kb["slug"], dir_path, filename)

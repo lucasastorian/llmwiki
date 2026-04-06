@@ -5,6 +5,7 @@ import {
   ChevronRight, FileText, FolderOpen, NotepadText, Folder, Loader2,
   Upload, BookOpen, ArrowUpRight, Plus, Search as SearchIcon,
   Image, Sheet, Presentation, FileCode,
+  Lightbulb, Landmark, ScrollText,
 } from 'lucide-react'
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
@@ -457,6 +458,25 @@ function SidenavSkeleton({ lines }: { lines: number }) {
   )
 }
 
+function wikiNodeIcon(node: WikiNode, depth: number) {
+  const slug = node.path?.replace(/\.(md|txt|json)$/, '').split('/')[0] ?? ''
+  const titleLower = node.title.toLowerCase()
+
+  if (slug === 'overview' || (depth === 0 && titleLower === 'overview'))
+    return <BookOpen className="size-3 shrink-0 opacity-60" />
+  if (slug === 'log' || (depth === 0 && titleLower === 'log'))
+    return <ScrollText className="size-3 shrink-0 opacity-60" />
+  if (slug === 'concepts' || (depth === 0 && titleLower === 'concepts'))
+    return <Lightbulb className="size-3 shrink-0 opacity-60" />
+  if (slug === 'entities' || (depth === 0 && titleLower === 'entities'))
+    return <Landmark className="size-3 shrink-0 opacity-60" />
+
+  if (depth > 0)
+    return <FileText className="size-3 shrink-0 opacity-40" />
+
+  return <FileText className="size-3 shrink-0 opacity-50" />
+}
+
 function WikiTreeNode({
   node,
   depth,
@@ -483,6 +503,7 @@ function WikiTreeNode({
         )}
         style={{ paddingLeft: `${depth * 12 + 8}px` }}
       >
+        {wikiNodeIcon(node, depth)}
         <span className="truncate">{node.title}</span>
       </button>
       {hasChildren && (

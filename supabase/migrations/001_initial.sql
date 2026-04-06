@@ -5,6 +5,8 @@ CREATE TABLE users (
     email TEXT NOT NULL UNIQUE,
     display_name TEXT,
     onboarded BOOLEAN NOT NULL DEFAULT false,
+    page_limit INTEGER NOT NULL DEFAULT 500,
+    storage_limit_bytes BIGINT NOT NULL DEFAULT 1073741824,
     created_at TIMESTAMPTZ DEFAULT now() NOT NULL,
     updated_at TIMESTAMPTZ DEFAULT now() NOT NULL
 );
@@ -43,7 +45,7 @@ CREATE TABLE documents (
     file_size BIGINT DEFAULT 0 NOT NULL,
     document_number INTEGER,
     status document_status DEFAULT 'pending' NOT NULL,
-    page_count INTEGER,
+    page_count INTEGER CHECK (page_count IS NULL OR page_count <= 300),
     content TEXT,
     tags TEXT[] DEFAULT '{}' NOT NULL,
     url TEXT,
@@ -61,7 +63,7 @@ CREATE TABLE document_pages (
     id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
     document_id UUID NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
     page INTEGER NOT NULL,
-    content TEXT NOT NULL,
+    content TEXT NOT NULL CHECK (length(content) <= 500000),
     elements JSONB,
     UNIQUE(document_id, page)
 );
@@ -72,7 +74,7 @@ CREATE TABLE document_chunks (
     user_id UUID NOT NULL REFERENCES users(id),
     knowledge_base_id UUID NOT NULL REFERENCES knowledge_bases(id) ON DELETE CASCADE,
     chunk_index INTEGER NOT NULL,
-    content TEXT NOT NULL,
+    content TEXT NOT NULL CHECK (length(content) <= 10000),
     page INTEGER,
     start_char INTEGER,
     token_count INTEGER NOT NULL,
@@ -108,17 +110,17 @@ CREATE POLICY users_select ON users
 CREATE POLICY users_update ON users
     FOR UPDATE USING (id = auth.uid());
 
-CREATE POLICY api_keys_all ON api_keys
-    FOR ALL USING (user_id = auth.uid());
+CREATE POLICY api_keys_select ON api_keys
+    FOR SELECT USING (user_id = auth.uid());
 
-CREATE POLICY knowledge_bases_all ON knowledge_bases
-    FOR ALL USING (user_id = auth.uid());
+CREATE POLICY knowledge_bases_select ON knowledge_bases
+    FOR SELECT USING (user_id = auth.uid());
 
-CREATE POLICY documents_all ON documents
-    FOR ALL USING (user_id = auth.uid());
+CREATE POLICY documents_select ON documents
+    FOR SELECT USING (user_id = auth.uid());
 
-CREATE POLICY document_pages_all ON document_pages
-    FOR ALL USING (
+CREATE POLICY document_pages_select ON document_pages
+    FOR SELECT USING (
         EXISTS (
             SELECT 1 FROM documents
             WHERE documents.id = document_pages.document_id
@@ -126,8 +128,8 @@ CREATE POLICY document_pages_all ON document_pages
         )
     );
 
-CREATE POLICY document_chunks_all ON document_chunks
-    FOR ALL USING (user_id = auth.uid());
+CREATE POLICY document_chunks_select ON document_chunks
+    FOR SELECT USING (user_id = auth.uid());
 
 CREATE OR REPLACE FUNCTION generate_slug(name TEXT, p_user_id UUID)
 RETURNS TEXT

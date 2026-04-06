@@ -118,31 +118,20 @@ async def _finalize(upload: TusUpload, app_state) -> str:
     await s3_service.upload_file(s3_key, str(upload.temp_path), CONTENT_TYPES.get(ext, "application/octet-stream"))
 
     pool = app_state.pool
-    conn = await pool.acquire()
-    tr = conn.transaction()
-    await tr.start()
     try:
-        await conn.execute("SELECT set_config('request.jwt.claims', $1, true)", json.dumps({"sub": user_id}))
-        await conn.execute("SET LOCAL ROLE authenticated")
-
-        await conn.fetchrow(
+        await pool.execute(
             "INSERT INTO documents (id, knowledge_base_id, user_id, filename, path, title, "
             "file_type, file_size, status) "
-            "VALUES ($1::uuid, $2::uuid, auth.uid(), $3, '/', $4, $5, $6, 'pending') "
-            "RETURNING id",
+            "VALUES ($1::uuid, $2::uuid, $3, $4, '/', $5, $6, $7, 'pending')",
             document_id,
             upload.knowledge_base_id,
+            user_id,
             upload.filename,
             title,
             file_type,
             file_size,
         )
-        await tr.commit()
-    except Exception:
-        await tr.rollback()
-        raise
     finally:
-        await pool.release(conn)
         upload.temp_path.unlink(missing_ok=True)
         _uploads.pop(upload.upload_id, None)
 
@@ -217,17 +206,36 @@ async def tus_create(request: Request):
         raise HTTPException(status_code=400, detail="Missing knowledge_base_id in Upload-Metadata")
 
     pool = request.app.state.pool
+
+    try:
+        import uuid as _uuid
+        _uuid.UUID(kb_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid knowledge_base_id format")
+
+    kb_owner = await pool.fetchval(
+        "SELECT user_id::text FROM knowledge_bases WHERE id = $1::uuid",
+        kb_id,
+    )
+    if kb_owner != user_id:
+        raise HTTPException(status_code=403, detail="Knowledge base not found or not owned by you")
+    user_limits = await pool.fetchrow(
+        "SELECT storage_limit_bytes FROM users WHERE id = $1",
+        user_id,
+    )
+    storage_limit = user_limits["storage_limit_bytes"] if user_limits else settings.QUOTA_MAX_STORAGE_BYTES
+
     current_bytes = await pool.fetchval(
         "SELECT COALESCE(SUM(file_size), 0) FROM documents WHERE user_id = $1",
         user_id,
     )
     in_progress_bytes = sum(u.upload_length for u in _uploads.values() if u.user_id == user_id)
-    if current_bytes + in_progress_bytes + upload_length > settings.QUOTA_MAX_STORAGE_BYTES:
+    if current_bytes + in_progress_bytes + upload_length > storage_limit:
         used_mb = current_bytes / (1024 * 1024)
-        max_mb = settings.QUOTA_MAX_STORAGE_BYTES / (1024 * 1024)
+        max_mb = storage_limit / (1024 * 1024)
         raise HTTPException(
             status_code=413,
-            detail=f"Storage quota exceeded. Using {used_mb:.0f} MB of {max_mb:.0f} MB. Delete some files to free up space.",
+            detail=f"Storage quota exceeded. Using {used_mb:.0f} MB of {max_mb:.0f} MB.",
         )
 
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)

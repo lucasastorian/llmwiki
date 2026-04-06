@@ -3,6 +3,7 @@
 import os
 
 import logfire
+import sentry_sdk
 import uvicorn
 from urllib.parse import urlparse
 
@@ -16,6 +17,14 @@ from starlette.routing import Route
 from auth import SupabaseTokenVerifier
 from config import settings
 from tools import register
+
+if settings.SENTRY_DSN:
+    sentry_sdk.init(
+        dsn=settings.SENTRY_DSN,
+        send_default_pii=True,
+        traces_sample_rate=0.1,
+        environment=settings.STAGE,
+    )
 
 if settings.LOGFIRE_TOKEN:
     logfire.configure(token=settings.LOGFIRE_TOKEN, service_name="supavault-mcp")
