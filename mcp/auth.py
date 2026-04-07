@@ -1,5 +1,4 @@
 import asyncio
-import json
 import logging
 
 import jwt as pyjwt
@@ -12,8 +11,6 @@ logger = logging.getLogger(__name__)
 
 _jwks_client: PyJWKClient | None = None
 
-_ACCEPTED_AUDIENCES = {"authenticated"}
-
 
 def _get_jwks_client() -> PyJWKClient:
     global _jwks_client
@@ -23,25 +20,21 @@ def _get_jwks_client() -> PyJWKClient:
     return _jwks_client
 
 
-def _decode_with_audience(token: str, key, algorithms: list[str]) -> dict | None:
-    for aud in _ACCEPTED_AUDIENCES:
-        try:
-            return pyjwt.decode(token, key, algorithms=algorithms, audience=aud)
-        except pyjwt.InvalidAudienceError:
-            continue
-        except pyjwt.PyJWTError:
-            return None
-    try:
-        return pyjwt.decode(token, key, algorithms=algorithms, options={"verify_aud": False})
-    except pyjwt.PyJWTError:
-        return None
-
-
 class SupabaseTokenVerifier(TokenVerifier):
 
     async def verify_token(self, token: str) -> AccessToken | None:
-        payload = await self._decode_jwt(token)
-        if payload is None:
+        try:
+            signing_key = await asyncio.to_thread(
+                _get_jwks_client().get_signing_key_from_jwt, token
+            )
+            payload = pyjwt.decode(
+                token,
+                signing_key.key,
+                algorithms=["RS256", "ES256"],
+                audience="authenticated",
+            )
+        except Exception as e:
+            logger.debug("JWT verification failed: %s", e)
             return None
 
         sub = payload.get("sub", "")
@@ -61,22 +54,3 @@ class SupabaseTokenVerifier(TokenVerifier):
             scopes=scopes,
             extra={"claims": payload},
         )
-
-    async def _decode_jwt(self, token: str) -> dict | None:
-        if settings.SUPABASE_URL:
-            try:
-                signing_key = await asyncio.to_thread(
-                    _get_jwks_client().get_signing_key_from_jwt, token
-                )
-                payload = _decode_with_audience(token, signing_key.key, ["RS256", "ES256"])
-                if payload:
-                    return payload
-            except Exception as e:
-                logger.debug("JWKS decode failed: %s", e)
-
-        if settings.SUPABASE_JWT_SECRET:
-            payload = _decode_with_audience(token, settings.SUPABASE_JWT_SECRET, ["HS256"])
-            if payload:
-                return payload
-
-        return None

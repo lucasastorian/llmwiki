@@ -156,8 +156,7 @@ async def cleanup_stale_uploads():
 
 
 async def _get_user_id(request: Request) -> str:
-    pool = request.app.state.pool
-    return await get_current_user(request, pool)
+    return await get_current_user(request)
 
 
 @router.options("")
