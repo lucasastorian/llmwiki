@@ -156,7 +156,7 @@ class OCRService:
         await store_chunks(self._pool, document_id, user_id, kb_id, chunks)
 
         await self._pool.execute(
-            "UPDATE documents SET status = 'ready', content = $2, page_count = $3, updated_at = now() "
+            "UPDATE documents SET status = 'ready', content = $2, page_count = $3, parser = 'pdf_oxide', updated_at = now() "
             "WHERE id = $1",
             document_id, full_content, num_pages,
         )
@@ -213,7 +213,7 @@ class OCRService:
     async def _process_image(self, document_id: str, user_id: str, s3_source_key: str, ext: str):
         """Images are stored as-is. No OCR. The MCP read tool returns them natively."""
         await self._pool.execute(
-            "UPDATE documents SET status = 'ready', page_count = 1, updated_at = now() "
+            "UPDATE documents SET status = 'ready', page_count = 1, parser = 'native', updated_at = now() "
             "WHERE id = $1",
             document_id,
         )
@@ -243,7 +243,7 @@ class OCRService:
         await store_chunks(self._pool, document_id, user_id, kb_id, chunks)
 
         await self._pool.execute(
-            "UPDATE documents SET status = 'ready', content = $2, page_count = 1, updated_at = now() "
+            "UPDATE documents SET status = 'ready', content = $2, page_count = 1, parser = 'webmd', updated_at = now() "
             "WHERE id = $1",
             document_id, markdown_content,
         )
@@ -278,7 +278,7 @@ class OCRService:
             await store_chunks(self._pool, document_id, user_id, kb_id, chunks)
 
             await self._pool.execute(
-                "UPDATE documents SET status = 'ready', content = $2, page_count = $3, updated_at = now() "
+                "UPDATE documents SET status = 'ready', content = $2, page_count = $3, parser = 'openpyxl', updated_at = now() "
                 "WHERE id = $1",
                 document_id, full_content, len(sheets),
             )
@@ -400,7 +400,7 @@ class OCRService:
         await store_chunks(self._pool, document_id, user_id, kb_id, chunks)
 
         await self._pool.execute(
-            "UPDATE documents SET status = 'ready', content = $2, page_count = $3, updated_at = now() "
+            "UPDATE documents SET status = 'ready', content = $2, page_count = $3, parser = 'mistral', updated_at = now() "
             "WHERE id = $1",
             document_id, full_content, page_count,
         )

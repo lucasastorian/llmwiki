@@ -54,6 +54,7 @@ CREATE TABLE documents (
     error_message TEXT,
     version INTEGER DEFAULT 0 NOT NULL,
     sort_order INTEGER DEFAULT 0,
+    parser TEXT,
     archived BOOLEAN DEFAULT false NOT NULL,
     created_at TIMESTAMPTZ DEFAULT now() NOT NULL,
     updated_at TIMESTAMPTZ DEFAULT now() NOT NULL
