@@ -629,9 +629,28 @@ export function KBDetail({ kbId, kbName }: Props) {
           toast.error(`Failed to import ${file.name}`)
         }
       } else {
-        const tusTypes = new Set(['pdf', 'pptx', 'ppt', 'docx', 'doc', 'png', 'jpg', 'jpeg', 'webp', 'gif', 'xlsx', 'xls', 'csv', 'html', 'htm'])
-        if (ext && tusTypes.has(ext)) {
-          await tusUploadFile(file)
+        const supportedTypes = new Set(['pdf', 'pptx', 'ppt', 'docx', 'doc', 'png', 'jpg', 'jpeg', 'webp', 'gif', 'xlsx', 'xls', 'csv', 'html', 'htm'])
+        if (ext && supportedTypes.has(ext)) {
+          if (process.env.NEXT_PUBLIC_MODE === 'local') {
+            // Local mode: simple multipart upload
+            const formData = new FormData()
+            formData.append('file', file)
+            formData.append('path', '/')
+            try {
+              const res = await fetch(`${API_URL}/v1/upload`, {
+                method: 'POST',
+                body: formData,
+              })
+              if (!res.ok) throw new Error(`Upload failed: ${res.status}`)
+              const data = await res.json()
+              setDocuments((prev) => [data, ...prev])
+              toast.success(`${file.name} uploaded`)
+            } catch {
+              toast.error(`Upload failed: ${file.name}`)
+            }
+          } else {
+            await tusUploadFile(file)
+          }
         } else {
           toast.info(`${ext} files not yet supported`)
         }

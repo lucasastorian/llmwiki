@@ -122,9 +122,27 @@ async def _local_lifespan_inner(app: FastAPI):
 @asynccontextmanager
 async def _local_lifespan(app: FastAPI):
     db = await _local_lifespan_inner(app)
+
+    # Start file watcher
+    watcher_task = None
+    try:
+        from domain.watcher import watch_workspace
+        from pathlib import Path
+        workspace = Path(app.state.workspace_path)
+        watcher_task = asyncio.create_task(watch_workspace(db, workspace))
+        logger.info("File watcher started")
+    except ImportError:
+        logger.warning("watchfiles not installed — file watcher disabled")
+
     try:
         yield
     finally:
+        if watcher_task:
+            watcher_task.cancel()
+            try:
+                await watcher_task
+            except asyncio.CancelledError:
+                pass
         await db.close()
 
 
@@ -154,11 +172,13 @@ if settings.MODE == "local":
     from routes.local_knowledge_bases import router as local_kb_router
     from routes.local_me import router as local_me_router
     from routes.local_usage import router as local_usage_router
+    from routes.local_upload import router as local_upload_router
     from routes.files import router as files_router, set_workspace_root
     app.include_router(local_docs_router)
     app.include_router(local_kb_router)
     app.include_router(local_me_router)
     app.include_router(local_usage_router)
+    app.include_router(local_upload_router)
     app.include_router(files_router)
     set_workspace_root(settings.WORKSPACE_PATH)
 else:

@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from config import settings
 from deps import get_user_id
 from services.chunker import chunk_text
+from domain.watcher import mark_written
 
 router = APIRouter(tags=["documents"])
 
@@ -180,6 +181,7 @@ async def create_note(
     relative = (body.path.rstrip("/") + "/" + body.filename).lstrip("/")
     file_path = _safe_resolve(relative)
     file_path.parent.mkdir(parents=True, exist_ok=True)
+    mark_written(str(file_path))
     file_path.write_text(body.content or "", encoding="utf-8")
 
     # Then update index
@@ -210,6 +212,7 @@ async def update_document_content(
     # Write file to disk first
     file_path = _doc_to_disk_path(doc)
     if file_path:
+        mark_written(str(file_path))
         file_path.write_text(body.content, encoding="utf-8")
 
     # Then update index
@@ -265,6 +268,8 @@ async def update_document_metadata(
         new_relative = (new_dir.rstrip("/") + "/" + new_filename).lstrip("/")
         new_path = _safe_resolve(new_relative)
         new_path.parent.mkdir(parents=True, exist_ok=True)
+        mark_written(str(old_path))
+        mark_written(str(new_path))
         old_path.rename(new_path)
         # Update relative_path in fields
         fields["relative_path"] = new_relative
@@ -295,6 +300,7 @@ async def bulk_delete_documents(
         if doc:
             file_path = _doc_to_disk_path(doc)
             if file_path and file_path.is_file():
+                mark_written(str(file_path))
                 file_path.unlink()
 
     await doc_repo.bulk_archive(body.ids, user_id)
@@ -312,6 +318,7 @@ async def delete_document(
     if doc:
         file_path = _doc_to_disk_path(doc)
         if file_path and file_path.is_file():
+            mark_written(str(file_path))
             file_path.unlink()
 
     deleted = await doc_repo.archive(doc_id, user_id)
