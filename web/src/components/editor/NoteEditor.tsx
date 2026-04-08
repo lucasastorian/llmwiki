@@ -11,8 +11,8 @@ import { Table, TableRow, TableHeader, TableCell } from '@tiptap/extension-table
 import { Markdown } from 'tiptap-markdown'
 import { format, parse, isValid } from 'date-fns'
 import { X, CalendarIcon, Plus, ChevronUp } from 'lucide-react'
-import { createClient } from '@/lib/supabase/client'
 import { apiFetch } from '@/lib/api'
+import { useUserStore } from '@/stores'
 import { cn, sanitizeTitle } from '@/lib/utils'
 import { NoteToolbar } from './NoteToolbar'
 import {
@@ -66,10 +66,8 @@ interface NoteEditorProps {
   embedded?: boolean
 }
 
-async function getAccessToken(): Promise<string | null> {
-  const supabase = createClient()
-  const { data } = await supabase.auth.getSession()
-  return data.session?.access_token ?? null
+function getAccessToken(): string | null {
+  return useUserStore.getState().accessToken
 }
 
 export function NoteEditor({

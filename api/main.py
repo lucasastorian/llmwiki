@@ -148,22 +148,27 @@ if settings.LOGFIRE_TOKEN:
     logfire.instrument_fastapi(app)
 
 app.include_router(health_router)
-app.include_router(knowledge_bases_router)
-app.include_router(documents_router)
-app.include_router(me_router)
-app.include_router(usage_router)
 
-# Hosted-only routes
-if settings.MODE == "hosted":
+if settings.MODE == "local":
+    from routes.local_documents import router as local_docs_router
+    from routes.local_knowledge_bases import router as local_kb_router
+    from routes.local_me import router as local_me_router
+    from routes.local_usage import router as local_usage_router
+    from routes.files import router as files_router, set_workspace_root
+    app.include_router(local_docs_router)
+    app.include_router(local_kb_router)
+    app.include_router(local_me_router)
+    app.include_router(local_usage_router)
+    app.include_router(files_router)
+    set_workspace_root(settings.WORKSPACE_PATH)
+else:
+    app.include_router(knowledge_bases_router)
+    app.include_router(documents_router)
+    app.include_router(me_router)
+    app.include_router(usage_router)
     from routes.api_keys import router as api_keys_router
     from routes.admin import router as admin_router
     from infra.tus import router as tus_router
     app.include_router(api_keys_router)
     app.include_router(admin_router)
     app.include_router(tus_router)
-
-# Local-only routes
-if settings.MODE == "local":
-    from routes.files import router as files_router, set_workspace_root
-    app.include_router(files_router)
-    set_workspace_root(settings.WORKSPACE_PATH)
