@@ -8,3 +8,4 @@ logfire[asyncpg]==4.25.0
 aioboto3==14.3.0
 python-dotenv==1.1.0
 sentry-sdk==2.29.1
+aiosqlite==0.21.0
