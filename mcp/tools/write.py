@@ -10,6 +10,39 @@ from .references import update_references, propagate_staleness, get_impact_surfa
 
 _ASSET_EXTENSIONS = {".svg", ".csv", ".json", ".xml", ".html"}
 
+_CONTEXT_LINES = 5
+
+
+def _edit_context(content: str, replace_start: int, new_text_len: int) -> str:
+    """Return ~5 lines above and below the edited region."""
+    lines = content.split("\n")
+    # Find which line the edit starts and ends on
+    char_count = 0
+    start_line = 0
+    for i, line in enumerate(lines):
+        if char_count + len(line) >= replace_start:
+            start_line = i
+            break
+        char_count += len(line) + 1  # +1 for newline
+
+    replace_end = replace_start + new_text_len
+    char_count = 0
+    end_line = start_line
+    for i, line in enumerate(lines):
+        if char_count >= replace_end:
+            end_line = i
+            break
+        char_count += len(line) + 1
+        end_line = i
+
+    ctx_start = max(0, start_line - _CONTEXT_LINES)
+    ctx_end = min(len(lines), end_line + _CONTEXT_LINES + 1)
+
+    snippet_lines = lines[ctx_start:ctx_end]
+    prefix = "..." if ctx_start > 0 else ""
+    suffix = "..." if ctx_end < len(lines) else ""
+    return prefix + "\n".join(snippet_lines) + suffix
+
 
 async def _create_note(
     user_id: str, kb: dict, path: str, title: str, content: str,
@@ -146,7 +179,10 @@ async def _edit_note(user_id: str, kb: dict, path: str, old_text: str, new_text:
     if count > 1:
         return f"Error: found {count} matches for old_text. Provide more context to match exactly once."
 
+    # Find where the replacement lands so we can return surrounding context
+    replace_start = content.index(old_text)
     new_content = content.replace(old_text, new_text, 1)
+
     if tags is not None:
         await service_execute(
             "UPDATE documents SET content = $1, tags = $4, version = version + 1 "
@@ -166,9 +202,15 @@ async def _edit_note(user_id: str, kb: dict, path: str, old_text: str, new_text:
         await update_references(user_id, str(kb["id"]), doc_id, new_content, dir_path)
         await propagate_staleness(doc_id)
 
+    # Return context window around the edit (5 lines above/below)
+    context_snippet = _edit_context(new_content, replace_start, len(new_text))
+
     link = deep_link(kb["slug"], dir_path, filename)
     impact = await get_impact_surface(user_id, doc_id) if dir_path.startswith("/wiki/") else ""
-    return f"Edited `{path}`. Replaced 1 occurrence.\n[View in Supavault]({link}){impact}"
+    return (
+        f"Edited `{path}`. Replaced 1 occurrence.\n[View in Supavault]({link})\n\n"
+        f"**Context after edit:**\n```\n{context_snippet}\n```{impact}"
+    )
 
 
 async def _append_note(user_id: str, kb: dict, path: str, content: str, tags: list[str] | None = None) -> str:

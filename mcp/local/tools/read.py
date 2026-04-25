@@ -10,6 +10,7 @@ from infra.db.sqlite import (
 )
 from infra.storage.local import load_bytes
 from .helpers import get_user_id, deep_link, resolve_path, parse_page_range, glob_match
+from .references import get_backlinks_summary
 from tools.read import (
     _text, _image, _extract_sections, _IMG_MIME,
     MAX_BATCH_CHARS,
@@ -124,7 +125,8 @@ def register(mcp: FastMCP) -> None:
         if sections:
             content = _extract_sections(content, sections)
 
-        return header + content
+        backlinks = await get_backlinks_summary(user_id, str(doc["id"]))
+        return header + content + backlinks
 
 
 async def _read_batch_local(user_id: str, kb: dict, path: str) -> str:

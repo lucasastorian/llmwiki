@@ -10,6 +10,7 @@ from infra.db.sqlite import (
     get_workspace,
 )
 from .helpers import get_user_id, deep_link, glob_match, resolve_path, MAX_LIST, MAX_SEARCH
+from .references import query_references
 from tools.search import _extract_snippet
 
 logger = logging.getLogger(__name__)
@@ -109,7 +110,13 @@ def register(mcp: FastMCP) -> None:
             "Sources (raw documents) live at `/`. Wiki pages (LLM-compiled) live at `/wiki/`.\n\n"
             "Modes:\n"
             "- list: browse files and folders\n"
-            "- search: keyword search across document content\n\n"
+            "- search: keyword search across document content\n"
+            "- references: query the citation/link graph for a document\n\n"
+            "References mode examples:\n"
+            "- `search(mode=\"references\", path=\"/wiki/concepts/scaling.md\")` — what it cites + what links to it\n"
+            "- `search(mode=\"references\", path=\"paper.pdf\")` — which wiki pages cite this source\n"
+            "- `search(mode=\"references\", query=\"uncited\")` — sources with no wiki citations\n"
+            "- `search(mode=\"references\", query=\"stale\")` — pages flagged as potentially stale\n\n"
             "Use `path` to scope: `*` for root, `/wiki/**` for wiki only, `*.pdf` for PDFs, etc.\n"
             "Use `tags` to filter by document tags."
         ),
@@ -117,7 +124,7 @@ def register(mcp: FastMCP) -> None:
     async def search(
         ctx: Context,
         knowledge_base: str,
-        mode: Literal["list", "search"] = "list",
+        mode: Literal["list", "search", "references"] = "list",
         query: str = "",
         path: str = "*",
         tags: list[str] | None = None,
@@ -138,5 +145,7 @@ def register(mcp: FastMCP) -> None:
             if not query:
                 return "search mode requires a query."
             return await _search_local(user_id, kb, query, path, tags, min(limit, MAX_SEARCH))
+        elif mode == "references":
+            return await query_references(user_id, kb["slug"], path, query)
 
         return f"Unknown mode: {mode}"

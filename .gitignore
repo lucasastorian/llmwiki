@@ -30,6 +30,10 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
+# LLM Wiki local workspace artifacts
+.llmwiki/
+wiki/
+
 # Misc
 
 # Local Netlify folder

@@ -17,8 +17,39 @@ from infra.db.sqlite import (
 )
 from infra.storage.local import resolve_workspace_path
 from .helpers import get_user_id, deep_link, resolve_path
+from .references import update_references, propagate_staleness, get_impact_surface
 
 _ASSET_EXTENSIONS = {".svg", ".csv", ".json", ".xml", ".html"}
+
+_CONTEXT_LINES = 5
+
+
+def _edit_context(content: str, replace_start: int, new_text_len: int) -> str:
+    lines = content.split("\n")
+    char_count = 0
+    start_line = 0
+    for i, line in enumerate(lines):
+        if char_count + len(line) >= replace_start:
+            start_line = i
+            break
+        char_count += len(line) + 1
+
+    replace_end = replace_start + new_text_len
+    char_count = 0
+    end_line = start_line
+    for i, line in enumerate(lines):
+        if char_count >= replace_end:
+            end_line = i
+            break
+        char_count += len(line) + 1
+        end_line = i
+
+    ctx_start = max(0, start_line - _CONTEXT_LINES)
+    ctx_end = min(len(lines), end_line + _CONTEXT_LINES + 1)
+    snippet_lines = lines[ctx_start:ctx_end]
+    prefix = "..." if ctx_start > 0 else ""
+    suffix = "..." if ctx_end < len(lines) else ""
+    return prefix + "\n".join(snippet_lines) + suffix
 
 
 def _derive_filename(title: str) -> tuple[str, str]:
@@ -100,7 +131,13 @@ async def _create_note(
             user_id, kb["id"], filename, title, dir_path, file_type, content, tags,
         )
 
+    doc_id = str(doc["id"])
     link = deep_link(kb["slug"], dir_path, filename)
+
+    is_wiki = dir_path.startswith("/wiki/")
+    if is_wiki and filename.endswith(".md"):
+        await update_references(user_id, kb["slug"], doc_id, content, dir_path)
+        await propagate_staleness(doc_id)
 
     asset_ext = None
     for ext in _ASSET_EXTENSIONS:
@@ -111,13 +148,15 @@ async def _create_note(
     suffix = ""
     if asset_ext:
         suffix = f"\n\nEmbed in wiki pages with: `![{title}]({filename})`"
-    elif dir_path.startswith("/wiki/"):
+    elif is_wiki:
         suffix = "\n\nRemember to cite sources using footnotes: `[^1]: source-file.pdf, p.X`"
+
+    impact = await get_impact_surface(user_id, doc_id) if is_wiki else ""
 
     return (
         f"Created **{title}** at `{dir_path}{filename}`\n"
         f"Tags: {', '.join(tags)} | Date: {note_date}\n"
-        f"[View]({link}){suffix}"
+        f"[View]({link}){suffix}{impact}"
     )
 
 
@@ -138,6 +177,7 @@ async def _edit_note(user_id: str, kb: dict, path: str, old_text: str, new_text:
     if count > 1:
         return f"Error: found {count} matches for old_text. Provide more context to match exactly once."
 
+    replace_start = content.index(old_text)
     new_content = content.replace(old_text, new_text, 1)
 
     # Write to filesystem first
@@ -147,10 +187,21 @@ async def _edit_note(user_id: str, kb: dict, path: str, old_text: str, new_text:
         file_path.write_text(new_content, encoding="utf-8")
 
     # Then update index
-    await update_document_content(str(doc["id"]), user_id, new_content, tags)
+    doc_id = str(doc["id"])
+    await update_document_content(doc_id, user_id, new_content, tags)
+
+    if dir_path.startswith("/wiki/"):
+        await update_references(user_id, kb["slug"], doc_id, new_content, dir_path)
+        await propagate_staleness(doc_id)
+
+    context_snippet = _edit_context(new_content, replace_start, len(new_text))
+    impact = await get_impact_surface(user_id, doc_id) if dir_path.startswith("/wiki/") else ""
 
     link = deep_link(kb["slug"], dir_path, filename)
-    return f"Edited `{path}`. Replaced 1 occurrence.\n[View]({link})"
+    return (
+        f"Edited `{path}`. Replaced 1 occurrence.\n[View]({link})\n\n"
+        f"**Context after edit:**\n```\n{context_snippet}\n```{impact}"
+    )
 
 
 async def _append_note(user_id: str, kb: dict, path: str, content: str, tags: list[str] | None = None) -> str:
@@ -169,10 +220,17 @@ async def _append_note(user_id: str, kb: dict, path: str, content: str, tags: li
         file_path.write_text(new_content, encoding="utf-8")
 
     # Then update index
-    await update_document_content(str(doc["id"]), user_id, new_content, tags)
+    doc_id = str(doc["id"])
+    await update_document_content(doc_id, user_id, new_content, tags)
+
+    if dir_path.startswith("/wiki/"):
+        await update_references(user_id, kb["slug"], doc_id, new_content, dir_path)
+        await propagate_staleness(doc_id)
+
+    impact = await get_impact_surface(user_id, doc_id) if dir_path.startswith("/wiki/") else ""
 
     link = deep_link(kb["slug"], dir_path, filename)
-    return f"Appended to `{path}`.\n[View]({link})"
+    return f"Appended to `{path}`.\n[View]({link}){impact}"
 
 
 def register(mcp: FastMCP) -> None:
