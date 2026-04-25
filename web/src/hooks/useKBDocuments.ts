@@ -81,8 +81,10 @@ export function useKBDocuments(knowledgeBaseId: string) {
 
     // Hosted mode: Supabase realtime
     let channel: ReturnType<ReturnType<typeof import('@/lib/supabase/client').createClient>['channel']> | null = null
+    let cancelled = false
 
     import('@/lib/supabase/client').then(({ createClient }) => {
+      if (cancelled) return
       const supabase = createClient()
 
       const fetchDoc = async (id: string): Promise<DocumentListItem | null> => {
@@ -123,6 +125,7 @@ export function useKBDocuments(knowledgeBaseId: string) {
     })
 
     return () => {
+      cancelled = true
       if (channel) {
         import('@/lib/supabase/client').then(({ createClient }) => {
           createClient().removeChannel(channel!)

@@ -34,7 +34,8 @@ Thumbs.db
 .llmwiki/
 wiki/
 
-# Misc
+# Deploy
+deploy.sh
 
 # Local Netlify folder
 .netlify

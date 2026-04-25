@@ -40,7 +40,14 @@ export function AuthProvider({ userId, email, children }: AuthProviderProps) {
     // Hosted mode: Supabase session
     import('@/lib/supabase/client').then(({ createClient }) => {
       const supabase = createClient()
-      supabase.auth.getSession().then(async ({ data: { session } }) => {
+      supabase.auth.getUser().then(async ({ data: { user: authUser } }) => {
+        if (!authUser) {
+          signOut()
+          useKBStore.setState({ knowledgeBases: [], loading: false, error: null })
+          return
+        }
+        // Still need the session for the access_token
+        const { data: { session } } = await supabase.auth.getSession()
         if (!session) {
           signOut()
           useKBStore.setState({ knowledgeBases: [], loading: false, error: null })

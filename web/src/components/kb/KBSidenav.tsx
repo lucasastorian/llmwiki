@@ -5,7 +5,7 @@ import {
   ChevronRight, FileText, FolderOpen, NotepadText, Folder, Loader2,
   Upload, BookOpen, ArrowUpRight, Plus, Search as SearchIcon,
   Image, Sheet, Presentation, FileCode,
-  Lightbulb, Landmark, ScrollText,
+  Lightbulb, Box, ScrollText,
 } from 'lucide-react'
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
@@ -522,7 +522,7 @@ function wikiNodeIcon(node: WikiNode, depth: number) {
   if (slug === 'concepts' || (depth === 0 && titleLower === 'concepts'))
     return <Lightbulb className="size-3 shrink-0 opacity-60" />
   if (slug === 'entities' || (depth === 0 && titleLower === 'entities'))
-    return <Landmark className="size-3 shrink-0 opacity-60" />
+    return <Box className="size-3 shrink-0 opacity-60" />
 
   if (depth > 0)
     return <FileText className="size-3 shrink-0 opacity-40" />
