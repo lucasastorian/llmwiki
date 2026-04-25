@@ -64,6 +64,10 @@ interface NoteEditorProps {
   backLabel?: string
   onBack?: () => void
   embedded?: boolean
+  /** Hide the built-in toolbar (when the parent provides its own) */
+  hideToolbar?: boolean
+  /** Called when the tiptap editor is ready — lets the parent render formatting buttons externally */
+  onEditorReady?: (editor: import('@tiptap/react').Editor) => void
 }
 
 function getAccessToken(): string | null {
@@ -81,6 +85,8 @@ export function NoteEditor({
   backLabel,
   onBack,
   embedded,
+  hideToolbar,
+  onEditorReady,
 }: NoteEditorProps) {
   const [title, setTitle] = React.useState(initialTitle ?? '')
   const [date, setDate] = React.useState<string>(initialDate ?? '')
@@ -151,6 +157,11 @@ export function NoteEditor({
       setWordCount(text.trim() ? text.trim().split(/\s+/).length : 0)
     },
   })
+
+  // Expose editor to parent for external toolbar rendering
+  React.useEffect(() => {
+    if (editor && onEditorReady) onEditorReady(editor)
+  }, [editor, onEditorReady])
 
   const dateValue = React.useMemo(() => {
     if (!date) return undefined
@@ -431,23 +442,25 @@ export function NoteEditor({
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
-      <NoteToolbar
-        editor={editor}
-        backLabel={backLabel ?? 'Back'}
-        noteTitle={title}
-        onTitleChange={embedded ? (val: string) => {
-          const sanitized = sanitizeTitle(val)
-          setTitle(sanitized)
-          latestTitleRef.current = sanitized
-          dirtyRef.current = true
-          metaDirtyRef.current = true
-          setSaveStatus('idle')
-          scheduleSave()
-          onTitleChange?.(sanitized)
-        } : undefined}
-        onBack={onBack ?? (() => {})}
-        embedded={embedded}
-      />
+      {!hideToolbar && (
+        <NoteToolbar
+          editor={editor}
+          backLabel={backLabel ?? 'Back'}
+          noteTitle={title}
+          onTitleChange={embedded ? (val: string) => {
+            const sanitized = sanitizeTitle(val)
+            setTitle(sanitized)
+            latestTitleRef.current = sanitized
+            dirtyRef.current = true
+            metaDirtyRef.current = true
+            setSaveStatus('idle')
+            scheduleSave()
+            onTitleChange?.(sanitized)
+          } : undefined}
+          onBack={onBack ?? (() => {})}
+          embedded={embedded}
+        />
+      )}
 
       <div className={cn(
         'flex-1 overflow-y-auto',

@@ -5,11 +5,10 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
-import rehypeSanitize from 'rehype-sanitize'
 import 'katex/dist/katex.min.css'
 import type { Components } from 'react-markdown'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import { FileText } from 'lucide-react'
+import { FileText, Copy, Download, Check } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { apiFetch } from '@/lib/api'
 import { useUserStore } from '@/stores'
@@ -347,6 +346,25 @@ export function WikiContent({ content, title, onNavigate, onSourceClick, documen
   const processedContent = React.useMemo(() => stripLeadingH1(content, title), [content, title])
   const tocItems = React.useMemo(() => extractTocFromMarkdown(processedContent), [processedContent])
   const footnoteSources = React.useMemo(() => parseFootnoteSources(processedContent), [processedContent])
+  const [copied, setCopied] = React.useState(false)
+
+  const handleCopy = React.useCallback(() => {
+    navigator.clipboard.writeText(content).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    })
+  }, [content])
+
+  const handleDownload = React.useCallback(() => {
+    const filename = title ? `${title.replace(/[^\w\s-]/g, '').replace(/\s+/g, '-').toLowerCase()}.md` : 'page.md'
+    const blob = new Blob([content], { type: 'text/markdown' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    a.click()
+    URL.revokeObjectURL(url)
+  }, [content, title])
 
   const components: Components = React.useMemo(
     () => ({
@@ -670,7 +688,25 @@ export function WikiContent({ content, title, onNavigate, onSourceClick, documen
             hasToc ? 'flex-1 max-w-[720px]' : 'w-full',
           )}>
             {title && (
-              <h1 className="text-3xl font-bold tracking-tight mb-2">{title}</h1>
+              <div className="flex items-start justify-between gap-4 mb-2">
+                <h1 className="text-3xl font-bold tracking-tight">{title}</h1>
+                <div className="flex items-center gap-1 shrink-0 mt-1.5">
+                  <button
+                    onClick={handleCopy}
+                    className="p-1.5 rounded-md text-muted-foreground/40 hover:text-muted-foreground hover:bg-accent transition-colors cursor-pointer"
+                    title="Copy markdown"
+                  >
+                    {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+                  </button>
+                  <button
+                    onClick={handleDownload}
+                    className="p-1.5 rounded-md text-muted-foreground/40 hover:text-muted-foreground hover:bg-accent transition-colors cursor-pointer"
+                    title="Download as .md"
+                  >
+                    <Download className="size-3.5" />
+                  </button>
+                </div>
+              </div>
             )}
             <div className="wiki-content text-[15px] leading-relaxed">
               <ReactMarkdown

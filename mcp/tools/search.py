@@ -30,7 +30,8 @@ def _extract_snippet(content: str, query: str) -> str:
 async def _list_all_kbs(user_id: str) -> str:
     kbs = await scoped_query(
         user_id,
-        "SELECT name, slug, created_at FROM knowledge_bases ORDER BY created_at DESC",
+        "SELECT name, slug, created_at FROM knowledge_bases WHERE user_id = $1 ORDER BY created_at DESC",
+        user_id,
     )
     if not kbs:
         return "No knowledge bases found. Create one first."
@@ -40,8 +41,8 @@ async def _list_all_kbs(user_id: str) -> str:
         doc_count = await scoped_queryrow(
             user_id,
             "SELECT count(*) as cnt FROM documents WHERE knowledge_base_id = ("
-            "SELECT id FROM knowledge_bases WHERE slug = $1) AND NOT archived",
-            kb["slug"],
+            "SELECT id FROM knowledge_bases WHERE slug = $1 AND user_id = $2) AND NOT archived",
+            kb["slug"], user_id,
         )
         cnt = doc_count["cnt"] if doc_count else 0
         lines.append(f"  {kb['slug']}/ — {kb['name']} ({cnt} documents)")
@@ -52,9 +53,9 @@ async def _list_documents(user_id: str, kb: dict, target: str, tags: list[str] |
     docs = await scoped_query(
         user_id,
         "SELECT id, filename, title, path, file_type, tags, page_count, updated_at "
-        "FROM documents WHERE knowledge_base_id = $1 AND NOT archived "
+        "FROM documents WHERE knowledge_base_id = $1 AND NOT archived AND user_id = $2 "
         "ORDER BY path, filename",
-        kb["id"],
+        kb["id"], user_id,
     )
 
     if target not in ("*", "**", "**/*"):
@@ -115,10 +116,11 @@ async def _search_chunks(
         f"WHERE dc.knowledge_base_id = $1 "
         f"  AND dc.content &@~ $2 "
         f"  AND NOT d.archived"
+        f"  AND d.user_id = $3"
         f"{path_filter} "
         f"ORDER BY score DESC, dc.chunk_index "
         f"LIMIT {limit}",
-        kb["id"], query,
+        kb["id"], query, user_id,
     )
 
     if tags:
@@ -149,11 +151,11 @@ async def _query_references(user_id: str, kb: dict, path: str, query: str) -> st
             user_id,
             "SELECT d.filename, d.title, d.path, d.file_type "
             "FROM documents d "
-            "WHERE d.knowledge_base_id = $1 AND NOT d.archived "
+            "WHERE d.knowledge_base_id = $1 AND NOT d.archived AND d.user_id = $2 "
             "  AND d.path NOT LIKE '/wiki/%%' "
             "  AND d.id NOT IN (SELECT target_document_id FROM document_references WHERE reference_type = 'cites') "
             "ORDER BY d.filename",
-            kb["id"],
+            kb["id"], user_id,
         )
         if not rows:
             return "All sources are cited in at least one wiki page."
@@ -167,10 +169,10 @@ async def _query_references(user_id: str, kb: dict, path: str, query: str) -> st
             user_id,
             "SELECT d.filename, d.title, d.path, d.stale_since "
             "FROM documents d "
-            "WHERE d.knowledge_base_id = $1 AND NOT d.archived "
+            "WHERE d.knowledge_base_id = $1 AND NOT d.archived AND d.user_id = $2 "
             "  AND d.stale_since IS NOT NULL "
             "ORDER BY d.stale_since DESC",
-            kb["id"],
+            kb["id"], user_id,
         )
         if not rows:
             return "No stale pages found."
@@ -189,8 +191,8 @@ async def _query_references(user_id: str, kb: dict, path: str, query: str) -> st
     doc = await scoped_queryrow(
         user_id,
         "SELECT id, filename, title, path FROM documents "
-        "WHERE knowledge_base_id = $1 AND filename = $2 AND path = $3 AND NOT archived",
-        kb["id"], filename, dir_path,
+        "WHERE knowledge_base_id = $1 AND filename = $2 AND path = $3 AND NOT archived AND user_id = $4",
+        kb["id"], filename, dir_path, user_id,
     )
     if not doc:
         return f"Document '{path}' not found."
@@ -201,9 +203,9 @@ async def _query_references(user_id: str, kb: dict, path: str, query: str) -> st
         "SELECT d.filename, d.title, d.path, dr.reference_type, dr.page "
         "FROM document_references dr "
         "JOIN documents d ON dr.target_document_id = d.id "
-        "WHERE dr.source_document_id = $1 AND NOT d.archived "
+        "WHERE dr.source_document_id = $1 AND NOT d.archived AND d.user_id = $2 "
         "ORDER BY dr.reference_type, d.path, d.filename",
-        doc["id"],
+        doc["id"], user_id,
     )
 
     # Backlinks (what references this page)
@@ -212,9 +214,9 @@ async def _query_references(user_id: str, kb: dict, path: str, query: str) -> st
         "SELECT d.filename, d.title, d.path, dr.reference_type, dr.page "
         "FROM document_references dr "
         "JOIN documents d ON dr.source_document_id = d.id "
-        "WHERE dr.target_document_id = $1 AND NOT d.archived "
+        "WHERE dr.target_document_id = $1 AND NOT d.archived AND d.user_id = $2 "
         "ORDER BY dr.reference_type, d.path, d.filename",
-        doc["id"],
+        doc["id"], user_id,
     )
 
     title = doc["title"] or doc["filename"]

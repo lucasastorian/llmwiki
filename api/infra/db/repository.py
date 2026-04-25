@@ -26,6 +26,12 @@ class DocumentRepository(Protocol):
         """Get minimal fields needed for URL generation: {id, user_id, filename, file_type}."""
         ...
 
+    async def find_by_path(
+        self, kb_id: str, user_id: str, filename: str, path: str,
+    ) -> dict | None:
+        """Find a non-archived document by filename and path."""
+        ...
+
     async def create_note(
         self, kb_id: str, user_id: str, filename: str, path: str,
         title: str, content: str, tags: list[str],

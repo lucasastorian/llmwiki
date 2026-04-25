@@ -91,7 +91,10 @@ Chronological record of ingests, queries, and maintenance passes.
 
 @router.get("", response_model=list[KnowledgeBaseOut])
 async def list_knowledge_bases(db: Annotated[ScopedDB, Depends(get_scoped_db)]):
-    rows = await db.fetch(f"{_KB_WITH_COUNTS} ORDER BY kb.updated_at DESC")
+    rows = await db.fetch(
+        f"{_KB_WITH_COUNTS} WHERE kb.user_id = $1 ORDER BY kb.updated_at DESC",
+        db.user_id,
+    )
     return rows
 
 
@@ -100,7 +103,10 @@ async def get_knowledge_base(
     kb_id: UUID,
     db: Annotated[ScopedDB, Depends(get_scoped_db)],
 ):
-    row = await db.fetchrow(f"{_KB_WITH_COUNTS} WHERE kb.id = $1", kb_id)
+    row = await db.fetchrow(
+        f"{_KB_WITH_COUNTS} WHERE kb.id = $1 AND kb.user_id = $2",
+        kb_id, db.user_id,
+    )
     if not row:
         raise HTTPException(status_code=404, detail="Knowledge base not found")
     return row

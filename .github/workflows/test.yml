@@ -39,4 +39,4 @@ jobs:
           pip install cryptography
 
       - name: Run tests
-        run: pytest -v
+        run: MODE=hosted pytest -v

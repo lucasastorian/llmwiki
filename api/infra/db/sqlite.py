@@ -98,6 +98,17 @@ class SQLiteDocumentRepository:
         row = await cursor.fetchone()
         return _row_to_dict(cursor, row) if row else None
 
+    async def find_by_path(
+        self, kb_id: str, user_id: str, filename: str, path: str,
+    ) -> dict | None:
+        cursor = await self._db.execute(
+            "SELECT * FROM documents WHERE knowledge_base_id = ? AND user_id = ? "
+            "AND filename = ? AND path = ? AND NOT archived",
+            (kb_id, user_id, filename, path),
+        )
+        row = await cursor.fetchone()
+        return _row_to_dict(cursor, row) if row else None
+
     async def create_note(
         self, kb_id: str, user_id: str, filename: str, path: str,
         title: str, content: str, tags: list[str],

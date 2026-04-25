@@ -97,15 +97,15 @@ async def list_documents(
         rows = await db.fetch(
             f"SELECT {_DOC_COLUMNS} "
             "FROM documents WHERE knowledge_base_id = $1 AND archived = false AND path = $2 "
-            "ORDER BY filename",
-            kb_id, path,
+            "AND user_id = $3 ORDER BY filename",
+            kb_id, path, db.user_id,
         )
     else:
         rows = await db.fetch(
             f"SELECT {_DOC_COLUMNS} "
             "FROM documents WHERE knowledge_base_id = $1 AND archived = false "
-            "ORDER BY filename",
-            kb_id,
+            "AND user_id = $2 ORDER BY filename",
+            kb_id, db.user_id,
         )
     return rows
 
@@ -116,8 +116,8 @@ async def get_document(
     db: Annotated[ScopedDB, Depends(get_scoped_db)],
 ):
     row = await db.fetchrow(
-        f"SELECT {_DOC_COLUMNS} FROM documents WHERE id = $1",
-        doc_id,
+        f"SELECT {_DOC_COLUMNS} FROM documents WHERE id = $1 AND user_id = $2",
+        doc_id, db.user_id,
     )
     if not row:
         raise HTTPException(status_code=404, detail="Document not found")
@@ -131,8 +131,8 @@ async def get_document_url(
     request: Request,
 ):
     row = await db.fetchrow(
-        "SELECT id, user_id, filename, file_type FROM documents WHERE id = $1",
-        doc_id,
+        "SELECT id, user_id, filename, file_type FROM documents WHERE id = $1 AND user_id = $2",
+        doc_id, db.user_id,
     )
     if not row:
         raise HTTPException(status_code=404, detail="Document not found")
@@ -160,8 +160,8 @@ async def get_document_content(
     db: Annotated[ScopedDB, Depends(get_scoped_db)],
 ):
     row = await db.fetchrow(
-        "SELECT id, content, version FROM documents WHERE id = $1",
-        doc_id,
+        "SELECT id, content, version FROM documents WHERE id = $1 AND user_id = $2",
+        doc_id, db.user_id,
     )
     if not row:
         raise HTTPException(status_code=404, detail="Document not found")
@@ -198,6 +198,18 @@ async def create_note(
     tags: list[str] = []
     if isinstance(meta.get("tags"), list):
         tags = [str(t) for t in meta["tags"] if t is not None]
+
+    # Check for duplicate filename at the same path
+    existing = await pool.fetchval(
+        "SELECT id FROM documents WHERE knowledge_base_id = $1 AND user_id = $2 "
+        "AND filename = $3 AND path = $4 AND NOT archived",
+        kb_id, user_id, body.filename, body.path,
+    )
+    if existing:
+        raise HTTPException(
+            status_code=409,
+            detail=f"'{body.filename}' already exists at {body.path}",
+        )
 
     conn = await pool.acquire()
     try:
@@ -237,7 +249,8 @@ async def update_document_content(
         raise HTTPException(status_code=404, detail="Document not found")
 
     kb_id = await pool.fetchval(
-        "SELECT knowledge_base_id::text FROM documents WHERE id = $1", doc_id,
+        "SELECT knowledge_base_id::text FROM documents WHERE id = $1 AND user_id = $2",
+        doc_id, user_id,
     )
     if kb_id:
         chunks = chunk_text(body.content) if body.content else []

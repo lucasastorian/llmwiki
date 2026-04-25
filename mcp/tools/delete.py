@@ -45,8 +45,8 @@ def register(mcp: FastMCP) -> None:
             docs = await scoped_query(
                 user_id,
                 "SELECT id, filename, title, path FROM documents "
-                "WHERE knowledge_base_id = $1 AND NOT archived ORDER BY path, filename",
-                kb["id"],
+                "WHERE knowledge_base_id = $1 AND NOT archived AND user_id = $2 ORDER BY path, filename",
+                kb["id"], user_id,
             )
             glob_pat = "/" + path.lstrip("/") if not path.startswith("/") else path
             matched = [d for d in docs if glob_match(d["path"] + d["filename"], glob_pat)]
@@ -56,8 +56,8 @@ def register(mcp: FastMCP) -> None:
             doc = await scoped_queryrow(
                 user_id,
                 "SELECT id, filename, title, path FROM documents "
-                "WHERE knowledge_base_id = $1 AND filename = $2 AND path = $3 AND NOT archived",
-                kb["id"], filename, dir_path,
+                "WHERE knowledge_base_id = $1 AND filename = $2 AND path = $3 AND NOT archived AND user_id = $4",
+                kb["id"], filename, dir_path, user_id,
             )
             matched = [doc] if doc else []
 

@@ -9,13 +9,9 @@ import { useKBDocuments } from '@/hooks/useKBDocuments'
 import { apiFetch } from '@/lib/api'
 import { toast } from 'sonner'
 import { KBSidenav } from '@/components/kb/KBSidenav'
+import { FilesGrid } from '@/components/kb/FilesGrid'
 import { SelectionActionBar } from '@/components/kb/SelectionActionBar'
 import { WikiContent, extractTocFromMarkdown } from '@/components/wiki/WikiContent'
-import { NoteEditor } from '@/components/editor/NoteEditor'
-import {
-  PdfDocViewer, ImageViewer, HtmlDocViewer, ContentViewer,
-  UnsupportedViewer, ProcessingViewer, FailedViewer,
-} from '@/components/kb/DocViewers'
 import type { DocumentListItem, WikiNode, WikiSubsection } from '@/lib/types'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
@@ -58,10 +54,6 @@ function writeCachedWikiPath(kbId: string, path: string | null): void {
   }
 }
 
-function isNoteFile(doc: DocumentListItem): boolean {
-  const ft = doc.file_type
-  return ft === 'md' || ft === 'txt' || ft === 'note'
-}
 
 function buildTreeFromDocs(docs: DocumentListItem[]): WikiNode[] {
   // Sort all docs by sort_order first
@@ -179,13 +171,9 @@ export function KBDetail({ kbId, kbName }: Props) {
   const [indexLoaded, setIndexLoaded] = React.useState(false)
   const [selectionHydrated, setSelectionHydrated] = React.useState(false)
 
-  // Source doc selection state — synced with ?doc= query param
-  const [activeSourceDocId, setActiveSourceDocId] = React.useState<string | null>(null)
-  const [sourceInitialPage, setSourceInitialPage] = React.useState<number | undefined>()
-  const activeSourceDoc = React.useMemo(
-    () => activeSourceDocId ? sourceDocs.find((d) => d.id === activeSourceDocId) ?? null : null,
-    [activeSourceDocId, sourceDocs],
-  )
+  // Files grid view state
+  const [filesViewActive, setFilesViewActive] = React.useState(false)
+
   const docParam = searchParams.get('doc')
   const pageParam = searchParams.get('page')
 
@@ -268,9 +256,6 @@ export function KBDetail({ kbId, kbName }: Props) {
 
     if (succeeded.length > 0) {
       setDocuments((prev) => prev.filter((d) => !succeeded.includes(d.id)))
-      if (activeSourceDocId && succeeded.includes(activeSourceDocId)) {
-        setActiveSourceDocId(null)
-      }
     }
     if (failed.length > 0) {
       toast.error(`Failed to delete ${failed.length} document${failed.length > 1 ? 's' : ''}`)
@@ -286,18 +271,15 @@ export function KBDetail({ kbId, kbName }: Props) {
 
     if (docParam) {
       if (!documents.length) return
-      const num = parseInt(docParam, 10)
-      const doc = documents.find((d) => d.document_number === num)
-      if (doc) {
-        setActiveSourceDocId(doc.id)
-        setWikiActivePath(null)
-      }
+      // Open files view for doc links
+      setFilesViewActive(true)
+      setWikiActivePath(null)
       setUrlRestored(true)
       return
     }
 
     if (pageParam) {
-      setActiveSourceDocId(null)
+      setFilesViewActive(false)
       setWikiActivePath(pageParam.replace(/^\/wiki\/?/, ''))
       setUrlRestored(true)
       return
@@ -326,36 +308,25 @@ export function KBDetail({ kbId, kbName }: Props) {
 
   const handleWikiSelect = React.useCallback((path: string) => {
     setWikiActivePath(path)
-    setActiveSourceDocId(null)
+
+    setFilesViewActive(false)
     updateUrl({ pagePath: path })
   }, [updateUrl])
 
-  const handleSourceSelect = React.useCallback((doc: DocumentListItem) => {
-    setActiveSourceDocId(doc.id)
-    setSourceInitialPage(undefined)
-    setWikiActivePath(null)
-    clearSelection()
-    updateUrl({ docNumber: doc.document_number })
-  }, [updateUrl, clearSelection])
-
-  const handleCitationSourceClick = React.useCallback((filename: string, page?: number) => {
-    const lower = filename.toLowerCase()
-
-    const match = sourceDocs.find((d) => {
-      const fn = d.filename.toLowerCase()
-      const title = (d.title || '').toLowerCase()
-      return (
-        fn === lower ||
-        title === lower ||
-        fn === lower + '.md' ||
-        fn.replace(/\.md$/, '') === lower
-      )
-    })
-    if (match) {
-      setSourceInitialPage(page)
-      handleSourceSelect(match)
+  const handleFilesToggle = React.useCallback(() => {
+    setFilesViewActive((prev) => !prev)
+    if (!filesViewActive) {
+      // Entering files view — deselect wiki
+  
+      setWikiActivePath(null)
     }
-  }, [sourceDocs, handleSourceSelect])
+  }, [filesViewActive])
+
+  const handleCitationSourceClick = React.useCallback((filename: string, _page?: number) => {
+    // Open the files view — the user can find the source there
+    setFilesViewActive(true)
+    setWikiActivePath(null)
+  }, [])
 
   // Restore the last-opened wiki page after a hard reload.
   React.useEffect(() => {
@@ -405,14 +376,14 @@ export function KBDetail({ kbId, kbName }: Props) {
 
   // Auto-select first wiki page
   React.useEffect(() => {
-    if (indexLoaded && urlRestored && !activeSourceDocId && !wikiActivePath && wikiTree.length) {
+    if (indexLoaded && urlRestored && !filesViewActive && !wikiActivePath && wikiTree.length) {
       const first = findFirstPath(wikiTree)
       if (first) {
         setWikiActivePath(first)
         updateUrl({ pagePath: first })
       }
     }
-  }, [indexLoaded, wikiTree, wikiActivePath, activeSourceDocId, urlRestored, updateUrl])
+  }, [indexLoaded, wikiTree, wikiActivePath, filesViewActive, urlRestored, updateUrl])
 
   // Track the active wiki doc's version to avoid re-fetching on unrelated updates
   const activeWikiDoc = React.useMemo(() => {
@@ -470,7 +441,7 @@ export function KBDetail({ kbId, kbName }: Props) {
   const handleWikiNavigate = React.useCallback(
     (path: string) => {
       let nextPath = path
-      setActiveSourceDocId(null)
+  
       if (path.startsWith('/wiki/')) {
         nextPath = path.replace(/^\/wiki\/?/, '')
       } else if (path.startsWith('/')) {
@@ -508,11 +479,12 @@ export function KBDetail({ kbId, kbName }: Props) {
         body: JSON.stringify({ filename: 'Untitled.md', path: '/' }),
       })
       setDocuments((prev) => [data, ...prev])
-      setActiveSourceDocId(data.id)
-      setWikiActivePath(null)
-      updateUrl({ docNumber: data.document_number })
-    } catch {
-      toast.error('Failed to create note')
+      if (!filesViewActive) {
+        setFilesViewActive(true)
+        setWikiActivePath(null)
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to create note')
     }
   }
 
@@ -526,11 +498,12 @@ export function KBDetail({ kbId, kbName }: Props) {
     })
       .then((data) => {
         setDocuments((prev) => [data, ...prev])
-        setActiveSourceDocId(data.id)
-        setWikiActivePath(null)
-        updateUrl({ docNumber: data.document_number })
+        if (!filesViewActive) {
+          setFilesViewActive(true)
+          setWikiActivePath(null)
+        }
       })
-      .catch(() => toast.error('Failed to create folder'))
+      .catch((err: Error) => toast.error(err.message || 'Failed to create folder'))
   }
 
   const handleMoveDocument = async (docId: string, targetPath: string) => {
@@ -553,7 +526,6 @@ export function KBDetail({ kbId, kbName }: Props) {
     try {
       await apiFetch(`/v1/documents/${docId}`, t, { method: 'DELETE' })
       setDocuments((prev) => prev.filter((d) => d.id !== docId))
-      if (activeSourceDocId === docId) setActiveSourceDocId(null)
     } catch {
       toast.error('Failed to delete document')
     }
@@ -710,8 +682,8 @@ export function KBDetail({ kbId, kbName }: Props) {
     loading ||
     !selectionHydrated ||
     !urlRestored ||
-    (!activeSourceDocId && hasNavigableWiki && !wikiActivePath) ||
-    (!activeSourceDocId && !!wikiActivePath && pageLoadedPath !== wikiActivePath)
+    (!filesViewActive && hasNavigableWiki && !wikiActivePath) ||
+    (!filesViewActive && !!wikiActivePath && pageLoadedPath !== wikiActivePath)
 
   return (
     <div
@@ -737,23 +709,16 @@ export function KBDetail({ kbId, kbName }: Props) {
             kbId={kbId}
             kbName={kbName}
             wikiTree={wikiTree}
-            wikiActivePath={wikiActivePath}
+            wikiActivePath={filesViewActive ? null : wikiActivePath}
             onWikiNavigate={handleWikiSelect}
             wikiActiveSubsections={wikiActiveSubsections}
             onWikiSubsectionClick={handleSubsectionClick}
             sourceDocs={sourceDocs}
-            activeSourceDocId={activeSourceDocId}
-            onSourceSelect={handleSourceSelect}
             hasWiki={hasNavigableWiki}
             loading={loading}
-            onCreateNote={handleCreateNote}
-            onCreateFolder={handleCreateFolder}
             onUpload={handleUploadClick}
-            onDeleteDocument={handleDeleteDocument}
-            onRenameDocument={handleRenameDocument}
-            onMoveDocument={handleMoveDocument}
-            selectedIds={selectedIds}
-            onSelect={handleSelect}
+            filesViewActive={filesViewActive}
+            onFilesToggle={handleFilesToggle}
           />
         </div>
         <div className="flex-1 min-w-0">
@@ -761,32 +726,15 @@ export function KBDetail({ kbId, kbName }: Props) {
             <div className="flex items-center justify-center h-full">
               <Loader2 className="size-5 animate-spin text-muted-foreground" />
             </div>
-          ) : activeSourceDocId && activeSourceDoc ? (
-            isNoteFile(activeSourceDoc) ? (
-              <NoteEditor
-                key={activeSourceDocId}
-                documentId={activeSourceDocId}
-                initialTitle={activeSourceDoc.title ?? activeSourceDoc.filename}
-                initialTags={activeSourceDoc.tags}
-                initialDate={activeSourceDoc.date}
-                initialProperties={activeSourceDoc.metadata?.properties as Record<string, unknown> | undefined}
-                embedded
-              />
-            ) : activeSourceDoc.status === 'pending' || activeSourceDoc.status === 'processing' ? (
-              <ProcessingViewer title={activeSourceDoc.title || activeSourceDoc.filename} />
-            ) : activeSourceDoc.status === 'failed' ? (
-              <FailedViewer title={activeSourceDoc.title || activeSourceDoc.filename} errorMessage={activeSourceDoc.error_message} />
-            ) : ['pdf', 'pptx', 'ppt', 'docx', 'doc'].includes(activeSourceDoc.file_type) ? (
-              <PdfDocViewer documentId={activeSourceDocId} title={activeSourceDoc.title || activeSourceDoc.filename} initialPage={sourceInitialPage} />
-            ) : ['png', 'jpg', 'jpeg', 'webp', 'gif'].includes(activeSourceDoc.file_type) ? (
-              <ImageViewer documentId={activeSourceDocId} title={activeSourceDoc.title || activeSourceDoc.filename} />
-            ) : ['html', 'htm'].includes(activeSourceDoc.file_type) ? (
-              <HtmlDocViewer documentId={activeSourceDocId} title={activeSourceDoc.title || activeSourceDoc.filename} />
-            ) : ['xlsx', 'xls', 'csv'].includes(activeSourceDoc.file_type) ? (
-              <ContentViewer documentId={activeSourceDocId} title={activeSourceDoc.title || activeSourceDoc.filename} fileType={activeSourceDoc.file_type} />
-            ) : (
-              <UnsupportedViewer title={activeSourceDoc.title || activeSourceDoc.filename} />
-            )
+          ) : filesViewActive ? (
+            <FilesGrid
+              documents={documents}
+              onDeleteDocument={handleDeleteDocument}
+              onRenameDocument={handleRenameDocument}
+              onUpload={handleUploadClick}
+              onCreateNote={handleCreateNote}
+              onCreateFolder={handleCreateFolder}
+            />
           ) : pageLoading ? (
             <div className="flex items-center justify-center h-full">
               <Loader2 className="size-5 animate-spin text-muted-foreground" />
@@ -839,4 +787,5 @@ export function KBDetail({ kbId, kbName }: Props) {
     </div>
   )
 }
+
 

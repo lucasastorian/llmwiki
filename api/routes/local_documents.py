@@ -177,6 +177,14 @@ async def create_note(
     if isinstance(meta.get("tags"), list):
         tags = [str(t) for t in meta["tags"] if t is not None]
 
+    # Check for duplicate
+    existing = await doc_repo.find_by_path(kb_id, user_id, body.filename, body.path)
+    if existing:
+        raise HTTPException(
+            status_code=409,
+            detail=f"'{body.filename}' already exists at {body.path}",
+        )
+
     # Write file to disk first — resolve safely
     relative = (body.path.rstrip("/") + "/" + body.filename).lstrip("/")
     file_path = _safe_resolve(relative)

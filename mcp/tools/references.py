@@ -80,8 +80,8 @@ async def update_references(
     all_docs = await scoped_query(
         user_id,
         "SELECT id::text, filename, title, path, file_type FROM documents "
-        "WHERE knowledge_base_id = $1 AND NOT archived",
-        kb_id,
+        "WHERE knowledge_base_id = $1 AND NOT archived AND user_id = $2",
+        kb_id, user_id,
     )
 
     # Build lookup maps
@@ -165,15 +165,15 @@ async def update_references(
     )
 
 
-async def propagate_staleness(document_id: str) -> None:
+async def propagate_staleness(user_id: str, document_id: str) -> None:
     """Flag all documents that link_to this document as potentially stale."""
     await service_execute(
         "UPDATE documents SET stale_since = now() "
         "WHERE id IN ("
         "  SELECT source_document_id FROM document_references "
         "  WHERE target_document_id = $1 AND reference_type = 'links_to'"
-        ") AND stale_since IS NULL",
-        document_id,
+        ") AND stale_since IS NULL AND user_id = $2",
+        document_id, user_id,
     )
 
 
@@ -184,9 +184,9 @@ async def get_impact_surface(user_id: str, document_id: str) -> str:
         "SELECT d.path, d.filename, d.title, dr.reference_type "
         "FROM document_references dr "
         "JOIN documents d ON dr.source_document_id = d.id "
-        "WHERE dr.target_document_id = $1 AND NOT d.archived "
+        "WHERE dr.target_document_id = $1 AND NOT d.archived AND d.user_id = $2 "
         "ORDER BY d.path, d.filename",
-        document_id,
+        document_id, user_id,
     )
     if not rows:
         return ""
@@ -207,9 +207,9 @@ async def get_backlinks_summary(user_id: str, document_id: str) -> str:
         "SELECT d.path, d.filename, d.title, dr.reference_type "
         "FROM document_references dr "
         "JOIN documents d ON dr.source_document_id = d.id "
-        "WHERE dr.target_document_id = $1 AND NOT d.archived "
+        "WHERE dr.target_document_id = $1 AND NOT d.archived AND d.user_id = $2 "
         "ORDER BY d.path, d.filename",
-        document_id,
+        document_id, user_id,
     )
     if not rows:
         return ""

@@ -182,7 +182,8 @@ def register(mcp: FastMCP) -> None:
             "SELECT name, slug, "
             "  (SELECT count(*) FROM documents d WHERE d.knowledge_base_id = kb.id AND d.path NOT LIKE '/wiki/%%' AND NOT d.archived) as source_count, "
             "  (SELECT count(*) FROM documents d WHERE d.knowledge_base_id = kb.id AND d.path LIKE '/wiki/%%' AND NOT d.archived) as wiki_count "
-            "FROM knowledge_bases kb ORDER BY created_at DESC",
+            "FROM knowledge_bases kb WHERE kb.user_id = $1 ORDER BY created_at DESC",
+            user_id,
         )
         if not kbs:
             return GUIDE_TEXT + "No knowledge bases yet. Create one at " + settings.APP_URL + "/wikis"

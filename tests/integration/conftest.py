@@ -31,6 +31,7 @@ async def client(pool):
     app.state.pool = pool
     app.state.s3_service = None
     app.state.ocr_service = None
+    app.state.auth_provider = None
 
     seed_jwks_cache()
 

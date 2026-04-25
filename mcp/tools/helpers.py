@@ -49,8 +49,8 @@ def resolve_path(path: str) -> tuple[str, str]:
 async def resolve_kb(user_id: str, slug: str) -> dict | None:
     return await scoped_queryrow(
         user_id,
-        "SELECT id, name, slug FROM knowledge_bases WHERE slug = $1",
-        slug,
+        "SELECT id, name, slug FROM knowledge_bases WHERE slug = $1 AND user_id = $2",
+        slug, user_id,
     )
 
 

@@ -144,9 +144,9 @@ async def _read_batch(user_id: str, kb: dict, path: str) -> str:
     docs = await scoped_query(
         user_id,
         "SELECT id, filename, title, path, content, tags, file_type, page_count "
-        "FROM documents WHERE knowledge_base_id = $1 AND NOT archived "
+        "FROM documents WHERE knowledge_base_id = $1 AND NOT archived AND user_id = $2 "
         "ORDER BY path, filename",
-        kb["id"],
+        kb["id"], user_id,
     )
 
     glob_pat = "/" + path.lstrip("/") if not path.startswith("/") else path
@@ -268,16 +268,16 @@ def register(mcp: FastMCP) -> None:
             user_id,
             "SELECT id, user_id, filename, title, path, content, tags, version, file_type, "
             "page_count, created_at, updated_at "
-            "FROM documents WHERE knowledge_base_id = $1 AND filename = $2 AND path = $3 AND NOT archived",
-            kb["id"], filename, dir_path,
+            "FROM documents WHERE knowledge_base_id = $1 AND filename = $2 AND path = $3 AND NOT archived AND user_id = $4",
+            kb["id"], filename, dir_path, user_id,
         )
         if not doc:
             doc = await scoped_queryrow(
                 user_id,
                 "SELECT id, user_id, filename, title, path, content, tags, version, file_type, "
                 "page_count, created_at, updated_at "
-                "FROM documents WHERE knowledge_base_id = $1 AND (filename = $2 OR title = $2) AND NOT archived",
-                kb["id"], path.lstrip("/").split("/")[-1],
+                "FROM documents WHERE knowledge_base_id = $1 AND (filename = $2 OR title = $2) AND NOT archived AND user_id = $3",
+                kb["id"], path.lstrip("/").split("/")[-1], user_id,
             )
 
         if not doc:
