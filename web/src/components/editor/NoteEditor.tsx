@@ -68,6 +68,8 @@ interface NoteEditorProps {
   hideToolbar?: boolean
   /** Called when the tiptap editor is ready — lets the parent render formatting buttons externally */
   onEditorReady?: (editor: import('@tiptap/react').Editor) => void
+  /** Register a callback ref that the parent can call to update the title from outside (e.g. breadcrumb input) */
+  titleChangeRef?: React.MutableRefObject<((title: string) => void) | null>
 }
 
 function getAccessToken(): string | null {
@@ -87,6 +89,7 @@ export function NoteEditor({
   embedded,
   hideToolbar,
   onEditorReady,
+  titleChangeRef,
 }: NoteEditorProps) {
   const [title, setTitle] = React.useState(initialTitle ?? '')
   const [date, setDate] = React.useState<string>(initialDate ?? '')
@@ -265,6 +268,22 @@ export function NoteEditor({
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
     saveTimerRef.current = setTimeout(save, AUTOSAVE_DELAY)
   }, [save])
+
+  // Expose title change handler so parent toolbar can update the title
+  React.useEffect(() => {
+    if (!titleChangeRef) return
+    titleChangeRef.current = (val: string) => {
+      const sanitized = sanitizeTitle(val)
+      setTitle(sanitized)
+      latestTitleRef.current = sanitized
+      dirtyRef.current = true
+      metaDirtyRef.current = true
+      setSaveStatus('idle')
+      scheduleSave()
+      onTitleChange?.(sanitized)
+    }
+    return () => { titleChangeRef.current = null }
+  }, [titleChangeRef, scheduleSave, onTitleChange])
 
   React.useEffect(() => {
     return () => {

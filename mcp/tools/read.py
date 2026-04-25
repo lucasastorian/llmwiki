@@ -1,3 +1,5 @@
+"""Read tool — retrieve document content from the knowledge vault."""
+
 import base64
 import json
 import logging
@@ -24,12 +26,19 @@ _IMG_MIME = {
     "gif": "image/gif",
 }
 
+_IMAGE_TYPES = {"png", "jpg", "jpeg", "webp", "gif"}
+_PAGE_TYPES = {"pdf", "pptx", "ppt", "docx", "doc", "xlsx", "xls", "csv"}
+_SPREADSHEET_TYPES = {"xlsx", "xls", "csv"}
+_TEXT_TYPES = {"md", "txt", "csv", "html", "svg", "json", "xml"}
+
 
 def _text(s: str) -> TextContent:
+    """Wrap a string in an MCP TextContent block."""
     return TextContent(type="text", text=s)
 
 
 def _image(data: bytes, fmt: str) -> ImageContent:
+    """Wrap image bytes in an MCP ImageContent block."""
     return ImageContent(
         type="image",
         data=base64.b64encode(data).decode(),
@@ -38,6 +47,7 @@ def _image(data: bytes, fmt: str) -> ImageContent:
 
 
 def _extract_sections(content: str, section_names: list[str]) -> str:
+    """Extract named markdown sections from content."""
     lines = content.split("\n")
     sections = []
     current_section = None
@@ -64,161 +74,252 @@ def _extract_sections(content: str, section_names: list[str]) -> str:
     return "\n\n".join(matched)
 
 
-async def _read_pages(
-    doc: dict, kb: dict, header: str, pages_str: str, include_images: bool = False,
-) -> str | list:
-    max_page = doc["page_count"] or 1
-    page_nums = parse_page_range(pages_str, max_page)
-    if not page_nums:
-        return header + f"Invalid page range: {pages_str} (document has {max_page} pages)"
+class ReadHandler:
+    """Reads documents from the knowledge vault."""
 
-    user_id = str(doc["user_id"])
-    doc_id = str(doc["id"])
+    def __init__(self, user_id: str, kb: dict):
+        self.user_id = user_id
+        self.kb = kb
+        self.slug = kb["slug"]
 
-    page_rows = await scoped_query(
-        user_id,
-        "SELECT page, content, elements FROM document_pages "
-        "WHERE document_id = $1 AND page = ANY($2) ORDER BY page",
-        doc["id"], page_nums,
-    )
+    async def read(self, path: str, pages: str, sections: list[str] | None, include_images: bool) -> str | list:
+        """Read a single document or batch via glob pattern."""
+        if "*" in path or "?" in path:
+            return await self._read_batch(path)
+        return await self._read_single(path, pages, sections, include_images)
 
-    if not page_rows:
-        return header + f"No page data found for pages {pages_str}."
+    async def _read_single(self, path: str, pages: str, sections: list[str] | None, include_images: bool) -> str | list:
+        """Read a single document by path."""
+        doc = await self._fetch_document(path)
+        if not doc:
+            return f"Document '{path}' not found in {self.slug}."
 
-    content_blocks: list[TextContent | ImageContent] = [_text(header)]
-    has_images = False
+        header = self._build_header(doc)
+        file_type = doc["file_type"] or ""
 
-    for row in page_rows:
-        content_blocks.append(_text(f"**— Page {row['page']} —**\n\n{row['content']}"))
+        if file_type in _IMAGE_TYPES:
+            return await self._read_image(doc, header, include_images)
 
-        if not include_images:
-            continue
+        if file_type in _PAGE_TYPES and pages:
+            return await self._read_pages(doc, header, pages, include_images)
 
-        elements = row["elements"]
-        if not elements:
-            continue
-        if isinstance(elements, str):
-            elements = json.loads(elements)
+        if file_type in _SPREADSHEET_TYPES and not pages:
+            return await self._read_spreadsheet_index(doc, header)
 
-        images = elements.get("images", [])
-        for img_meta in images:
-            img_id = img_meta.get("id")
-            if not img_id:
+        content = doc["content"] or ""
+        if sections:
+            content = _extract_sections(content, sections)
+
+        backlinks = await get_backlinks_summary(self.user_id, str(doc["id"]))
+        return header + content + backlinks
+
+    async def _read_batch(self, path: str) -> str:
+        """Batch-read documents matching a glob pattern."""
+        docs = await scoped_query(
+            self.user_id,
+            "SELECT id, filename, title, path, content, tags, file_type, page_count "
+            "FROM documents WHERE knowledge_base_id = $1 AND NOT archived AND user_id = $2 "
+            "ORDER BY path, filename",
+            self.kb["id"], self.user_id,
+        )
+
+        glob_pat = "/" + path.lstrip("/") if not path.startswith("/") else path
+        docs = [d for d in docs if glob_match(d["path"] + d["filename"], glob_pat)]
+
+        if not docs:
+            return f"No documents matching `{path}` in {self.slug}."
+
+        parts = []
+        chars_used = 0
+        truncated_docs = 0
+        skipped_docs = []
+
+        for doc in docs:
+            if chars_used >= MAX_BATCH_CHARS:
+                skipped_docs.append(doc)
                 continue
-            s3_key = f"{user_id}/{doc_id}/images/{img_id}"
-            img_bytes = await load_s3_bytes(s3_key)
-            if img_bytes:
-                fmt = "jpeg" if img_id.endswith((".jpg", ".jpeg")) else "png"
-                content_blocks.append(_image(img_bytes, fmt))
-                has_images = True
 
-    if has_images:
-        return content_blocks
-    return "\n\n".join(b.text for b in content_blocks)
+            link = deep_link(self.slug, doc["path"], doc["filename"])
+            ft = doc["file_type"] or ""
+            remaining = MAX_BATCH_CHARS - chars_used
 
-
-async def _read_spreadsheet_index(doc: dict, header: str) -> str:
-    user_id = str(doc["user_id"])
-    page_rows = await scoped_query(
-        user_id,
-        "SELECT page, content, elements FROM document_pages "
-        "WHERE document_id = $1 ORDER BY page",
-        doc["id"],
-    )
-    if not page_rows:
-        return header + (doc["content"] or "(no data)")
-
-    lines = [header, "**Sheets:**\n"]
-    for row in page_rows:
-        elements = row["elements"]
-        if isinstance(elements, str):
-            elements = json.loads(elements)
-        sheet_name = (elements or {}).get("sheet_name", f"Sheet {row['page']}")
-        row_count = row["content"].count("\n") if row["content"] else 0
-        lines.append(f"  Page {row['page']}: **{sheet_name}** (~{row_count} rows)")
-    lines.append(f"\nUse `pages=\"1\"` to read a specific sheet.")
-    return "\n".join(lines)
-
-
-async def _read_batch(user_id: str, kb: dict, path: str) -> str:
-    docs = await scoped_query(
-        user_id,
-        "SELECT id, filename, title, path, content, tags, file_type, page_count "
-        "FROM documents WHERE knowledge_base_id = $1 AND NOT archived AND user_id = $2 "
-        "ORDER BY path, filename",
-        kb["id"], user_id,
-    )
-
-    glob_pat = "/" + path.lstrip("/") if not path.startswith("/") else path
-    docs = [d for d in docs if glob_match(d["path"] + d["filename"], glob_pat)]
-
-    if not docs:
-        return f"No documents matching `{path}` in {kb['slug']}."
-
-    text_types = {"md", "txt", "csv", "html", "svg", "json", "xml"}
-    parts = []
-    chars_used = 0
-    truncated_docs = 0
-    skipped_docs = []
-
-    for doc in docs:
-        if chars_used >= MAX_BATCH_CHARS:
-            skipped_docs.append(doc)
-            continue
-
-        link = deep_link(kb["slug"], doc["path"], doc["filename"])
-        ft = doc["file_type"] or ""
-        remaining = MAX_BATCH_CHARS - chars_used
-
-        if ft in text_types and doc["content"]:
-            content = doc["content"] or ""
-            if len(content) > remaining:
-                content = content[:remaining] + "\n\n... (truncated)"
-                truncated_docs += 1
-            parts.append(f"### [{doc['path']}{doc['filename']}]({link})\n\n{content}")
-            chars_used += len(content)
-
-        elif (doc.get("page_count") or 0) > 0:
-            page_rows = await scoped_query(
-                user_id,
-                "SELECT page, content FROM document_pages "
-                "WHERE document_id = $1 ORDER BY page",
-                doc["id"],
-            )
-            page_parts = []
-            doc_chars = 0
-            pages_included = 0
-            for r in page_rows:
-                page_text = f"**— Page {r['page']} —**\n\n{r['content']}"
-                if doc_chars + len(page_text) > remaining:
-                    page_parts.append(page_text[:remaining - doc_chars] + "\n\n... (truncated)")
+            if ft in _TEXT_TYPES and doc["content"]:
+                content = doc["content"]
+                if len(content) > remaining:
+                    content = content[:remaining] + "\n\n... (truncated)"
                     truncated_docs += 1
-                    pages_included += 1
-                    doc_chars = remaining
-                    break
-                page_parts.append(page_text)
-                doc_chars += len(page_text)
+                parts.append(f"### [{doc['path']}{doc['filename']}]({link})\n\n{content}")
+                chars_used += len(content)
+
+            elif (doc.get("page_count") or 0) > 0:
+                page_text, doc_chars, pages_included, was_truncated = await self._read_batch_pages(doc, remaining)
+                if was_truncated:
+                    truncated_docs += 1
+                total_pages = doc["page_count"]
+                remaining_pages = total_pages - pages_included
+                suffix = ""
+                if remaining_pages > 0:
+                    suffix = f"\n\n*({remaining_pages} more pages — use `pages=\"{pages_included+1}-{total_pages}\"` to continue)*"
+                parts.append(f"### [{doc['path']}{doc['filename']}]({link}) ({total_pages} pages)\n\n{page_text}{suffix}")
+                chars_used += doc_chars
+
+            else:
+                skipped_docs.append(doc)
+
+        header = f"**{len(parts)} document(s)** matching `{path}`"
+        if truncated_docs:
+            header += f" (some truncated to fit {MAX_BATCH_CHARS:,} char budget)"
+        if skipped_docs:
+            header += f"\n*{len(skipped_docs)} more document(s) beyond budget — read individually*"
+        header += "\n\n---\n\n"
+
+        return header + "\n\n---\n\n".join(parts)
+
+    async def _read_pages(self, doc: dict, header: str, pages_str: str, include_images: bool) -> str | list:
+        """Read specific pages from a multi-page document."""
+        max_page = doc["page_count"] or 1
+        page_nums = parse_page_range(pages_str, max_page)
+        if not page_nums:
+            return header + f"Invalid page range: {pages_str} (document has {max_page} pages)"
+
+        doc_id = str(doc["id"])
+
+        page_rows = await scoped_query(
+            self.user_id,
+            "SELECT page, content, elements FROM document_pages "
+            "WHERE document_id = $1 AND page = ANY($2) ORDER BY page",
+            doc["id"], page_nums,
+        )
+
+        if not page_rows:
+            return header + f"No page data found for pages {pages_str}."
+
+        content_blocks: list[TextContent | ImageContent] = [_text(header)]
+        has_images = False
+
+        for row in page_rows:
+            content_blocks.append(_text(f"**— Page {row['page']} —**\n\n{row['content']}"))
+
+            if not include_images:
+                continue
+
+            elements = row["elements"]
+            if not elements:
+                continue
+            if isinstance(elements, str):
+                elements = json.loads(elements)
+
+            for img_meta in elements.get("images", []):
+                img_id = img_meta.get("id")
+                if not img_id:
+                    continue
+                s3_key = f"{self.user_id}/{doc_id}/images/{img_id}"
+                img_bytes = await load_s3_bytes(s3_key)
+                if img_bytes:
+                    fmt = "jpeg" if img_id.endswith((".jpg", ".jpeg")) else "png"
+                    content_blocks.append(_image(img_bytes, fmt))
+                    has_images = True
+
+        if has_images:
+            return content_blocks
+        return "\n\n".join(b.text for b in content_blocks)
+
+    async def _read_spreadsheet_index(self, doc: dict, header: str) -> str:
+        """Show sheet index for spreadsheet files."""
+        page_rows = await scoped_query(
+            self.user_id,
+            "SELECT page, content, elements FROM document_pages "
+            "WHERE document_id = $1 ORDER BY page",
+            doc["id"],
+        )
+        if not page_rows:
+            return header + (doc["content"] or "(no data)")
+
+        lines = [header, "**Sheets:**\n"]
+        for row in page_rows:
+            elements = row["elements"]
+            if isinstance(elements, str):
+                elements = json.loads(elements)
+            sheet_name = (elements or {}).get("sheet_name", f"Sheet {row['page']}")
+            row_count = row["content"].count("\n") if row["content"] else 0
+            lines.append(f"  Page {row['page']}: **{sheet_name}** (~{row_count} rows)")
+        lines.append(f"\nUse `pages=\"1\"` to read a specific sheet.")
+        return "\n".join(lines)
+
+    async def _read_image(self, doc: dict, header: str, include_images: bool) -> str | list:
+        """Load and return an image file from S3."""
+        if not include_images:
+            return header + "(Image file — set `include_images=true` to view)"
+        file_type = doc["file_type"]
+        s3_key = f"{self.user_id}/{doc['id']}/source.{file_type}"
+        img_bytes = await load_s3_bytes(s3_key)
+        if img_bytes:
+            fmt = "jpeg" if file_type in ("jpg", "jpeg") else file_type
+            return [_text(header), _image(img_bytes, fmt)]
+        return header + "(Image could not be loaded from storage)"
+
+    async def _read_batch_pages(self, doc: dict, remaining: int) -> tuple[str, int, int, bool]:
+        """Read pages within a char budget. Returns (text, chars, pages_included, truncated)."""
+        page_rows = await scoped_query(
+            self.user_id,
+            "SELECT page, content FROM document_pages "
+            "WHERE document_id = $1 ORDER BY page",
+            doc["id"],
+        )
+        page_parts = []
+        doc_chars = 0
+        pages_included = 0
+        truncated = False
+
+        for r in page_rows:
+            page_text = f"**— Page {r['page']} —**\n\n{r['content']}"
+            if doc_chars + len(page_text) > remaining:
+                page_parts.append(page_text[:remaining - doc_chars] + "\n\n... (truncated)")
+                truncated = True
                 pages_included += 1
+                doc_chars = remaining
+                break
+            page_parts.append(page_text)
+            doc_chars += len(page_text)
+            pages_included += 1
 
-            total_pages = doc["page_count"]
-            remaining_pages = total_pages - pages_included
-            suffix = ""
-            if remaining_pages > 0:
-                suffix = f"\n\n*({remaining_pages} more pages — use `pages=\"{pages_included+1}-{total_pages}\"` to continue)*"
-            parts.append(f"### [{doc['path']}{doc['filename']}]({link}) ({total_pages} pages)\n\n" + "\n\n".join(page_parts) + suffix)
-            chars_used += doc_chars
+        return "\n\n".join(page_parts), doc_chars, pages_included, truncated
 
-        else:
-            skipped_docs.append(doc)
+    async def _fetch_document(self, path: str) -> dict | None:
+        """Fetch document by exact path, with title/filename fallback."""
+        dir_path, filename = resolve_path(path)
+        doc = await scoped_queryrow(
+            self.user_id,
+            "SELECT id, user_id, filename, title, path, content, tags, version, file_type, "
+            "page_count, created_at, updated_at "
+            "FROM documents WHERE knowledge_base_id = $1 AND filename = $2 AND path = $3 AND NOT archived AND user_id = $4",
+            self.kb["id"], filename, dir_path, self.user_id,
+        )
+        if not doc:
+            doc = await scoped_queryrow(
+                self.user_id,
+                "SELECT id, user_id, filename, title, path, content, tags, version, file_type, "
+                "page_count, created_at, updated_at "
+                "FROM documents WHERE knowledge_base_id = $1 AND (filename = $2 OR title = $2) AND NOT archived AND user_id = $3",
+                self.kb["id"], path.lstrip("/").split("/")[-1], self.user_id,
+            )
+        return doc
 
-    header = f"**{len(parts)} document(s)** matching `{path}`"
-    if truncated_docs:
-        header += f" (some truncated to fit {MAX_BATCH_CHARS:,} char budget)"
-    if skipped_docs:
-        header += f"\n*{len(skipped_docs)} more document(s) beyond budget — read individually*"
-    header += "\n\n---\n\n"
+    def _build_header(self, doc: dict) -> str:
+        """Build the metadata header for a document."""
+        tags_str = ", ".join(doc["tags"]) if doc["tags"] else "none"
+        link = deep_link(self.slug, doc["path"], doc["filename"])
+        file_type = doc["file_type"] or ""
 
-    return header + "\n\n---\n\n".join(parts)
+        header = (
+            f"**{doc['title'] or doc['filename']}**\n"
+            f"Type: {file_type} | Tags: {tags_str} | Version: {doc['version']} | "
+            f"Updated: {doc['updated_at'].strftime('%Y-%m-%d') if doc['updated_at'] else 'unknown'}"
+        )
+        if doc["page_count"]:
+            header += f" | Pages: {doc['page_count']}"
+        header += f"\n[View in Supavault]({link})\n\n---\n\n"
+        return header
 
 
 def register(mcp: FastMCP) -> None:
@@ -258,67 +359,5 @@ def register(mcp: FastMCP) -> None:
         if not kb:
             return f"Knowledge base '{knowledge_base}' not found."
 
-        is_glob = "*" in path or "?" in path
-        if is_glob:
-            return await _read_batch(user_id, kb, path)
-
-        dir_path, filename = resolve_path(path)
-
-        doc = await scoped_queryrow(
-            user_id,
-            "SELECT id, user_id, filename, title, path, content, tags, version, file_type, "
-            "page_count, created_at, updated_at "
-            "FROM documents WHERE knowledge_base_id = $1 AND filename = $2 AND path = $3 AND NOT archived AND user_id = $4",
-            kb["id"], filename, dir_path, user_id,
-        )
-        if not doc:
-            doc = await scoped_queryrow(
-                user_id,
-                "SELECT id, user_id, filename, title, path, content, tags, version, file_type, "
-                "page_count, created_at, updated_at "
-                "FROM documents WHERE knowledge_base_id = $1 AND (filename = $2 OR title = $2) AND NOT archived AND user_id = $3",
-                kb["id"], path.lstrip("/").split("/")[-1], user_id,
-            )
-
-        if not doc:
-            return f"Document '{path}' not found in {knowledge_base}."
-
-        tags_str = ", ".join(doc["tags"]) if doc["tags"] else "none"
-        link = deep_link(kb["slug"], doc["path"], doc["filename"])
-        file_type = doc["file_type"] or ""
-
-        header = (
-            f"**{doc['title'] or doc['filename']}**\n"
-            f"Type: {file_type} | Tags: {tags_str} | Version: {doc['version']} | "
-            f"Updated: {doc['updated_at'].strftime('%Y-%m-%d') if doc['updated_at'] else 'unknown'}"
-        )
-        if doc["page_count"]:
-            header += f" | Pages: {doc['page_count']}"
-        header += f"\n[View in Supavault]({link})\n\n---\n\n"
-
-        image_types = {"png", "jpg", "jpeg", "webp", "gif"}
-        if file_type in image_types:
-            if not include_images:
-                return header + "(Image file — set `include_images=true` to view)"
-            s3_key = f"{doc['user_id']}/{doc['id']}/source.{file_type}"
-            img_bytes = await load_s3_bytes(s3_key)
-            if img_bytes:
-                fmt = "jpeg" if file_type in ("jpg", "jpeg") else file_type
-                return [_text(header), _image(img_bytes, fmt)]
-            return header + "(Image could not be loaded from storage)"
-
-        has_pages = file_type in ("pdf", "pptx", "ppt", "docx", "doc", "xlsx", "xls", "csv")
-        spreadsheet_types = {"xlsx", "xls", "csv"}
-
-        if has_pages and pages:
-            return await _read_pages(doc, kb, header, pages, include_images)
-
-        if file_type in spreadsheet_types and not pages:
-            return await _read_spreadsheet_index(doc, header)
-
-        content = doc["content"] or ""
-        if sections:
-            content = _extract_sections(content, sections)
-
-        backlinks = await get_backlinks_summary(user_id, str(doc["id"]))
-        return header + content + backlinks
+        handler = ReadHandler(user_id, kb)
+        return await handler.read(path, pages, sections, include_images)

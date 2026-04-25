@@ -123,9 +123,9 @@ interface FilesGridProps {
   documents: DocumentListItem[]
   onDeleteDocument: (id: string) => void
   onRenameDocument: (id: string, newTitle: string) => void
-  onUpload: () => void
-  onCreateNote: () => void
-  onCreateFolder: (name: string) => void
+  onUpload: (path: string) => void
+  onCreateNote: (path: string) => void
+  onCreateFolder: (name: string, parentPath: string) => void
   /** If set, open this doc on mount (e.g. from a citation click) */
   initialDocId?: string | null
   initialPage?: number
@@ -161,8 +161,12 @@ export function FilesGrid({
 
   // Note editor instance (for rendering formatting buttons in the toolbar)
   const [noteEditor, setNoteEditor] = React.useState<Editor | null>(null)
+  // Editable note title (synced from NoteEditor, displayed in breadcrumb)
+  const [noteTitle, setNoteTitle] = React.useState('')
+  // Ref to NoteEditor's title change handler (avoids unnecessary re-renders)
+  const noteTitleChangeRef = React.useRef<((title: string) => void) | null>(null)
   // Reset editor when switching docs
-  React.useEffect(() => { setNoteEditor(null) }, [activeDocId])
+  React.useEffect(() => { setNoteEditor(null); setNoteTitle('') }, [activeDocId])
 
   // Source docs only (exclude wiki)
   const sourceDocs = React.useMemo(
@@ -176,6 +180,9 @@ export function FilesGrid({
   )
 
   const isBrowsing = !activeDoc
+
+  // Sync note title when activeDoc changes
+  React.useEffect(() => { if (activeDoc) setNoteTitle(activeDoc.title || activeDoc.filename) }, [activeDoc])
 
   // Navigation
   const navigateTo = React.useCallback((path: string) => {
@@ -240,18 +247,24 @@ export function FilesGrid({
   const isActiveNote = activeDoc ? isNoteFile(activeDoc) : false
 
   // Breadcrumbs — adapt to browsing vs viewing
-  // For notes, skip the doc name since NoteToolbar shows the editable title
   const breadcrumbs = React.useMemo(() => {
     const crumbs = parseBreadcrumbs(activeDoc ? (activeDoc.path || '/') : currentPath)
-    if (activeDoc && !isActiveNote) {
-      crumbs.push({ label: activeDoc.title || activeDoc.filename, path: '__doc__' })
+    if (activeDoc) {
+      crumbs.push({
+        label: activeDoc.title || activeDoc.filename,
+        path: isActiveNote ? '__note__' : '__doc__',
+      })
     }
     return crumbs
   }, [currentPath, activeDoc, isActiveNote])
 
+  // Bind creation actions to current path
+  const handleUploadHere = React.useCallback(() => onUpload(currentPath), [onUpload, currentPath])
+  const handleCreateNoteHere = React.useCallback(() => onCreateNote(currentPath), [onCreateNote, currentPath])
+
   const handleCreateFolder = () => {
     if (!folderName.trim()) return
-    onCreateFolder(folderName.trim())
+    onCreateFolder(folderName.trim(), currentPath)
     setFolderName('')
     setFolderDialogOpen(false)
   }
@@ -299,10 +312,22 @@ export function FilesGrid({
           {breadcrumbs.map((seg, i) => {
             const isLast = i === breadcrumbs.length - 1
             const isDocLeaf = seg.path === '__doc__'
+            const isNoteLeaf = seg.path === '__note__'
             return (
               <React.Fragment key={`${seg.path}-${i}`}>
                 {i > 0 && <span className="text-muted-foreground/50 flex-shrink-0">/</span>}
-                {isDocLeaf ? (
+                {isNoteLeaf ? (
+                  <input
+                    type="text"
+                    value={noteTitle}
+                    onChange={(e) => {
+                      setNoteTitle(e.target.value)
+                      noteTitleChangeRef.current?.(e.target.value)
+                    }}
+                    placeholder="Untitled"
+                    className="min-w-[80px] flex-1 text-sm font-medium text-foreground bg-transparent border-none outline-none placeholder:text-muted-foreground/30 truncate"
+                  />
+                ) : isDocLeaf ? (
                   <span className="flex items-center gap-1.5 font-medium text-foreground truncate">
                     {activeDoc && docIconSmall(activeDoc.file_type)}
                     {seg.label}
@@ -361,7 +386,7 @@ export function FilesGrid({
               )}
             </div>
 
-            <button onClick={onUpload} className="flex items-center gap-1.5 p-1.5 text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition-colors cursor-pointer">
+            <button onClick={handleUploadHere} className="flex items-center gap-1.5 p-1.5 text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition-colors cursor-pointer">
               <Upload className="size-3.5" />
               <span className="text-xs">Upload</span>
             </button>
@@ -385,7 +410,7 @@ export function FilesGrid({
                   <FolderPlus className="size-3.5 mr-2" />
                   New Folder
                 </DropdownMenuItem>
-                <DropdownMenuItem onClick={onCreateNote}>
+                <DropdownMenuItem onClick={handleCreateNoteHere}>
                   <NotepadText className="size-3.5 mr-2" />
                   New Note
                 </DropdownMenuItem>
@@ -436,6 +461,7 @@ export function FilesGrid({
               embedded
               hideToolbar
               onEditorReady={setNoteEditor}
+              titleChangeRef={noteTitleChangeRef}
             />
           ) : activeDoc.status === 'pending' || activeDoc.status === 'processing' ? (
             <ProcessingViewer title={activeDoc.title || activeDoc.filename} />
@@ -443,7 +469,7 @@ export function FilesGrid({
             <FailedViewer title={activeDoc.title || activeDoc.filename} errorMessage={activeDoc.error_message} />
           ) : ['pdf', 'pptx', 'ppt', 'docx', 'doc'].includes(activeDoc.file_type) ? (
             <PdfDocViewer documentId={activeDoc.id} title={activeDoc.title || activeDoc.filename} initialPage={docInitialPage} />
-          ) : ['png', 'jpg', 'jpeg', 'webp', 'gif'].includes(activeDoc.file_type) ? (
+          ) : ['png', 'jpg', 'jpeg', 'webp', 'gif', 'svg'].includes(activeDoc.file_type) ? (
             <ImageViewer documentId={activeDoc.id} title={activeDoc.title || activeDoc.filename} />
           ) : ['html', 'htm'].includes(activeDoc.file_type) ? (
             <HtmlDocViewer documentId={activeDoc.id} title={activeDoc.title || activeDoc.filename} />
@@ -458,13 +484,13 @@ export function FilesGrid({
             <ContextMenuTrigger asChild>
               <div className="h-full overflow-y-auto p-4">
                 {isEmpty ? (
-                  <EmptyState isRoot={currentPath === '/'} onUpload={onUpload} onCreateNote={onCreateNote} />
+                  <EmptyState isRoot={currentPath === '/'} onUpload={handleUploadHere} onCreateNote={handleCreateNoteHere} />
                 ) : (
                   <div className="min-h-full">
                     <div className="grid grid-cols-4 sm:grid-cols-5 lg:grid-cols-6 xl:grid-cols-8 gap-3">
                       <AnimatePresence initial={false} mode="popLayout">
                         <motion.div key="add-new" layout transition={{ layout: { duration: 0.15, ease: 'easeOut' } }} className="h-full">
-                          <NewCard onCreateNote={onCreateNote} onUpload={onUpload} onCreateFolder={() => setFolderDialogOpen(true)} />
+                          <NewCard onCreateNote={handleCreateNoteHere} onUpload={handleUploadHere} onCreateFolder={() => setFolderDialogOpen(true)} />
                         </motion.div>
                         {filteredFolders.map((folder) => (
                           <motion.div key={`folder-${folder.path}`} layout exit={{ opacity: 0, scale: 0.95 }} transition={{ layout: { duration: 0.15, ease: 'easeOut' }, opacity: { duration: 0.1 } }} className="h-full">
@@ -483,10 +509,10 @@ export function FilesGrid({
               </div>
             </ContextMenuTrigger>
             <ContextMenuContent>
-              <ContextMenuItem onClick={onCreateNote}><NotepadText className="size-3.5 mr-2" />New Note</ContextMenuItem>
+              <ContextMenuItem onClick={handleCreateNoteHere}><NotepadText className="size-3.5 mr-2" />New Note</ContextMenuItem>
               <ContextMenuItem onClick={() => setFolderDialogOpen(true)}><FolderPlus className="size-3.5 mr-2" />New Folder</ContextMenuItem>
               <ContextMenuSeparator />
-              <ContextMenuItem onClick={onUpload}><Upload className="size-3.5 mr-2" />Upload Files</ContextMenuItem>
+              <ContextMenuItem onClick={handleUploadHere}><Upload className="size-3.5 mr-2" />Upload Files</ContextMenuItem>
             </ContextMenuContent>
           </ContextMenu>
         )}

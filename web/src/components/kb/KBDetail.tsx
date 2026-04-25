@@ -173,6 +173,8 @@ export function KBDetail({ kbId, kbName }: Props) {
 
   // Files grid view state
   const [filesViewActive, setFilesViewActive] = React.useState(false)
+  const [filesInitialDocId, setFilesInitialDocId] = React.useState<string | null>(null)
+  const [filesInitialPage, setFilesInitialPage] = React.useState<number | undefined>()
 
   const docParam = searchParams.get('doc')
   const pageParam = searchParams.get('page')
@@ -271,8 +273,10 @@ export function KBDetail({ kbId, kbName }: Props) {
 
     if (docParam) {
       if (!documents.length) return
-      // Open files view for doc links
+      const num = parseInt(docParam, 10)
+      const doc = documents.find((d) => d.document_number === num)
       setFilesViewActive(true)
+      setFilesInitialDocId(doc?.id ?? null)
       setWikiActivePath(null)
       setUrlRestored(true)
       return
@@ -314,19 +318,33 @@ export function KBDetail({ kbId, kbName }: Props) {
   }, [updateUrl])
 
   const handleFilesToggle = React.useCallback(() => {
-    setFilesViewActive((prev) => !prev)
-    if (!filesViewActive) {
-      // Entering files view — deselect wiki
-  
-      setWikiActivePath(null)
-    }
-  }, [filesViewActive])
-
-  const handleCitationSourceClick = React.useCallback((filename: string, _page?: number) => {
-    // Open the files view — the user can find the source there
-    setFilesViewActive(true)
-    setWikiActivePath(null)
+    setFilesViewActive((prev) => {
+      if (!prev) {
+        // Entering files view — clear deep-link state but preserve wiki path
+        setFilesInitialDocId(null)
+        setFilesInitialPage(undefined)
+      }
+      return !prev
+    })
   }, [])
+
+  const handleOpenSourceDoc = React.useCallback((docId: string) => {
+    setFilesViewActive(true)
+    setFilesInitialDocId(docId)
+    setFilesInitialPage(undefined)
+  }, [])
+
+  const handleCitationSourceClick = React.useCallback((filename: string, page?: number) => {
+    const lower = filename.toLowerCase()
+    const match = sourceDocs.find((d) => {
+      const fn = d.filename.toLowerCase()
+      const title = (d.title || '').toLowerCase()
+      return fn === lower || title === lower || fn === lower + '.md' || fn.replace(/\.md$/, '') === lower
+    })
+    setFilesViewActive(true)
+    setFilesInitialDocId(match?.id ?? null)
+    setFilesInitialPage(page)
+  }, [sourceDocs])
 
   // Restore the last-opened wiki page after a hard reload.
   React.useEffect(() => {
@@ -470,13 +488,13 @@ export function KBDetail({ kbId, kbName }: Props) {
   )
 
   // Document actions
-  const handleCreateNote = async () => {
+  const handleCreateNote = async (targetPath: string = '/') => {
     const t = getToken()
     if (!t || !userId) return
     try {
       const data = await apiFetch<DocumentListItem>(`/v1/knowledge-bases/${kbId}/documents/note`, t, {
         method: 'POST',
-        body: JSON.stringify({ filename: 'Untitled.md', path: '/' }),
+        body: JSON.stringify({ filename: 'Untitled.md', path: targetPath }),
       })
       setDocuments((prev) => [data, ...prev])
       if (!filesViewActive) {
@@ -488,10 +506,10 @@ export function KBDetail({ kbId, kbName }: Props) {
     }
   }
 
-  const handleCreateFolder = (folderName: string) => {
+  const handleCreateFolder = (folderName: string, parentPath: string = '/') => {
     const t = getToken()
     if (!t || !userId) return
-    const path = '/' + folderName + '/'
+    const path = parentPath.replace(/\/$/, '') + '/' + folderName + '/'
     apiFetch<DocumentListItem>(`/v1/knowledge-bases/${kbId}/documents/note`, t, {
       method: 'POST',
       body: JSON.stringify({ filename: 'Untitled.md', path }),
@@ -545,13 +563,15 @@ export function KBDetail({ kbId, kbName }: Props) {
     }
   }
 
-  const handleUploadClick = () => {
+  const uploadPathRef = React.useRef('/')
+  const handleUploadClick = (targetPath: string = '/') => {
+    uploadPathRef.current = targetPath
     const input = document.createElement('input')
     input.type = 'file'
     input.accept = '.md,.txt,.pdf,.pptx,.ppt,.docx,.doc,.png,.jpg,.jpeg,.webp,.gif,.svg,.xlsx,.xls,.csv,.html,.htm'
     input.multiple = true
     input.onchange = () => {
-      if (input.files) uploadFiles(Array.from(input.files))
+      if (input.files) uploadFiles(Array.from(input.files), uploadPathRef.current)
     }
     input.click()
   }
@@ -582,7 +602,7 @@ export function KBDetail({ kbId, kbName }: Props) {
     })
   }, [kbId])
 
-  const uploadFiles = React.useCallback((files: File[]) => {
+  const uploadFiles = React.useCallback((files: File[], targetPath: string = '/') => {
     const t = getToken()
     if (!t || !userId) return
 
@@ -594,7 +614,7 @@ export function KBDetail({ kbId, kbName }: Props) {
         try {
           const data = await apiFetch<DocumentListItem>(`/v1/knowledge-bases/${kbId}/documents/note`, t, {
             method: 'POST',
-            body: JSON.stringify({ filename: file.name, title, content, path: '/' }),
+            body: JSON.stringify({ filename: file.name, title, content, path: targetPath }),
           })
           setDocuments((prev) => [data, ...prev])
         } catch {
@@ -607,7 +627,7 @@ export function KBDetail({ kbId, kbName }: Props) {
             // Local mode: simple multipart upload
             const formData = new FormData()
             formData.append('file', file)
-            formData.append('path', '/')
+            formData.append('path', targetPath)
             try {
               const res = await fetch(`${API_URL}/v1/upload`, {
                 method: 'POST',
@@ -716,9 +736,10 @@ export function KBDetail({ kbId, kbName }: Props) {
             sourceDocs={sourceDocs}
             hasWiki={hasNavigableWiki}
             loading={loading}
-            onUpload={handleUploadClick}
+            onUpload={() => handleUploadClick()}
             filesViewActive={filesViewActive}
             onFilesToggle={handleFilesToggle}
+            onOpenSourceDoc={handleOpenSourceDoc}
           />
         </div>
         <div className="flex-1 min-w-0">
@@ -728,12 +749,15 @@ export function KBDetail({ kbId, kbName }: Props) {
             </div>
           ) : filesViewActive ? (
             <FilesGrid
+              key={filesInitialDocId ?? 'browse'}
               documents={documents}
               onDeleteDocument={handleDeleteDocument}
               onRenameDocument={handleRenameDocument}
               onUpload={handleUploadClick}
               onCreateNote={handleCreateNote}
               onCreateFolder={handleCreateFolder}
+              initialDocId={filesInitialDocId}
+              initialPage={filesInitialPage}
             />
           ) : pageLoading ? (
             <div className="flex items-center justify-center h-full">
@@ -758,7 +782,7 @@ export function KBDetail({ kbId, kbName }: Props) {
               </div>
               <div className="flex items-center gap-3 mt-2">
                 <button
-                  onClick={handleUploadClick}
+                  onClick={() => handleUploadClick()}
                   className="inline-flex items-center gap-2 rounded-full bg-foreground text-background px-5 py-2 text-sm font-medium hover:opacity-90 transition-opacity cursor-pointer"
                 >
                   <UploadIcon className="size-3.5 opacity-60" />

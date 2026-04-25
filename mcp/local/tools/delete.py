@@ -1,4 +1,4 @@
-"""Local delete tool — deletes files from disk and removes from SQLite index."""
+"""Delete tool — remove documents from the local vault."""
 
 from mcp.server.fastmcp import FastMCP, Context
 
@@ -13,7 +13,71 @@ def _is_protected(doc: dict) -> bool:
     return (doc.get("path", ""), doc.get("filename", "")) in _PROTECTED_FILES
 
 
+class DeleteHandler:
+    """Deletes documents from the local vault."""
+
+    def __init__(self, user_id: str, kb: dict):
+        self.user_id = user_id
+        self.kb = kb
+        self.slug = kb["slug"]
+
+    async def delete(self, path: str) -> str:
+        """Delete documents matching a path or glob pattern."""
+        if not path or path in ("*", "**", "**/*"):
+            return "Error: refusing to delete everything. Use a more specific path."
+
+        matched = await self._find_documents(path)
+        if not matched:
+            return f"No documents matching `{path}` found in {self.slug}."
+
+        protected = [d for d in matched if _is_protected(d)]
+        deletable = [d for d in matched if not _is_protected(d)]
+
+        if not deletable:
+            names = ", ".join(f"`{d['path']}{d['filename']}`" for d in protected)
+            return f"Cannot delete {names} — these are structural wiki pages."
+
+        self._delete_from_disk(deletable)
+        deleted_count = await self._archive(deletable)
+        return self._format_response(deleted_count, deletable, protected)
+
+    async def _find_documents(self, path: str) -> list[dict]:
+        """Find documents by exact path or glob pattern."""
+        if "*" in path or "?" in path:
+            docs = await list_documents(self.user_id, self.slug)
+            glob_pat = "/" + path.lstrip("/") if not path.startswith("/") else path
+            return [d for d in docs if glob_match(d["path"] + d["filename"], glob_pat)]
+
+        dir_path, filename = resolve_path(path)
+        doc = await get_document(self.user_id, self.slug, filename, dir_path)
+        return [doc] if doc else []
+
+    def _delete_from_disk(self, deletable: list[dict]) -> None:
+        """Remove files from the local filesystem."""
+        for d in deletable:
+            relative = d["path"].lstrip("/") + d["filename"]
+            file_path = resolve_workspace_path(relative)
+            if file_path and file_path.exists():
+                file_path.unlink()
+
+    async def _archive(self, deletable: list[dict]) -> int:
+        """Remove documents from the SQLite index."""
+        doc_ids = [str(d["id"]) for d in deletable]
+        return await archive_documents(doc_ids, self.user_id)
+
+    def _format_response(self, deleted_count: int, deletable: list[dict], protected: list[dict]) -> str:
+        """Build the response message listing deleted and skipped files."""
+        lines = [f"Deleted {deleted_count} document(s):\n"]
+        for d in deletable:
+            lines.append(f"  {d['path']}{d['filename']}")
+        if protected:
+            names = ", ".join(f"`{d['path']}{d['filename']}`" for d in protected)
+            lines.append(f"\nSkipped (protected): {names}")
+        return "\n".join(lines)
+
+
 async def _resolve_local_kb(user_id: str, slug: str) -> dict | None:
+    """Resolve a local workspace as a knowledge base."""
     ws = await get_workspace()
     if not ws:
         return None
@@ -30,58 +94,12 @@ def register(mcp: FastMCP) -> None:
             "Note: overview.md and log.md are structural and cannot be deleted."
         ),
     )
-    async def delete(
-        ctx: Context,
-        knowledge_base: str,
-        path: str,
-    ) -> str:
+    async def delete(ctx: Context, knowledge_base: str, path: str) -> str:
         user_id = get_user_id(ctx)
 
         kb = await _resolve_local_kb(user_id, knowledge_base)
         if not kb:
             return f"Knowledge base '{knowledge_base}' not found."
 
-        if not path or path in ("*", "**", "**/*"):
-            return "Error: refusing to delete everything. Use a more specific path."
-
-        is_glob = "*" in path or "?" in path
-
-        if is_glob:
-            docs = await list_documents(user_id, kb["slug"])
-            glob_pat = "/" + path.lstrip("/") if not path.startswith("/") else path
-            matched = [d for d in docs if glob_match(d["path"] + d["filename"], glob_pat)]
-        else:
-            dir_path, filename = resolve_path(path)
-            doc = await get_document(user_id, kb["slug"], filename, dir_path)
-            matched = [doc] if doc else []
-
-        if not matched:
-            return f"No documents matching `{path}` found in {knowledge_base}."
-
-        protected = [d for d in matched if _is_protected(d)]
-        deletable = [d for d in matched if not _is_protected(d)]
-
-        if not deletable:
-            names = ", ".join(f"`{d['path']}{d['filename']}`" for d in protected)
-            return f"Cannot delete {names} — these are structural wiki pages."
-
-        # Delete files from disk first
-        for d in deletable:
-            relative = (d["path"].lstrip("/") + d["filename"])
-            file_path = resolve_workspace_path(relative)
-            if file_path and file_path.exists():
-                file_path.unlink()
-
-        # Then remove from index
-        doc_ids = [str(d["id"]) for d in deletable]
-        deleted_count = await archive_documents(doc_ids, user_id)
-
-        lines = [f"Deleted {deleted_count} document(s):\n"]
-        for d in deletable:
-            lines.append(f"  {d['path']}{d['filename']}")
-
-        if protected:
-            names = ", ".join(f"`{d['path']}{d['filename']}`" for d in protected)
-            lines.append(f"\nSkipped (protected): {names}")
-
-        return "\n".join(lines)
+        handler = DeleteHandler(user_id, kb)
+        return await handler.delete(path)

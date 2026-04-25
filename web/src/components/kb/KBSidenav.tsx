@@ -41,6 +41,7 @@ interface KBSidenavProps {
   onUpload: () => void
   filesViewActive: boolean
   onFilesToggle: () => void
+  onOpenSourceDoc: (docId: string) => void
 }
 
 export function KBSidenav({
@@ -57,6 +58,7 @@ export function KBSidenav({
   onUpload,
   filesViewActive,
   onFilesToggle,
+  onOpenSourceDoc,
 }: KBSidenavProps) {
   const [searchOpen, setSearchOpen] = React.useState(false)
 
@@ -176,7 +178,7 @@ export function KBSidenav({
                   value={item.keywords}
                   onSelect={() => {
                     setSearchOpen(false)
-                    onFilesToggle()
+                    if (item.doc) onOpenSourceDoc(item.doc.id)
                   }}
                   className="flex items-center"
                 >
