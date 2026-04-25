@@ -4,7 +4,7 @@ import * as React from 'react'
 import { useRouter } from 'next/navigation'
 import { ChevronsUpDown, Plus, Pencil, Trash2 } from 'lucide-react'
 import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover'
-import { Command, CommandInput, CommandList, CommandItem, CommandEmpty, CommandSeparator } from '@/components/ui/command'
+import { Command, CommandInput, CommandList, CommandItem, CommandEmpty, CommandGroup, CommandSeparator } from '@/components/ui/command'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 import { useKBStore } from '@/stores'
 
@@ -15,6 +15,7 @@ export function WikiSelector({ kbName, kbId }: { kbName: string; kbId: string })
   const renameKB = useKBStore((s) => s.renameKB)
   const deleteKB = useKBStore((s) => s.deleteKB)
   const [open, setOpen] = React.useState(false)
+  const [search, setSearch] = React.useState('')
   const [createDialogOpen, setCreateDialogOpen] = React.useState(false)
   const [renameDialogOpen, setRenameDialogOpen] = React.useState(false)
   const [deleteDialogOpen, setDeleteDialogOpen] = React.useState(false)
@@ -69,63 +70,74 @@ export function WikiSelector({ kbName, kbId }: { kbName: string; kbId: string })
 
   return (
     <>
-      <Popover open={open} onOpenChange={setOpen}>
+      <Popover open={open} onOpenChange={(v) => { setOpen(v); if (!v) setSearch('') }}>
         <PopoverTrigger asChild>
-          <button className="flex items-center gap-1.5 w-full px-2 py-1.5 text-sm font-medium text-foreground hover:bg-accent rounded-md transition-colors cursor-pointer">
+          <button
+            role="combobox"
+            aria-expanded={open}
+            aria-label="Switch wiki"
+            className="flex items-center gap-1.5 w-full px-2 py-1.5 text-sm font-medium text-foreground hover:bg-accent rounded-md transition-colors cursor-pointer"
+          >
             <span className="truncate flex-1 text-left">{kbName}</span>
             <ChevronsUpDown className="size-3 text-muted-foreground/50 shrink-0" />
           </button>
         </PopoverTrigger>
         <PopoverContent className="w-52 p-0" align="start">
           <Command>
-            <CommandInput placeholder="Search wikis..." />
+            <CommandInput placeholder="Search wikis..." aria-label="Search wikis" value={search} onValueChange={setSearch} />
             <CommandList>
               <CommandEmpty>No wikis found.</CommandEmpty>
-              {knowledgeBases.map((kb) => (
-                <CommandItem
-                  key={kb.id}
-                  value={kb.name}
-                  onSelect={() => {
-                    setOpen(false)
-                    router.push(`/wikis/${kb.slug}`)
-                  }}
-                >
-                  {kb.name}
-                </CommandItem>
-              ))}
-            </CommandList>
-            <CommandSeparator />
-            <CommandList>
-              <CommandItem
-                onSelect={() => {
-                  setOpen(false)
-                  setRenameName(kbName)
-                  setRenameDialogOpen(true)
-                }}
-              >
-                <Pencil className="size-3.5 mr-2" />
-                Rename
-              </CommandItem>
-              <CommandItem
-                onSelect={() => {
-                  setOpen(false)
-                  setDeleteDialogOpen(true)
-                }}
-                className="text-destructive"
-              >
-                <Trash2 className="size-3.5 mr-2" />
-                Delete
-              </CommandItem>
-              <CommandSeparator />
-              <CommandItem
-                onSelect={() => {
-                  setOpen(false)
-                  setCreateDialogOpen(true)
-                }}
-              >
-                <Plus className="size-3.5 mr-2" />
-                Create Wiki
-              </CommandItem>
+              <CommandGroup heading="Wikis">
+                {knowledgeBases.map((kb) => (
+                  <CommandItem
+                    key={kb.id}
+                    value={kb.name}
+                    onSelect={() => {
+                      setOpen(false)
+                      router.push(`/wikis/${kb.slug}`)
+                    }}
+                  >
+                    {kb.name}
+                  </CommandItem>
+                ))}
+              </CommandGroup>
+              {!search.trim() && (
+                <>
+                  <CommandSeparator />
+                  <CommandGroup heading="Actions">
+                    <CommandItem
+                      onSelect={() => {
+                        setOpen(false)
+                        setRenameName(kbName)
+                        setRenameDialogOpen(true)
+                      }}
+                    >
+                      <Pencil className="size-3.5 mr-2" />
+                      Rename
+                    </CommandItem>
+                    <CommandItem
+                      onSelect={() => {
+                        setOpen(false)
+                        setDeleteDialogOpen(true)
+                      }}
+                      className="text-destructive"
+                    >
+                      <Trash2 className="size-3.5 mr-2" />
+                      Delete
+                    </CommandItem>
+                    <CommandSeparator />
+                    <CommandItem
+                      onSelect={() => {
+                        setOpen(false)
+                        setCreateDialogOpen(true)
+                      }}
+                    >
+                      <Plus className="size-3.5 mr-2" />
+                      Create Wiki
+                    </CommandItem>
+                  </CommandGroup>
+                </>
+              )}
             </CommandList>
           </Command>
         </PopoverContent>

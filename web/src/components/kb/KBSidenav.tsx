@@ -172,17 +172,33 @@ export function KBSidenav({
     return () => document.removeEventListener('keydown', handleKeyDown)
   }, [])
 
+  const isMac = React.useMemo(() =>
+    typeof navigator !== 'undefined' && /Mac|iPod|iPhone|iPad/.test(navigator.userAgent),
+  [])
+
   const allSearchableItems = React.useMemo(() => {
-    const items: { type: 'wiki' | 'source'; title: string; path?: string; doc?: DocumentListItem }[] = []
-    const addWikiNodes = (nodes: WikiNode[]) => {
+    const items: { type: 'wiki' | 'source'; title: string; keywords: string; path?: string; doc?: DocumentListItem }[] = []
+    const addWikiNodes = (nodes: WikiNode[], parentPath = '') => {
       for (const node of nodes) {
-        if (node.path) items.push({ type: 'wiki', title: node.title, path: node.path })
-        if (node.children) addWikiNodes(node.children)
+        if (node.path) {
+          items.push({
+            type: 'wiki',
+            title: node.title,
+            keywords: [node.title, node.path, parentPath].filter(Boolean).join(' '),
+            path: node.path,
+          })
+        }
+        if (node.children) addWikiNodes(node.children, node.title)
       }
     }
     addWikiNodes(wikiTree)
     for (const doc of sourceDocs) {
-      items.push({ type: 'source', title: doc.title || doc.filename, doc })
+      items.push({
+        type: 'source',
+        title: doc.title || doc.filename,
+        keywords: [doc.title, doc.filename, doc.path, doc.file_type].filter(Boolean).join(' '),
+        doc,
+      })
     }
     return items
   }, [wikiTree, sourceDocs])
@@ -198,11 +214,12 @@ export function KBSidenav({
       <div className="shrink-0 px-2 pb-1 flex items-center gap-1.5">
         <button
           onClick={() => setSearchOpen(true)}
+          aria-label="Search pages and sources"
           className="flex items-center gap-2 flex-1 px-2.5 py-1.5 text-xs text-muted-foreground/50 hover:text-muted-foreground border border-border hover:bg-accent rounded-md transition-colors cursor-pointer"
         >
           <SearchIcon className="size-3" />
           <span className="flex-1 text-left">Search</span>
-          <kbd className="text-[10px] text-muted-foreground/30 bg-muted px-1 rounded">⌘K</kbd>
+          <kbd className="text-[10px] text-muted-foreground/30 bg-muted px-1 rounded">{isMac ? '⌘K' : 'Ctrl+K'}</kbd>
         </button>
         <button
           onClick={onUpload}
@@ -215,7 +232,7 @@ export function KBSidenav({
 
       {/* Search palette */}
       <CommandDialog open={searchOpen} onOpenChange={setSearchOpen}>
-        <CommandInput placeholder="Search pages and sources..." />
+        <CommandInput placeholder="Jump to page, source, or action..." aria-label="Search pages and sources" />
         <CommandList>
           <CommandEmpty>No results found.</CommandEmpty>
           {allSearchableItems.some((i) => i.type === 'wiki') && (
@@ -223,7 +240,7 @@ export function KBSidenav({
               {allSearchableItems.filter((i) => i.type === 'wiki').map((item) => (
                 <CommandItem
                   key={`wiki-${item.path}`}
-                  value={item.title}
+                  value={item.keywords}
                   onSelect={() => {
                     setSearchOpen(false)
                     if (item.path) onWikiNavigate(item.path)
@@ -240,7 +257,7 @@ export function KBSidenav({
               {allSearchableItems.filter((i) => i.type === 'source').map((item) => (
                 <CommandItem
                   key={`source-${item.doc?.id}`}
-                  value={item.title}
+                  value={item.keywords}
                   onSelect={() => {
                     setSearchOpen(false)
                     if (item.doc) onSourceSelect(item.doc)
