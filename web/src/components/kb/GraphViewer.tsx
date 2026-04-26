@@ -65,7 +65,9 @@ export function GraphViewer({ kbId, focusNodeId, onNavigateToDoc }: Props) {
   const [rebuilding, setRebuilding] = React.useState(false)
   const [error, setError] = React.useState(false)
   const hoverNodeRef = React.useRef<GraphNode | null>(null)
+  const hoverNeighborsRef = React.useRef<Set<string> | null>(null)
   const [hoverNodeState, setHoverNodeState] = React.useState<GraphNode | null>(null)
+  const [mousePos, setMousePos] = React.useState({ x: 0, y: 0 })
   const [dimensions, setDimensions] = React.useState({ width: 0, height: 0 })
   const [showSources, setShowSources] = React.useState(false)
 
@@ -181,11 +183,16 @@ export function GraphViewer({ kbId, focusNodeId, onNavigateToDoc }: Props) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const nodeCanvasObject = React.useCallback(
     (node: any, ctx: CanvasRenderingContext2D, globalScale: number) => {
-      const isHover = hoverNodeRef.current?.id === node.id
+      const hovering = hoverNodeRef.current
+      const isHover = hovering?.id === node.id
+      const neighbors = hoverNeighborsRef.current
+      const isFaded = hovering && neighbors && !neighbors.has(node.id)
+
       const isWiki = node.source_kind === 'wiki'
       const radius = isWiki ? 5 : 3.5
       const color = isHover ? NODE_COLOR_HOVER : getNodeColor(node)
 
+      ctx.globalAlpha = isFaded ? 0.12 : 1
       ctx.beginPath()
       ctx.arc(node.x!, node.y!, radius, 0, 2 * Math.PI)
       ctx.fillStyle = color
@@ -200,20 +207,56 @@ export function GraphViewer({ kbId, focusNodeId, onNavigateToDoc }: Props) {
         ctx.fillStyle = isHover ? '#fff' : 'rgba(180,180,190,0.85)'
         ctx.fillText(label, node.x!, node.y! + radius + 2)
       }
+      ctx.globalAlpha = 1
     },
-    [],
+    // hoverNodeState triggers a new function ref so ForceGraph repaints on hover change
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [hoverNodeState],
   )
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const handleNodeHover = React.useCallback((node: any) => {
     hoverNodeRef.current = node
+    if (node && forceGraphData.links.length > 0) {
+      const neighbors = new Set<string>([node.id])
+      for (const link of forceGraphData.links) {
+        // D3 mutates link.source/target from string IDs to node objects at runtime
+        const src = link.source as string | { id: string }
+        const tgt = link.target as string | { id: string }
+        const srcId = typeof src === 'object' ? src.id : src
+        const tgtId = typeof tgt === 'object' ? tgt.id : tgt
+        if (srcId === node.id) neighbors.add(tgtId)
+        if (tgtId === node.id) neighbors.add(srcId)
+      }
+      hoverNeighborsRef.current = neighbors
+    } else {
+      hoverNeighborsRef.current = null
+    }
     setHoverNodeState(node)
+  }, [forceGraphData.links])
+
+  const handleMouseMove = React.useCallback((e: React.MouseEvent) => {
+    const rect = containerRef.current?.getBoundingClientRect()
+    if (rect) setMousePos({ x: e.clientX - rect.left, y: e.clientY - rect.top })
   }, [])
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const linkColor = React.useCallback(
-    (link: any) => link.type === 'links_to' ? EDGE_COLOR_LINKS : EDGE_COLOR_CITES,
-    [],
+    (link: any) => {
+      const hovering = hoverNodeRef.current
+      if (hovering) {
+        const src = link.source as string | { id: string }
+        const tgt = link.target as string | { id: string }
+        const srcId = typeof src === 'object' ? src.id : src
+        const tgtId = typeof tgt === 'object' ? tgt.id : tgt
+        const connected = srcId === hovering.id || tgtId === hovering.id
+        if (!connected) return 'rgba(200,200,200,0.04)'
+        return link.type === 'links_to' ? 'rgba(130,130,190,0.6)' : 'rgba(100,170,120,0.5)'
+      }
+      return link.type === 'links_to' ? EDGE_COLOR_LINKS : EDGE_COLOR_CITES
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [hoverNodeState],
   )
 
   // Configure forces for better spacing
@@ -260,7 +303,7 @@ export function GraphViewer({ kbId, focusNodeId, onNavigateToDoc }: Props) {
   }
 
   return (
-    <div ref={containerRef} className="h-full w-full bg-background relative">
+    <div ref={containerRef} className="h-full w-full bg-background relative" onMouseMove={handleMouseMove}>
       {overlay ? (
         <div className="absolute inset-0 flex items-center justify-center">{overlay}</div>
       ) : ready ? (
@@ -320,31 +363,27 @@ export function GraphViewer({ kbId, focusNodeId, onNavigateToDoc }: Props) {
             </button>
           </div>
 
-          {/* Hover tooltip */}
+          {/* Hover tooltip — follows cursor */}
           {hoverNodeState && (() => {
-            const counts = connectionCounts.get(hoverNodeState.id)
             const p = hoverNodeState.path.toLowerCase()
             const category = hoverNodeState.source_kind !== 'wiki'
               ? 'Source'
               : p.includes('concepts/') ? 'Concept'
               : p.includes('entities/') ? 'Entity'
-              : 'Wiki page'
-            const totalLinks = (counts?.outbound ?? 0) + (counts?.inbound ?? 0)
+              : 'Page'
             return (
-              <div className="absolute top-3 left-3 text-xs bg-background/90 backdrop-blur-sm border border-border rounded-md px-3 py-2 pointer-events-none max-w-80">
+              <div
+                className="absolute text-xs bg-background/95 backdrop-blur-sm border border-border rounded-md px-3 py-2 pointer-events-none max-w-72 z-10"
+                style={{ left: mousePos.x + 14, top: mousePos.y - 10 }}
+              >
                 <p className="font-medium">{hoverNodeState.title}</p>
                 {hoverNodeState.description && (
                   <p className="text-muted-foreground mt-0.5 line-clamp-2">{hoverNodeState.description}</p>
                 )}
-                <div className="flex items-center gap-2 mt-1 text-muted-foreground/60">
-                  <span>{category}</span>
-                  {totalLinks > 0 && (
-                    <span>{counts!.outbound} out &middot; {counts!.inbound} in</span>
-                  )}
-                </div>
+                <p className="text-muted-foreground/50 mt-0.5">{category}</p>
                 {hoverNodeState.tags && hoverNodeState.tags.length > 0 && (
                   <div className="flex flex-wrap gap-1 mt-1.5">
-                    {hoverNodeState.tags.slice(0, 5).map((tag) => (
+                    {hoverNodeState.tags.slice(0, 4).map((tag) => (
                       <span key={tag} className="text-[9px] bg-muted px-1.5 py-0.5 rounded text-muted-foreground/50">{tag}</span>
                     ))}
                   </div>

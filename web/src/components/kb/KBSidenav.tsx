@@ -16,7 +16,7 @@ import { WikiSelector } from '@/components/kb/WikiSelector'
 import { SidenavUserMenu } from '@/components/kb/SidenavUserMenu'
 import { apiFetch } from '@/lib/api'
 import { useUserStore } from '@/stores'
-import type { DocumentListItem, WikiNode, WikiSubsection } from '@/lib/types'
+import type { DocumentListItem, WikiNode } from '@/lib/types'
 
 interface Usage {
   total_pages: number
@@ -33,8 +33,6 @@ interface KBSidenavProps {
   wikiTree: WikiNode[]
   wikiActivePath: string | null
   onWikiNavigate: (path: string, docNumber?: number | null) => void
-  wikiActiveSubsections?: WikiSubsection[]
-  onWikiSubsectionClick?: (id: string) => void
   sourceDocs: DocumentListItem[]
   hasWiki: boolean
   loading: boolean
@@ -52,8 +50,6 @@ export function KBSidenav({
   wikiTree,
   wikiActivePath,
   onWikiNavigate,
-  wikiActiveSubsections = [],
-  onWikiSubsectionClick,
   sourceDocs,
   hasWiki,
   loading,

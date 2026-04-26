@@ -63,7 +63,7 @@ export default function KBPage() {
       router.replace(`/wikis/${kb.slug}?p=${legacyDoc}`)
       return
     }
-    if (legacyPage && !legacyLoading && legacyDocs.length) {
+    if (legacyPage && !legacyLoading) {
       const wikiPath = legacyPage.replace(/^\/wiki\/?/, '')
       const doc = legacyDocs.find((d) => {
         const relative = (d.path + d.filename).replace(/^\/wiki\/?/, '')

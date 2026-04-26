@@ -12,8 +12,8 @@ import { KBSidenav } from '@/components/kb/KBSidenav'
 import { FilesGrid } from '@/components/kb/FilesGrid'
 import { GraphViewer } from '@/components/kb/GraphViewer'
 import { SelectionActionBar } from '@/components/kb/SelectionActionBar'
-import { WikiContent, extractTocFromMarkdown } from '@/components/wiki/WikiContent'
-import type { DocumentListItem, WikiNode, WikiSubsection } from '@/lib/types'
+import { WikiContent } from '@/components/wiki/WikiContent'
+import type { DocumentListItem, WikiNode } from '@/lib/types'
 import type { ViewMode } from '@/app/(dashboard)/wikis/[slug]/[[...path]]/page'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
@@ -197,13 +197,11 @@ export function KBDetail({ kbId, kbSlug, kbName, viewMode, routeFilesPath }: Pro
   React.useEffect(() => {
     if (urlSourceDocNumber != null) setActiveView('doc')
     else if (activeView === 'doc') setActiveView('files')
+    // Only react to urlSourceDocNumber changes, activeView is read-only here
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [urlSourceDocNumber])
 
   const [filesInitialPage, setFilesInitialPage] = React.useState<number | undefined>()
-  const filesCurrentPathRef = React.useRef(routeFilesPath)
-
-  // Sync filesPath from route prop (for back/forward on folder navigation)
-  React.useEffect(() => { filesCurrentPathRef.current = routeFilesPath }, [routeFilesPath])
 
   // ─── Graph state ─────────────────────────────────────────────
   const [graphFocusNodeId, setGraphFocusNodeId] = React.useState<string | null>(null)
@@ -217,6 +215,8 @@ export function KBDetail({ kbId, kbSlug, kbName, viewMode, routeFilesPath }: Pro
   )
   const [wikiTree, setWikiTree] = React.useState<WikiNode[]>([])
   const [indexLoaded, setIndexLoaded] = React.useState(false)
+
+  const wikiDocIds = React.useMemo(() => wikiDocs.map((d) => d.id).join(), [wikiDocs])
 
   React.useEffect(() => {
     let cancelled = false
@@ -243,8 +243,7 @@ export function KBDetail({ kbId, kbSlug, kbName, viewMode, routeFilesPath }: Pro
       setIndexLoaded(true)
     }
     return () => { cancelled = true }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [indexDoc?.id, token, wikiDocs.length, wikiDocs.map((d) => d.id).join()])
+  }, [indexDoc?.id, token, wikiDocIds, wikiDocs])
 
   // Auto-select first wiki page when none is selected
   React.useEffect(() => {
@@ -292,13 +291,21 @@ export function KBDetail({ kbId, kbSlug, kbName, viewMode, routeFilesPath }: Pro
       setPageLoading(true)
       setPageLoadedPath(null)
     }
-    apiFetch<{ content: string }>(`/v1/documents/${activeWikiDoc.id}/content`, token)
-      .then((res) => setPageContent(res.content || ''))
-      .catch(() => setPageContent('Failed to load page content.'))
-      .finally(() => {
-        setPageLoading(false)
-        setPageLoadedPath(wikiActivePath)
+    const controller = new AbortController()
+    apiFetch<{ content: string }>(`/v1/documents/${activeWikiDoc.id}/content`, token, { signal: controller.signal })
+      .then((res) => {
+        if (!controller.signal.aborted) setPageContent(res.content || '')
       })
+      .catch((err) => {
+        if (!controller.signal.aborted) setPageContent('Failed to load page content.')
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) {
+          setPageLoading(false)
+          setPageLoadedPath(wikiActivePath)
+        }
+      })
+    return () => controller.abort()
   }, [wikiActivePath, token, activeWikiDocId, activeWikiVersion])
 
   // ─── Token helper ────────────────────────────────────────────
@@ -487,17 +494,6 @@ export function KBDetail({ kbId, kbSlug, kbName, viewMode, routeFilesPath }: Pro
     [wikiActivePath, wikiPathSet, updateParam, wikiDocs],
   )
 
-  // ─── Wiki subsections ────────────────────────────────────────
-  const wikiActiveSubsections: WikiSubsection[] = React.useMemo(() => {
-    if (!pageContent || !wikiActivePath) return []
-    const toc = extractTocFromMarkdown(pageContent)
-    return toc.filter((item) => item.level === 2).map((item) => ({ id: item.id, title: item.text }))
-  }, [pageContent, wikiActivePath])
-
-  const handleSubsectionClick = React.useCallback((id: string) => {
-    const el = document.getElementById(id)
-    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' })
-  }, [])
 
   // ─── Document CRUD ───────────────────────────────────────────
   const handleCreateNote = async (targetPath: string = '/') => {
@@ -669,7 +665,6 @@ export function KBDetail({ kbId, kbSlug, kbName, viewMode, routeFilesPath }: Pro
 
   // ─── FilesGrid URL-sync callbacks ────────────────────────────
   const handleFilesPathChange = React.useCallback((path: string) => {
-    filesCurrentPathRef.current = path
     const clean = path === '/' ? '' : path.replace(/^\//, '').replace(/\/$/, '')
     const url = `/wikis/${kbSlug}` + (clean ? `/files/${encodeURI(clean)}` : '/files')
     router.replace(url, { scroll: false })
@@ -720,8 +715,6 @@ export function KBDetail({ kbId, kbSlug, kbName, viewMode, routeFilesPath }: Pro
             wikiTree={wikiTree}
             wikiActivePath={filesViewActive || graphViewActive ? null : wikiActivePath}
             onWikiNavigate={handleWikiSelect}
-            wikiActiveSubsections={wikiActiveSubsections}
-            onWikiSubsectionClick={handleSubsectionClick}
             sourceDocs={sourceDocs}
             hasWiki={hasNavigableWiki}
             loading={loading}
