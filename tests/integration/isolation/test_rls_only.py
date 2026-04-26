@@ -11,7 +11,10 @@ from tests.integration.isolation.conftest import (
     USER_A_ID, USER_B_ID,
     KB_A_ID, KB_B_ID,
     DOC_A_ID, DOC_B_ID,
+    DOC_A2_ID, DOC_B2_ID,
     KEY_A_ID, KEY_B_ID,
+    PAGE_A_ID, PAGE_B_ID,
+    REF_A_ID, REF_B_ID,
 )
 
 
@@ -108,6 +111,87 @@ class TestRLSBlocksAPIKeys:
         assert row is None
 
 
+class TestRLSBlocksDocumentPages:
+
+    async def test_pages_only_returns_own(self, rls_session):
+        async with rls_session(USER_A_ID) as conn:
+            rows = await conn.fetch("SELECT id, content FROM document_pages")
+        ids = [str(r["id"]) for r in rows]
+        assert PAGE_A_ID in ids
+        assert PAGE_B_ID not in ids
+
+    async def test_other_page_not_visible(self, rls_session):
+        async with rls_session(USER_A_ID) as conn:
+            row = await conn.fetchrow(
+                "SELECT id FROM document_pages WHERE id = $1", PAGE_B_ID,
+            )
+        assert row is None
+
+    async def test_own_page_content_readable(self, rls_session):
+        async with rls_session(USER_A_ID) as conn:
+            row = await conn.fetchrow(
+                "SELECT content FROM document_pages WHERE id = $1", PAGE_A_ID,
+            )
+        assert row is not None
+        assert row["content"] == "Alice page 1 content"
+
+    async def test_cross_tenant_page_content_not_leaked(self, rls_session):
+        async with rls_session(USER_A_ID) as conn:
+            rows = await conn.fetch("SELECT content FROM document_pages")
+        contents = [r["content"] for r in rows]
+        assert "Bob page 1 content" not in contents
+
+
+class TestRLSBlocksDocumentReferences:
+
+    async def test_references_only_returns_own(self, rls_session):
+        async with rls_session(USER_A_ID) as conn:
+            rows = await conn.fetch("SELECT id FROM document_references")
+        ids = [str(r["id"]) for r in rows]
+        assert REF_A_ID in ids
+        assert REF_B_ID not in ids
+
+    async def test_other_reference_not_visible(self, rls_session):
+        async with rls_session(USER_A_ID) as conn:
+            row = await conn.fetchrow(
+                "SELECT id FROM document_references WHERE id = $1", REF_B_ID,
+            )
+        assert row is None
+
+    async def test_cannot_delete_other_tenant_references(self, rls_session):
+        """RLS write policy blocks cross-tenant DELETE."""
+        async with rls_session(USER_A_ID) as conn:
+            await conn.execute(
+                "DELETE FROM document_references WHERE id = $1", REF_B_ID,
+            )
+        # Verify Bob's reference still exists (unscoped check)
+        async with rls_session(USER_B_ID) as conn:
+            row = await conn.fetchrow(
+                "SELECT id FROM document_references WHERE id = $1", REF_B_ID,
+            )
+        assert row is not None
+
+    async def test_cannot_insert_into_other_tenant_kb(self, rls_session):
+        """RLS write policy blocks INSERT with another tenant's KB."""
+        import asyncpg
+        with pytest.raises(asyncpg.InsufficientPrivilegeError):
+            async with rls_session(USER_A_ID) as conn:
+                await conn.execute(
+                    "INSERT INTO document_references "
+                    "(source_document_id, target_document_id, knowledge_base_id, reference_type) "
+                    "VALUES ($1, $2, $3, 'links_to')",
+                    DOC_A_ID, DOC_A2_ID, KB_B_ID,
+                )
+
+    async def test_can_delete_own_references(self, rls_session):
+        """Confirm user can delete their own references."""
+        async with rls_session(USER_A_ID) as conn:
+            result = await conn.execute(
+                "DELETE FROM document_references WHERE id = $1", REF_A_ID,
+            )
+        assert "DELETE 1" in result
+
+
 class TestRLSBidirectional:
     """Same checks from Bob's perspective."""
 
@@ -122,6 +206,20 @@ class TestRLSBidirectional:
         async with rls_session(USER_B_ID) as conn:
             row = await conn.fetchrow(
                 "SELECT id FROM documents WHERE id = $1", DOC_A_ID,
+            )
+        assert row is None
+
+    async def test_bob_cannot_see_alice_pages(self, rls_session):
+        async with rls_session(USER_B_ID) as conn:
+            row = await conn.fetchrow(
+                "SELECT id FROM document_pages WHERE id = $1", PAGE_A_ID,
+            )
+        assert row is None
+
+    async def test_bob_cannot_see_alice_references(self, rls_session):
+        async with rls_session(USER_B_ID) as conn:
+            row = await conn.fetchrow(
+                "SELECT id FROM document_references WHERE id = $1", REF_A_ID,
             )
         assert row is None
 

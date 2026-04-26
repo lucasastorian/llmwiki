@@ -5,7 +5,7 @@ import logging
 import aioboto3
 
 from config import settings
-from db import scoped_query, scoped_queryrow, service_queryrow, service_execute
+from db import scoped_query, scoped_queryrow, scoped_execute, service_queryrow, service_execute
 from .base import VaultFS
 
 logger = logging.getLogger(__name__)
@@ -205,14 +205,16 @@ class PostgresVaultFS(VaultFS):
 
 
     async def delete_references(self, source_doc_id: str) -> None:
-        await service_execute(
+        await scoped_execute(
+            self.user_id,
             "DELETE FROM document_references WHERE source_document_id = $1",
             source_doc_id,
         )
 
     async def upsert_reference(self, source_id: str, target_id: str, kb_id: str, ref_type: str, page: int | None) -> None:
         try:
-            await service_execute(
+            await scoped_execute(
+                self.user_id,
                 "INSERT INTO document_references "
                 "(source_document_id, target_document_id, knowledge_base_id, reference_type, page) "
                 "VALUES ($1, $2, $3, $4, $5) "

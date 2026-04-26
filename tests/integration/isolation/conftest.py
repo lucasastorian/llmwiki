@@ -26,9 +26,20 @@ CHUNK_B_ID = "dddd1111-dddd-dddd-dddd-dddddddddddd"
 KEY_A_ID = "eeee1111-eeee-eeee-eeee-eeeeeeeeeeee"
 KEY_B_ID = "ffff1111-ffff-ffff-ffff-ffffffffffff"
 
+PAGE_A_ID = "aaaa2222-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+PAGE_B_ID = "bbbb2222-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+
+REF_A_ID = "aaaa3333-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+REF_B_ID = "bbbb3333-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+
+# Second doc per tenant — needed as reference targets
+DOC_A2_ID = "aaaa4444-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+DOC_B2_ID = "bbbb4444-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+
 
 @pytest.fixture(autouse=True)
 async def seed_two_tenants(pool):
+    await pool.execute("DELETE FROM document_references")
     await pool.execute("DELETE FROM document_chunks")
     await pool.execute("DELETE FROM document_pages")
     await pool.execute("DELETE FROM documents")
@@ -84,6 +95,40 @@ async def seed_two_tenants(pool):
     await pool.execute(
         "INSERT INTO api_keys (id, user_id, name, key_hash, key_prefix) VALUES ($1, $2, 'Bob Key', 'hash_b', 'sv_bob__')",
         KEY_B_ID, USER_B_ID,
+    )
+
+    # ── Second docs (reference targets) ──
+    await pool.execute(
+        "INSERT INTO documents (id, knowledge_base_id, user_id, filename, title, path, file_type, status, content, version) "
+        "VALUES ($1, $2, $3, 'source.pdf', 'Source', '/', 'pdf', 'ready', NULL, 1)",
+        DOC_A2_ID, KB_A_ID, USER_A_ID,
+    )
+    await pool.execute(
+        "INSERT INTO documents (id, knowledge_base_id, user_id, filename, title, path, file_type, status, content, version) "
+        "VALUES ($1, $2, $3, 'source.pdf', 'Source', '/', 'pdf', 'ready', NULL, 1)",
+        DOC_B2_ID, KB_B_ID, USER_B_ID,
+    )
+
+    # ── Document pages ──
+    await pool.execute(
+        "INSERT INTO document_pages (id, document_id, page, content) VALUES ($1, $2, 1, 'Alice page 1 content')",
+        PAGE_A_ID, DOC_A_ID,
+    )
+    await pool.execute(
+        "INSERT INTO document_pages (id, document_id, page, content) VALUES ($1, $2, 1, 'Bob page 1 content')",
+        PAGE_B_ID, DOC_B_ID,
+    )
+
+    # ── Document references ──
+    await pool.execute(
+        "INSERT INTO document_references (id, source_document_id, target_document_id, knowledge_base_id, reference_type) "
+        "VALUES ($1, $2, $3, $4, 'cites')",
+        REF_A_ID, DOC_A_ID, DOC_A2_ID, KB_A_ID,
+    )
+    await pool.execute(
+        "INSERT INTO document_references (id, source_document_id, target_document_id, knowledge_base_id, reference_type) "
+        "VALUES ($1, $2, $3, $4, 'cites')",
+        REF_B_ID, DOC_B_ID, DOC_B2_ID, KB_B_ID,
     )
 
     yield

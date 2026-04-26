@@ -1,40 +1,19 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Request
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends
 
-from deps import get_scoped_db, get_user_id
-from scoped_db import ScopedDB
+from deps import get_user_service
+from services.base import UserService
+from services.types import MeResponse
 
 router = APIRouter(tags=["me"])
 
 
-class MeResponse(BaseModel):
-    id: str
-    email: str
-    display_name: str | None
-    onboarded: bool
-
-
 @router.get("/v1/me", response_model=MeResponse)
-async def get_me(
-    db: Annotated[ScopedDB, Depends(get_scoped_db)],
-):
-    row = await db.fetchrow(
-        "SELECT id::text, email, display_name, onboarded FROM users WHERE id = auth.uid()"
-    )
-    if not row:
-        return MeResponse(id="", email="", display_name=None, onboarded=False)
-    return row
+async def get_me(service: Annotated[UserService, Depends(get_user_service)]):
+    return await service.get_profile()
 
 
 @router.post("/v1/onboarding/complete", status_code=204)
-async def complete_onboarding(
-    user_id: Annotated[str, Depends(get_user_id)],
-    request: Request,
-):
-    pool = request.app.state.pool
-    await pool.execute(
-        "UPDATE users SET onboarded = true, updated_at = now() WHERE id = $1",
-        user_id,
-    )
+async def complete_onboarding(service: Annotated[UserService, Depends(get_user_service)]):
+    await service.complete_onboarding()

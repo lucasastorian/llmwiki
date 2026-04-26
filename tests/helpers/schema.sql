@@ -143,6 +143,15 @@ CREATE POLICY document_references_select ON document_references
         )
     );
 
+CREATE POLICY document_references_write ON document_references
+    FOR ALL TO authenticated
+    USING (knowledge_base_id IN (
+        SELECT id FROM knowledge_bases WHERE user_id = auth.uid()
+    ))
+    WITH CHECK (knowledge_base_id IN (
+        SELECT id FROM knowledge_bases WHERE user_id = auth.uid()
+    ));
+
 ALTER TABLE document_references ENABLE ROW LEVEL SECURITY;
 
 CREATE INDEX idx_documents_knowledge_base_id ON documents(knowledge_base_id);
@@ -306,3 +315,6 @@ CREATE UNIQUE INDEX idx_documents_kb_number ON documents(knowledge_base_id, docu
 
 GRANT USAGE ON SCHEMA public TO authenticated;
 GRANT SELECT ON ALL TABLES IN SCHEMA public TO authenticated;
+-- Supabase grants full CRUD to authenticated by default; add write grants
+-- for tables that have write RLS policies so scoped_execute tests pass.
+GRANT INSERT, UPDATE, DELETE ON document_references TO authenticated;

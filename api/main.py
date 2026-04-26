@@ -71,6 +71,9 @@ async def lifespan(app: FastAPI):
     app.state.ocr_service = ocr_service
     app.state.auth_provider = None  # Uses Supabase JWKS auth via deps.py
 
+    from services.hosted import HostedServiceFactory
+    app.state.factory = HostedServiceFactory(pool, s3_service, ocr_service)
+
     # Real-time document change notifications via WebSocket
     from routes.ws import setup_listener
     listener_task = await setup_listener(settings.DATABASE_URL)
@@ -135,6 +138,9 @@ async def _local_lifespan_inner(app: FastAPI):
     app.state.auth_provider = auth_provider
     app.state.workspace_path = str(workspace)
 
+    from services.local import LocalServiceFactory
+    app.state.factory = LocalServiceFactory(db, storage, local_user_id)
+
     logger.info("Local mode — workspace: %s", workspace)
     return db
 
@@ -186,28 +192,20 @@ if settings.LOGFIRE_TOKEN:
     logfire.instrument_fastapi(app)
 
 app.include_router(health_router)
+app.include_router(me_router)
+app.include_router(usage_router)
+app.include_router(knowledge_bases_router)
+app.include_router(documents_router)
 
 if settings.MODE == "local":
-    from routes.local_documents import router as local_docs_router
-    from routes.local_knowledge_bases import router as local_kb_router
-    from routes.local_me import router as local_me_router
-    from routes.local_usage import router as local_usage_router
     from routes.local_upload import router as local_upload_router
     from routes.files import router as files_router, set_workspace_root
     from routes.local_graph import router as local_graph_router
-    app.include_router(local_docs_router)
-    app.include_router(local_kb_router)
-    app.include_router(local_me_router)
-    app.include_router(local_usage_router)
     app.include_router(local_upload_router)
     app.include_router(files_router)
     app.include_router(local_graph_router)
     set_workspace_root(settings.WORKSPACE_PATH)
 else:
-    app.include_router(knowledge_bases_router)
-    app.include_router(documents_router)
-    app.include_router(me_router)
-    app.include_router(usage_router)
     from routes.api_keys import router as api_keys_router
     from routes.admin import router as admin_router
     from routes.graph import router as graph_router
