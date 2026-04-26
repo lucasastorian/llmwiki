@@ -135,13 +135,10 @@ CREATE INDEX idx_refs_source ON document_references(source_document_id);
 CREATE INDEX idx_refs_target ON document_references(target_document_id);
 
 CREATE POLICY document_references_select ON document_references
-    FOR SELECT USING (
-        EXISTS (
-            SELECT 1 FROM documents
-            WHERE documents.id = document_references.source_document_id
-              AND documents.user_id = auth.uid()
-        )
-    );
+    FOR SELECT TO authenticated
+    USING (knowledge_base_id IN (
+        SELECT id FROM knowledge_bases WHERE user_id = auth.uid()
+    ));
 
 CREATE POLICY document_references_write ON document_references
     FOR ALL TO authenticated

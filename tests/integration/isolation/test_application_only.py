@@ -228,18 +228,8 @@ class TestGraphIsolationWithoutRLS:
         data = resp.json()
         assert data["nodes"] == []
 
-    @pytest.mark.xfail(
-        reason="Known defense-in-depth gap: rebuild_hosted DELETE by kb_id has no user_id check — "
-               "RLS protects in production, but app-layer alone does not.",
-        strict=True,
-    )
     async def test_rebuild_graph_cross_tenant_does_not_delete_refs(self, client_no_rls, pool):
-        """Alice rebuilding Bob's KB should not delete Bob's references.
-
-        This test is expected to FAIL because rebuild_hosted() does
-        DELETE FROM document_references WHERE knowledge_base_id = $1
-        without checking user_id. With RLS disabled, Bob's refs get wiped.
-        """
+        """Alice rebuilding Bob's KB should not delete Bob's references."""
         before = await pool.fetchval(
             "SELECT COUNT(*) FROM document_references WHERE knowledge_base_id = $1", KB_B_ID,
         )

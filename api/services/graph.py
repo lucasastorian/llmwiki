@@ -103,7 +103,10 @@ async def rebuild_hosted(conn, kb_id, user_id: str) -> dict:
     # Atomic: transaction wraps the delete + all inserts
     async with conn.transaction():
         await conn.execute(
-            "DELETE FROM document_references WHERE knowledge_base_id = $1", kb_id,
+            "DELETE FROM document_references "
+            "WHERE knowledge_base_id = $1 "
+            "AND knowledge_base_id IN (SELECT id FROM knowledge_bases WHERE user_id = $2)",
+            kb_id, user_id,
         )
 
         total_cites = 0

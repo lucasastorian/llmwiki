@@ -148,33 +148,35 @@ class TestWebSocketAuth:
         seed_jwks_cache()
         return TestClient(app)
 
-    def test_valid_token_connects(self, ws_client):
+    def test_valid_token_connects_and_stays_open(self, ws_client):
+        """Valid token should authenticate and keep the connection open."""
+        from starlette.websockets import WebSocketDisconnect
         token = make_token(USER_A_ID)
         with ws_client.websocket_connect(f"/v1/ws/documents/{KB_A_ID}") as ws:
             ws.send_text(token)
-            # Connection stays open — send a ping to verify
-            # If auth failed, send_text would raise
+            # After auth, the server enters a receive loop. Sending another
+            # message should NOT raise — proving the connection stayed open.
+            ws.send_text("ping")
             ws.close()
 
-    def test_invalid_token_rejected(self, ws_client):
+    def test_invalid_token_rejected_with_4001(self, ws_client):
+        """Garbage token should close the connection with code 4001."""
+        from starlette.websockets import WebSocketDisconnect
         with ws_client.websocket_connect(f"/v1/ws/documents/{KB_A_ID}") as ws:
             ws.send_text("garbage-token")
-            # Server should close with 4001 after verify_token fails
-            try:
-                ws.receive_json()
-                pytest.fail("Expected connection to be closed")
-            except Exception:
-                pass
+            with pytest.raises(WebSocketDisconnect) as exc_info:
+                ws.receive_text()
+            assert exc_info.value.code == 4001
 
-    def test_wrong_audience_rejected(self, ws_client):
+    def test_wrong_audience_rejected_with_4001(self, ws_client):
+        """Token with wrong audience should close the connection with code 4001."""
+        from starlette.websockets import WebSocketDisconnect
         token = make_token(USER_A_ID, aud="wrong-audience")
         with ws_client.websocket_connect(f"/v1/ws/documents/{KB_A_ID}") as ws:
             ws.send_text(token)
-            try:
-                ws.receive_json()
-                pytest.fail("Expected connection to be closed")
-            except Exception:
-                pass
+            with pytest.raises(WebSocketDisconnect) as exc_info:
+                ws.receive_text()
+            assert exc_info.value.code == 4001
 
 
 class TestNotifyTriggerPayload:
