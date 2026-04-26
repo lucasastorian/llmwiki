@@ -39,21 +39,13 @@ interface Props {
   onNavigateToDoc?: (docId: string, sourceKind: string) => void
 }
 
-const NODE_COLOR_CONCEPT = 'rgba(130, 130, 210, 0.85)'   // concepts — blue-violet
-const NODE_COLOR_ENTITY = 'rgba(200, 130, 100, 0.85)'    // entities — warm terracotta
-const NODE_COLOR_WIKI = 'rgba(140, 140, 170, 0.7)'       // other wiki pages (overview, log)
-const NODE_COLOR_SOURCE = 'rgba(100, 170, 120, 0.7)'     // source documents
-const NODE_COLOR_HOVER = 'rgba(230, 180, 60, 1)'
-const EDGE_COLOR_LINKS = 'rgba(130, 130, 190, 0.25)'
-const EDGE_COLOR_CITES = 'rgba(100, 170, 120, 0.18)'
-
-function getNodeColor(node: { source_kind: string; path: string }) {
-  if (node.source_kind !== 'wiki') return NODE_COLOR_SOURCE
-  const p = node.path.toLowerCase()
-  if (p.includes('/concepts/') || p.includes('concepts/')) return NODE_COLOR_CONCEPT
-  if (p.includes('/entities/') || p.includes('entities/')) return NODE_COLOR_ENTITY
-  return NODE_COLOR_WIKI
-}
+const NODE_COLOR = 'rgba(140, 140, 150, 0.7)'            // other wiki pages
+const NODE_COLOR_CONCEPT = 'rgba(120, 120, 140, 0.85)'   // concepts — slightly cooler
+const NODE_COLOR_ENTITY = 'rgba(155, 140, 130, 0.85)'    // entities — slightly warmer
+const NODE_COLOR_SOURCE = 'rgba(140, 140, 150, 0.4)'     // sources — faded
+const NODE_COLOR_HOVER = 'rgba(60, 60, 70, 1)'           // hover — dark
+const EDGE_COLOR = 'rgba(140, 140, 150, 0.18)'
+const EDGE_COLOR_HOVER = 'rgba(100, 100, 110, 0.5)'
 
 export function GraphViewer({ kbId, focusNodeId, onNavigateToDoc }: Props) {
   const token = useUserStore((s) => s.accessToken)
@@ -66,6 +58,7 @@ export function GraphViewer({ kbId, focusNodeId, onNavigateToDoc }: Props) {
   const [error, setError] = React.useState(false)
   const hoverNodeRef = React.useRef<GraphNode | null>(null)
   const hoverNeighborsRef = React.useRef<Set<string> | null>(null)
+  const connectionCountsRef = React.useRef<Map<string, { outbound: number; inbound: number }>>(new Map())
   const [hoverNodeState, setHoverNodeState] = React.useState<GraphNode | null>(null)
   const [mousePos, setMousePos] = React.useState({ x: 0, y: 0 })
   const [dimensions, setDimensions] = React.useState({ width: 0, height: 0 })
@@ -136,6 +129,7 @@ export function GraphViewer({ kbId, focusNodeId, onNavigateToDoc }: Props) {
       if (s) s.outbound++
       if (t) t.inbound++
     }
+    connectionCountsRef.current = counts
     return counts
   }, [graphData])
 
@@ -188,9 +182,19 @@ export function GraphViewer({ kbId, focusNodeId, onNavigateToDoc }: Props) {
       const neighbors = hoverNeighborsRef.current
       const isFaded = hovering && neighbors && !neighbors.has(node.id)
 
-      const isWiki = node.source_kind === 'wiki'
-      const radius = isWiki ? 5 : 3.5
-      const color = isHover ? NODE_COLOR_HOVER : getNodeColor(node)
+      const isSource = node.source_kind !== 'wiki'
+      const cnts = connectionCountsRef.current.get(node.id)
+      const totalLinks = (cnts?.outbound ?? 0) + (cnts?.inbound ?? 0)
+      const radius = isSource ? 3 : Math.min(3.5 + totalLinks * 0.5, 10)
+
+      const p = (node.path || '').toLowerCase()
+      const isConcept = p.includes('concepts/')
+      const isEntity = p.includes('entities/')
+      const color = isHover ? NODE_COLOR_HOVER
+        : isSource ? NODE_COLOR_SOURCE
+        : isConcept ? NODE_COLOR_CONCEPT
+        : isEntity ? NODE_COLOR_ENTITY
+        : NODE_COLOR
 
       ctx.globalAlpha = isFaded ? 0.12 : 1
       ctx.beginPath()
@@ -251,9 +255,9 @@ export function GraphViewer({ kbId, focusNodeId, onNavigateToDoc }: Props) {
         const tgtId = typeof tgt === 'object' ? tgt.id : tgt
         const connected = srcId === hovering.id || tgtId === hovering.id
         if (!connected) return 'rgba(200,200,200,0.04)'
-        return link.type === 'links_to' ? 'rgba(130,130,190,0.6)' : 'rgba(100,170,120,0.5)'
+        return EDGE_COLOR_HOVER
       }
-      return link.type === 'links_to' ? EDGE_COLOR_LINKS : EDGE_COLOR_CITES
+      return EDGE_COLOR
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [hoverNodeState],
@@ -335,23 +339,14 @@ export function GraphViewer({ kbId, focusNodeId, onNavigateToDoc }: Props) {
 
           {/* Controls */}
           <div className="absolute top-3 right-3 flex items-center gap-3 text-[10px] text-muted-foreground bg-background/80 backdrop-blur-sm px-3 py-1.5 rounded-md border border-border">
-            <span className="flex items-center gap-1.5">
-              <span className="inline-block size-2 rounded-full" style={{ backgroundColor: NODE_COLOR_CONCEPT }} />
-              Concept
-            </span>
-            <span className="flex items-center gap-1.5">
-              <span className="inline-block size-2 rounded-full" style={{ backgroundColor: NODE_COLOR_ENTITY }} />
-              Entity
-            </span>
             <button
               onClick={() => setShowSources((s) => !s)}
-              className={`flex items-center gap-1.5 cursor-pointer transition-colors ${showSources ? 'text-foreground' : 'text-muted-foreground/40 hover:text-muted-foreground'}`}
+              className={`cursor-pointer transition-colors ${showSources ? 'text-foreground' : 'text-muted-foreground/40 hover:text-muted-foreground'}`}
               title={showSources ? 'Hide sources' : 'Show sources'}
             >
-              <span className="inline-block size-2 rounded-full" style={{ backgroundColor: NODE_COLOR_SOURCE, opacity: showSources ? 1 : 0.3 }} />
               Sources
             </button>
-            <span className="text-muted-foreground/30">|</span>
+            <span className="text-muted-foreground/20">|</span>
             <button
               onClick={handleRebuild}
               disabled={rebuilding}
