@@ -170,6 +170,8 @@ class SQLiteDocumentRepository:
         return await self.get(doc_id)
 
     async def archive(self, doc_id: str, user_id: str) -> bool:
+        await self._db.execute("DELETE FROM document_pages WHERE document_id = ?", (doc_id,))
+        await self._db.execute("DELETE FROM document_chunks WHERE document_id = ?", (doc_id,))
         cursor = await self._db.execute(
             "DELETE FROM documents WHERE id = ?", (doc_id,),
         )
@@ -180,6 +182,8 @@ class SQLiteDocumentRepository:
         if not doc_ids:
             return
         placeholders = ",".join("?" for _ in doc_ids)
+        await self._db.execute(f"DELETE FROM document_pages WHERE document_id IN ({placeholders})", doc_ids)
+        await self._db.execute(f"DELETE FROM document_chunks WHERE document_id IN ({placeholders})", doc_ids)
         await self._db.execute(
             f"DELETE FROM documents WHERE id IN ({placeholders})", doc_ids,
         )

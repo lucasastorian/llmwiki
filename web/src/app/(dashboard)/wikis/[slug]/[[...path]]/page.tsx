@@ -46,39 +46,29 @@ export default function KBPage() {
     [knowledgeBases, params.slug],
   )
 
-  // ── Legacy param redirects ──────────────────────────────────
+  // ── Legacy ?page= redirect (old URL format) ─────────────────
   const legacyPage = searchParams.get('page')
-  const legacyDoc = searchParams.get('doc')
-
-  // ?doc=N → /files?doc=N (no lookup needed)
-  // ?page=X → need to look up document_number from path
   const needsDocLookup = !!legacyPage
   const { documents: legacyDocs, loading: legacyLoading } = useKBDocuments(
     needsDocLookup ? (kb?.id ?? '') : '',
   )
 
   React.useEffect(() => {
-    if (!kb) return
-    if (legacyDoc) {
-      router.replace(`/wikis/${kb.slug}?p=${legacyDoc}`)
-      return
+    if (!kb || !legacyPage || legacyLoading) return
+    const wikiPath = legacyPage.replace(/^\/wiki\/?/, '')
+    const doc = legacyDocs.find((d) => {
+      const relative = (d.path + d.filename).replace(/^\/wiki\/?/, '')
+      return relative === wikiPath
+    })
+    if (doc?.document_number != null) {
+      router.replace(`/wikis/${kb.slug}?p=${doc.document_number}`)
+    } else {
+      router.replace(`/wikis/${kb.slug}`)
     }
-    if (legacyPage && !legacyLoading) {
-      const wikiPath = legacyPage.replace(/^\/wiki\/?/, '')
-      const doc = legacyDocs.find((d) => {
-        const relative = (d.path + d.filename).replace(/^\/wiki\/?/, '')
-        return relative === wikiPath
-      })
-      if (doc?.document_number != null) {
-        router.replace(`/wikis/${kb.slug}?p=${doc.document_number}`)
-      } else {
-        router.replace(`/wikis/${kb.slug}`)
-      }
-    }
-  }, [legacyDoc, legacyPage, kb, legacyLoading, legacyDocs, router])
+  }, [legacyPage, kb, legacyLoading, legacyDocs, router])
 
   // Show spinner while redirecting legacy params or loading KB list
-  if (kbLoading || !user || legacyDoc || legacyPage) {
+  if (kbLoading || !user || legacyPage) {
     return (
       <div className="flex items-center justify-center h-full bg-background">
         <Loader2 className="size-5 animate-spin text-muted-foreground" />

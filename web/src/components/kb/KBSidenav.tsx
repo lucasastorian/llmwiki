@@ -1,10 +1,11 @@
 'use client'
 
 import * as React from 'react'
+import { motion, AnimatePresence } from 'framer-motion'
 import {
-  ChevronRight, FileText, NotepadText, Folder,
+  ChevronRight, FileText, NotepadText, Library,
   Upload, BookOpen, ArrowUpRight, Search as SearchIcon,
-  Lightbulb, Box, ScrollText, Network,
+  Lightbulb, Box, ScrollText, Network, Folder,
 } from 'lucide-react'
 import {
   CommandDialog, CommandInput, CommandList, CommandItem,
@@ -224,25 +225,6 @@ export function KBSidenav({
         </CommandList>
       </CommandDialog>
 
-      {/* Sources button */}
-      <div className="shrink-0 px-2 pb-1">
-        <button
-          onClick={onFilesToggle}
-          className={cn(
-            'flex items-center gap-2 w-full px-2.5 py-1.5 text-xs border rounded-md transition-colors cursor-pointer',
-            filesViewActive
-              ? 'bg-accent text-foreground font-medium border-border'
-              : 'text-muted-foreground/50 hover:text-muted-foreground border-border hover:bg-accent',
-          )}
-        >
-          <Folder className="size-3" />
-          <span className="flex-1 text-left">Sources</span>
-          {sourceCount > 0 && (
-            <span className="text-[10px] text-muted-foreground/30">{sourceCount}</span>
-          )}
-        </button>
-      </div>
-
       {/* Wiki tree */}
       <div className="flex-1 min-h-0 flex flex-col px-2 pt-1">
         <div className="flex items-center px-2 mb-1 shrink-0">
@@ -253,7 +235,7 @@ export function KBSidenav({
         {loading ? (
           <SidenavSkeleton lines={3} />
         ) : hasWiki ? (
-          <div className="flex-1 overflow-y-auto no-scrollbar space-y-0.5">
+          <div className="flex-1 overflow-y-auto no-scrollbar">
             {wikiTree.map((node, i) => (
               <WikiTreeNode
                 key={node.path ?? node.title ?? i}
@@ -281,9 +263,27 @@ export function KBSidenav({
         )}
       </div>
 
-      {/* Page usage + user menu at bottom */}
-      <div className="shrink-0 border-t border-border p-2 space-y-1">
-        <PageUsageBar />
+      {/* Sources button — separated from passive info below */}
+      <div className="shrink-0 px-2 pb-1">
+        <button
+          onClick={onFilesToggle}
+          className={cn(
+            'flex items-center gap-2 w-full px-2.5 py-2 text-[13px] rounded-md transition-colors cursor-pointer',
+            filesViewActive
+              ? 'bg-accent text-foreground font-medium'
+              : 'text-muted-foreground hover:text-foreground hover:bg-accent/50',
+          )}
+        >
+          <Library className="size-3.5" />
+          <span className="flex-1 text-left">Sources</span>
+          {sourceCount > 0 && (
+            <span className="text-[10px] text-muted-foreground/30">{sourceCount}</span>
+          )}
+        </button>
+      </div>
+
+      {/* User menu */}
+      <div className="shrink-0 border-t border-border p-2">
         <SidenavUserMenu />
       </div>
     </div>
@@ -343,16 +343,24 @@ function WikiTreeNode({
     <div>
       <div
         className={cn(
-          'flex items-center gap-1.5 w-full text-left text-[13px] rounded-md px-2 py-1.5 transition-colors',
+          'flex items-center gap-1.5 w-full text-left text-[13px] rounded-md px-2 py-1.5 transition-colors cursor-pointer',
           isActive
             ? 'bg-accent text-foreground font-medium'
             : 'text-muted-foreground hover:text-foreground hover:bg-accent/50',
         )}
         style={{ paddingLeft: `${depth * 12 + 8}px` }}
+        onClick={() => {
+          if (node.path) {
+            onNavigate(node.path, node.docNumber)
+          } else if (hasChildren) {
+            const first = node.children!.find((c) => c.path)
+            if (first) onNavigate(first.path!, first.docNumber)
+          }
+        }}
       >
         {hasChildren ? (
           <button
-            onClick={() => setExpanded((e) => !e)}
+            onClick={(e) => { e.stopPropagation(); setExpanded((prev) => !prev) }}
             className="p-0.5 -ml-0.5 cursor-pointer"
           >
             <ChevronRight
@@ -365,27 +373,31 @@ function WikiTreeNode({
         ) : (
           <span className="w-3.5" />
         )}
-        <button
-          onClick={() => node.path && onNavigate(node.path, node.docNumber)}
-          className="flex items-center gap-1.5 flex-1 min-w-0 cursor-pointer"
-        >
-          {wikiNodeIcon(node, depth)}
-          <span className="truncate">{node.title}</span>
-        </button>
+        {wikiNodeIcon(node, depth)}
+        <span className="truncate flex-1 min-w-0">{node.title}</span>
       </div>
-      {hasChildren && (expanded || hasActiveChild) && (
-        <div className="mt-0.5">
-          {node.children!.map((child, i) => (
-            <WikiTreeNode
-              key={child.path ?? child.title ?? i}
-              node={child}
-              depth={depth + 1}
-              activePath={activePath}
-              onNavigate={onNavigate}
-            />
-          ))}
-        </div>
-      )}
+      <AnimatePresence initial={false}>
+        {hasChildren && (expanded || hasActiveChild) && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.15, ease: [0.25, 0.1, 0.25, 1] }}
+            style={{ overflow: 'hidden' }}
+            className=""
+          >
+            {node.children!.map((child, i) => (
+              <WikiTreeNode
+                key={child.path ?? child.title ?? i}
+                node={child}
+                depth={depth + 1}
+                activePath={activePath}
+                onNavigate={onNavigate}
+              />
+            ))}
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   )
 }

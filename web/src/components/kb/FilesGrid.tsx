@@ -6,7 +6,7 @@ import {
   Folder, FileText, NotepadText, Loader2, Trash2,
   Upload, Plus, FolderPlus, ExternalLink, Pencil,
   ChevronLeft, ChevronRight, ArrowUp, ArrowDown, MoreHorizontal,
-  Image, Sheet, Presentation, FileCode, Search, X,
+  Image, Sheet, Presentation, FileCode, Search, X, Download,
 } from 'lucide-react'
 import {
   ContextMenu, ContextMenuTrigger, ContextMenuContent,
@@ -374,7 +374,7 @@ export function FilesGrid({
       )}
 
       {/* ── Toolbar (always mounted, never flashes) ── */}
-      <div className="shrink-0 flex items-center gap-1.5 px-4 py-2 border-b border-border">
+      <div className="shrink-0 flex items-center gap-1.5 px-4 h-10 border-b border-border">
         {/* Back / Forward */}
         <button
           onClick={goBack}
@@ -386,18 +386,16 @@ export function FilesGrid({
         >
           <ChevronLeft className="size-4" />
         </button>
-        {isBrowsing && (
-          <button
-            onClick={goForward}
-            disabled={!canGoForward}
-            className={cn(
-              'p-1 rounded-md transition-colors cursor-pointer',
-              canGoForward ? 'text-muted-foreground hover:text-foreground hover:bg-accent' : 'text-muted-foreground/30 cursor-default'
-            )}
-          >
-            <ChevronRight className="size-4" />
-          </button>
-        )}
+        <button
+          onClick={goForward}
+          disabled={!isBrowsing || !canGoForward}
+          className={cn(
+            'p-1 rounded-md transition-colors cursor-pointer',
+            isBrowsing && canGoForward ? 'text-muted-foreground hover:text-foreground hover:bg-accent' : 'text-muted-foreground/30 cursor-default'
+          )}
+        >
+          <ChevronRight className="size-4" />
+        </button>
 
         {/* Breadcrumbs */}
         <nav className="flex items-center gap-1 text-sm min-w-0 mr-auto overflow-hidden ml-1">
@@ -420,8 +418,7 @@ export function FilesGrid({
                     className="min-w-[80px] flex-1 text-sm font-medium text-foreground bg-transparent border-none outline-none placeholder:text-muted-foreground/30 truncate"
                   />
                 ) : isDocLeaf ? (
-                  <span className="flex items-center gap-1.5 font-medium text-foreground truncate">
-                    {activeDoc && docIconSmall(activeDoc.file_type)}
+                  <span className="font-medium text-foreground truncate">
                     {seg.label}
                   </span>
                 ) : isLast ? (
@@ -530,12 +527,24 @@ export function FilesGrid({
             </DropdownMenu>
           </>
         ) : activeDoc && isActiveNote ? (
-          <NoteFormattingButtons editor={noteEditor} />
+          <>
+            <NoteFormattingButtons editor={noteEditor} />
+            <button onClick={closeDoc} className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition-colors cursor-pointer" title="Close">
+              <X className="size-3.5" />
+            </button>
+          </>
         ) : activeDoc ? (
-          <span className="text-[10px] text-muted-foreground/50 uppercase shrink-0">
-            {activeDoc.file_type}
-            {activeDoc.page_count ? ` · ${activeDoc.page_count} pages` : ''}
-          </span>
+          <>
+            <button onClick={() => { /* TODO: trigger search in PDF viewer */ }} className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition-colors cursor-pointer" title="Find in document">
+              <Search className="size-3.5" />
+            </button>
+            <a href={`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/v1/documents/${activeDoc.id}/download`} download className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition-colors cursor-pointer" title="Download">
+              <Download className="size-3.5" />
+            </a>
+            <button onClick={closeDoc} className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition-colors cursor-pointer" title="Close">
+              <X className="size-3.5" />
+            </button>
+          </>
         ) : null}
       </div>
 
@@ -561,7 +570,7 @@ export function FilesGrid({
           ) : activeDoc.status === 'failed' ? (
             <FailedViewer title={activeDoc.title || activeDoc.filename} errorMessage={activeDoc.error_message} />
           ) : ['pdf', 'pptx', 'ppt', 'docx', 'doc'].includes(activeDoc.file_type) ? (
-            <PdfDocViewer documentId={activeDoc.id} title={activeDoc.title || activeDoc.filename} initialPage={docInitialPage} />
+            <PdfDocViewer documentId={activeDoc.id} title={activeDoc.title || activeDoc.filename} initialPage={docInitialPage} hideToolbar />
           ) : ['png', 'jpg', 'jpeg', 'webp', 'gif', 'svg'].includes(activeDoc.file_type) ? (
             <ImageViewer documentId={activeDoc.id} title={activeDoc.title || activeDoc.filename} />
           ) : ['html', 'htm'].includes(activeDoc.file_type) ? (

@@ -35,8 +35,8 @@ class Settings(BaseSettings):
     CONVERTER_SECRET: str = ""
 
     GLOBAL_OCR_ENABLED: bool = True
-    GLOBAL_MAX_PAGES: int = 50_000
-    GLOBAL_MAX_USERS: int = 200
+    GLOBAL_MAX_PAGES: int = 1_000_000
+    GLOBAL_MAX_USERS: int = 10_000
 
     SENTRY_DSN: str = ""
 

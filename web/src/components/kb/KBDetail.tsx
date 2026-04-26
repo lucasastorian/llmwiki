@@ -1,7 +1,8 @@
 'use client'
 
 import * as React from 'react'
-import { useRouter, useSearchParams } from 'next/navigation'
+import { useSearchParams } from 'next/navigation'
+import { motion, AnimatePresence } from 'framer-motion'
 import { Upload as UploadIcon, BookOpen, ArrowUpRight, Loader2 } from 'lucide-react'
 import * as tus from 'tus-js-client'
 import { useUserStore } from '@/stores'
@@ -112,7 +113,6 @@ type Props = {
 }
 
 export function KBDetail({ kbId, kbSlug, kbName, viewMode, routeFilesPath }: Props) {
-  const router = useRouter()
   const searchParams = useSearchParams()
   const token = useUserStore((s) => s.accessToken)
   const userId = useUserStore((s) => s.user?.id)
@@ -126,8 +126,8 @@ export function KBDetail({ kbId, kbSlug, kbName, viewMode, routeFilesPath }: Pro
     const url = new URL(window.location.href)
     if (value != null) url.searchParams.set(key, value)
     else url.searchParams.delete(key)
-    router.replace(url.pathname + url.search, { scroll: false })
-  }, [router])
+    window.history.replaceState(window.history.state, '', url.pathname + url.search)
+  }, [])
 
   const navigateToView = React.useCallback((view: ViewMode, opts?: { filesPath?: string; searchParams?: Record<string, string> }) => {
     let url = `/wikis/${kbSlug}`
@@ -142,8 +142,8 @@ export function KBDetail({ kbId, kbSlug, kbName, viewMode, routeFilesPath }: Pro
       const sp = new URLSearchParams(opts.searchParams)
       url += '?' + sp.toString()
     }
-    router.push(url, { scroll: false })
-  }, [kbSlug, router])
+    window.history.pushState(window.history.state, '', url)
+  }, [kbSlug])
 
   // ─── Document splits ─────────────────────────────────────────
   const wikiDocs = React.useMemo(
@@ -183,23 +183,26 @@ export function KBDetail({ kbId, kbSlug, kbName, viewMode, routeFilesPath }: Pro
     }
   }, [urlWikiDocNumber, documents])
 
-  // ─── Source doc selection (from ?doc= search param) ───────────
-  const docParam = searchParams.get('doc')
-  const urlSourceDocNumber = docParam ? parseInt(docParam, 10) : null
+  // ─── Source doc selection ────────────────────────────────────
+  // Read ?doc= only on mount (for bookmarked URLs / browser back-forward)
+  const initialDocParam = React.useRef(searchParams.get('doc'))
+  const initialDocNumber = initialDocParam.current ? parseInt(initialDocParam.current, 10) : null
 
-  const filesInitialDocId = React.useMemo(() => {
-    if (urlSourceDocNumber == null) return null
-    const doc = documents.find((d) => d.document_number === urlSourceDocNumber)
+  const [activeSourceDocId, setActiveSourceDocId] = React.useState<string | null>(() => {
+    if (initialDocNumber == null) return null
+    const doc = documents.find((d) => d.document_number === initialDocNumber)
     return doc?.id ?? null
-  }, [urlSourceDocNumber, documents])
+  })
 
-  // Switch to doc view when ?doc= appears
+  // Resolve initial ?doc= once documents load
   React.useEffect(() => {
-    if (urlSourceDocNumber != null) setActiveView('doc')
-    else if (activeView === 'doc') setActiveView('files')
-    // Only react to urlSourceDocNumber changes, activeView is read-only here
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [urlSourceDocNumber])
+    if (initialDocNumber == null || activeSourceDocId) return
+    const doc = documents.find((d) => d.document_number === initialDocNumber)
+    if (doc) {
+      setActiveSourceDocId(doc.id)
+      setActiveView('doc')
+    }
+  }, [initialDocNumber, documents, activeSourceDocId])
 
   const [filesInitialPage, setFilesInitialPage] = React.useState<number | undefined>()
 
@@ -384,17 +387,24 @@ export function KBDetail({ kbId, kbSlug, kbName, viewMode, routeFilesPath }: Pro
   }, [updateParam, wikiDocs])
 
   const handleFilesToggle = React.useCallback(() => {
-    if (filesViewActive) {
-      // Back to wiki — restore last wiki page via ?p=
+    if (activeView === 'doc') {
+      // Doc is open — close it, go to root file browser
+      setActiveSourceDocId(null)
+      setActiveView('files')
+      navigateToView('files')
+    } else if (activeView === 'files') {
+      // Already browsing files — toggle back to wiki
       const sp = lastWikiDocNumberRef.current != null
         ? { p: String(lastWikiDocNumberRef.current) }
         : undefined
+      setActiveView('wiki')
       navigateToView('wiki', { searchParams: sp })
     } else {
+      // From wiki/graph — switch to files
       setActiveView('files')
       navigateToView('files')
     }
-  }, [filesViewActive, navigateToView])
+  }, [activeView, navigateToView])
 
   const handleGraphToggle = React.useCallback(() => {
     if (graphViewActive) {
@@ -420,14 +430,17 @@ export function KBDetail({ kbId, kbSlug, kbName, viewMode, routeFilesPath }: Pro
       navigateToView('wiki', { searchParams: doc.document_number != null ? { p: String(doc.document_number) } : undefined })
       return
     }
+    setActiveSourceDocId(doc.id)
     setActiveView('doc')
     navigateToView('files', { searchParams: doc.document_number != null ? { doc: String(doc.document_number) } : undefined })
   }, [documents, navigateToView])
 
   const handleOpenSourceDoc = React.useCallback((docId: string) => {
     const doc = documents.find((d) => d.id === docId)
+    if (!doc) return
+    setActiveSourceDocId(doc.id)
     setActiveView('doc')
-    if (doc?.document_number != null) {
+    if (doc.document_number != null) {
       navigateToView('files', { searchParams: { doc: String(doc.document_number) } })
     }
   }, [documents, navigateToView])
@@ -439,9 +452,11 @@ export function KBDetail({ kbId, kbSlug, kbName, viewMode, routeFilesPath }: Pro
       const title = (d.title || '').toLowerCase()
       return fn === lower || title === lower || fn === lower + '.md' || fn.replace(/\.md$/, '') === lower
     })
+    if (!match) return
+    setActiveSourceDocId(match.id)
     setActiveView('doc')
     setFilesInitialPage(page)
-    if (match?.document_number != null) {
+    if (match.document_number != null) {
       navigateToView('files', { searchParams: { doc: String(match.document_number) } })
     }
   }, [sourceDocs, navigateToView])
@@ -571,14 +586,14 @@ export function KBDetail({ kbId, kbSlug, kbName, viewMode, routeFilesPath }: Pro
     input.click()
   }
 
-  const tusUploadFile = React.useCallback((file: File): Promise<void> => {
+  const tusUploadFile = React.useCallback((file: File, targetPath: string = '/'): Promise<void> => {
     const t = getToken()
     if (!t) return Promise.reject(new Error('Not authenticated'))
     return new Promise((resolve, reject) => {
       const upload = new tus.Upload(file, {
         endpoint: `${API_URL}/v1/uploads`,
         retryDelays: [0, 1000, 3000, 5000],
-        metadata: { filename: file.name, knowledge_base_id: kbId },
+        metadata: { filename: file.name, knowledge_base_id: kbId, path: targetPath },
         headers: { Authorization: `Bearer ${t}` },
         onError: (error) => { toast.error(`Upload failed: ${file.name}`); reject(error) },
         onSuccess: () => { toast.success(`${file.name} uploaded, processing...`); resolve() },
@@ -590,6 +605,21 @@ export function KBDetail({ kbId, kbSlug, kbName, viewMode, routeFilesPath }: Pro
   const uploadFiles = React.useCallback((files: File[], targetPath: string = '/') => {
     const t = getToken()
     if (!t || !userId) return
+
+    // Client-side duplicate check — documents are already loaded
+    const existingNames = new Set(
+      documents
+        .filter((d) => d.path === targetPath && !d.archived)
+        .map((d) => d.filename.toLowerCase()),
+    )
+    const duplicates = files.filter((f) => existingNames.has(f.name.toLowerCase()))
+    if (duplicates.length > 0) {
+      const names = duplicates.map((f) => f.name).join(', ')
+      toast.error(`Already exists: ${names}`)
+      if (duplicates.length === files.length) return
+      files = files.filter((f) => !existingNames.has(f.name.toLowerCase()))
+    }
+
     const uploads = files.map(async (file) => {
       const ext = file.name.split('.').pop()?.toLowerCase()
       if (ext === 'md' || ext === 'txt') {
@@ -617,7 +647,7 @@ export function KBDetail({ kbId, kbSlug, kbName, viewMode, routeFilesPath }: Pro
               toast.success(`${file.name} uploaded`)
             } catch { toast.error(`Upload failed: ${file.name}`) }
           } else {
-            await tusUploadFile(file)
+            await tusUploadFile(file, targetPath)
           }
         } else {
           toast.info(`${ext} files not yet supported`)
@@ -628,7 +658,7 @@ export function KBDetail({ kbId, kbSlug, kbName, viewMode, routeFilesPath }: Pro
       const textFiles = files.filter((f) => /\.(md|txt)$/i.test(f.name))
       if (textFiles.length > 0) toast.success(`Imported ${textFiles.length} file${textFiles.length > 1 ? 's' : ''}`)
     })
-  }, [kbId, userId, tusUploadFile])
+  }, [kbId, userId, tusUploadFile, documents])
 
   // ─── Drag-and-drop ───────────────────────────────────────────
   const [fileDragOver, setFileDragOver] = React.useState(false)
@@ -667,17 +697,24 @@ export function KBDetail({ kbId, kbSlug, kbName, viewMode, routeFilesPath }: Pro
   const handleFilesPathChange = React.useCallback((path: string) => {
     const clean = path === '/' ? '' : path.replace(/^\//, '').replace(/\/$/, '')
     const url = `/wikis/${kbSlug}` + (clean ? `/files/${encodeURI(clean)}` : '/files')
-    router.replace(url, { scroll: false })
-  }, [kbSlug, router])
+    // Use replaceState to update the URL bar without triggering a Next.js
+    // navigation — avoids re-rendering the page component and the flash
+    // that comes from KBPage → KBDetail → FilesGrid prop cascade.
+    window.history.replaceState(window.history.state, '', url)
+  }, [kbSlug])
 
   const handleFilesDocOpen = React.useCallback((docNumber: number | null) => {
-    if (docNumber != null) {
+    if (docNumber == null) return
+    const doc = documents.find((d) => d.document_number === docNumber)
+    if (doc) {
+      setActiveSourceDocId(doc.id)
       setActiveView('doc')
       updateParam('doc', String(docNumber))
     }
-  }, [updateParam])
+  }, [documents, updateParam])
 
   const handleFilesDocClose = React.useCallback(() => {
+    setActiveSourceDocId(null)
     setActiveView('files')
     updateParam('doc', null)
   }, [updateParam])
@@ -697,15 +734,23 @@ export function KBDetail({ kbId, kbSlug, kbName, viewMode, routeFilesPath }: Pro
       onDragOver={handleFileDragOver}
       onDrop={handleFileDrop}
     >
-      {fileDragOver && (
-        <div className="absolute inset-0 z-50 bg-background/80 backdrop-blur-sm flex items-center justify-center pointer-events-none">
-          <div className="flex flex-col items-center gap-3 border-2 border-dashed border-primary rounded-xl px-12 py-10">
-            <UploadIcon className="size-8 text-primary" />
-            <p className="text-sm font-medium text-primary">Drop files to upload</p>
-            <p className="text-xs text-muted-foreground">PDF, Word, PowerPoint, images, and more</p>
-          </div>
-        </div>
-      )}
+      <AnimatePresence>
+        {fileDragOver && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.15 }}
+            className="absolute inset-0 z-50 bg-background/80 backdrop-blur-sm flex items-center justify-center pointer-events-none"
+          >
+            <div className="flex flex-col items-center gap-3 border-2 border-dashed border-primary rounded-xl px-12 py-10">
+              <UploadIcon className="size-8 text-primary" />
+              <p className="text-sm font-medium text-primary">Drop files to upload</p>
+              <p className="text-xs text-muted-foreground">PDF, Word, PowerPoint, images, and more</p>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <div className="flex-1 overflow-hidden flex">
         <div className="w-64 shrink-0">
@@ -727,76 +772,126 @@ export function KBDetail({ kbId, kbSlug, kbName, viewMode, routeFilesPath }: Pro
           />
         </div>
         <div className="flex-1 min-w-0">
-          {showMainLoading ? (
-            <div className="flex items-center justify-center h-full">
-              <Loader2 className="size-5 animate-spin text-muted-foreground" />
-            </div>
-          ) : graphViewActive ? (
-            <GraphViewer
-              kbId={kbId}
-              focusNodeId={graphFocusNodeId}
-              onNavigateToDoc={handleGraphNodeClick}
-            />
-          ) : filesViewActive ? (
-            <FilesGrid
-              key={filesInitialDocId ?? 'browse'}
-              documents={documents}
-              onDeleteDocument={handleDeleteDocument}
-              onRenameDocument={handleRenameDocument}
-              onUpload={handleUploadClick}
-              onCreateNote={handleCreateNote}
-              onCreateFolder={handleCreateFolder}
-              onMoveDocument={handleMoveDocument}
-              onUploadFiles={uploadFiles}
-              initialDocId={filesInitialDocId}
-              initialPage={filesInitialPage}
-              initialPath={routeFilesPath}
-              onPathChange={handleFilesPathChange}
-              onDocOpen={handleFilesDocOpen}
-              onDocClose={handleFilesDocClose}
-            />
-          ) : pageLoading ? (
-            <div className="flex items-center justify-center h-full">
-              <Loader2 className="size-5 animate-spin text-muted-foreground" />
-            </div>
-          ) : hasNavigableWiki && wikiActivePath ? (
-            <WikiContent
-              content={pageContent}
-              title={pageTitle}
-              onNavigate={handleWikiNavigate}
-              onSourceClick={handleCitationSourceClick}
-              onGraphClick={handlePageGraphClick}
-              documents={documents}
-            />
-          ) : (
-            <div className="flex flex-col items-center justify-center h-full gap-4 px-6">
-              <BookOpen className="size-10 text-muted-foreground/20" />
-              <div className="text-center max-w-sm">
-                <h3 className="text-base font-medium mb-1.5">No wiki yet</h3>
-                <p className="text-sm text-muted-foreground leading-relaxed">
-                  Add some sources, then ask Claude to compile a wiki from them.
-                </p>
-              </div>
-              <div className="flex items-center gap-3 mt-2">
-                <button
-                  onClick={() => handleUploadClick()}
-                  className="inline-flex items-center gap-2 rounded-full bg-foreground text-background px-5 py-2 text-sm font-medium hover:opacity-90 transition-opacity cursor-pointer"
-                >
-                  <UploadIcon className="size-3.5 opacity-60" />
-                  Upload Sources
-                </button>
-                <a
-                  href="https://claude.ai"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-2 rounded-full border border-border px-5 py-2 text-sm font-medium hover:bg-accent transition-colors"
-                >
-                  Open Claude
-                  <ArrowUpRight className="size-3.5 opacity-60" />
-                </a>
-              </div>
-            </div>
-          )}
+          <AnimatePresence mode="wait">
+            {showMainLoading ? (
+              <motion.div
+                key="loading"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.1 }}
+                className="flex items-center justify-center h-full"
+              >
+                <Loader2 className="size-5 animate-spin text-muted-foreground" />
+              </motion.div>
+            ) : graphViewActive ? (
+              <motion.div
+                key="graph"
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                transition={{ duration: 0.15, ease: [0.25, 0.1, 0.25, 1] }}
+                className="h-full"
+              >
+                <GraphViewer
+                  kbId={kbId}
+                  focusNodeId={graphFocusNodeId}
+                  onNavigateToDoc={handleGraphNodeClick}
+                />
+              </motion.div>
+            ) : filesViewActive ? (
+              <motion.div
+                key="files"
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                transition={{ duration: 0.15, ease: [0.25, 0.1, 0.25, 1] }}
+                className="h-full"
+              >
+                <FilesGrid
+                  key={kbId}
+                  documents={documents}
+                  onDeleteDocument={handleDeleteDocument}
+                  onRenameDocument={handleRenameDocument}
+                  onUpload={handleUploadClick}
+                  onCreateNote={handleCreateNote}
+                  onCreateFolder={handleCreateFolder}
+                  onMoveDocument={handleMoveDocument}
+                  onUploadFiles={uploadFiles}
+                  initialDocId={activeSourceDocId}
+                  initialPage={filesInitialPage}
+                  initialPath={routeFilesPath}
+                  onPathChange={handleFilesPathChange}
+                  onDocOpen={handleFilesDocOpen}
+                  onDocClose={handleFilesDocClose}
+                />
+              </motion.div>
+            ) : pageLoading ? (
+              <motion.div
+                key="wiki-loading"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.1 }}
+                className="flex items-center justify-center h-full"
+              >
+                <Loader2 className="size-5 animate-spin text-muted-foreground" />
+              </motion.div>
+            ) : hasNavigableWiki && wikiActivePath ? (
+              <motion.div
+                key={`wiki-${wikiActivePath}`}
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.15, ease: [0.25, 0.1, 0.25, 1] }}
+                className="h-full"
+              >
+                <WikiContent
+                  content={pageContent}
+                  title={pageTitle}
+                  onNavigate={handleWikiNavigate}
+                  onSourceClick={handleCitationSourceClick}
+                  onGraphClick={handlePageGraphClick}
+                  documents={documents}
+                />
+              </motion.div>
+            ) : (
+              <motion.div
+                key="empty"
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.2, ease: [0.25, 0.1, 0.25, 1] }}
+                className="flex flex-col items-center justify-center h-full gap-4 px-6"
+              >
+                <BookOpen className="size-10 text-muted-foreground/20" />
+                <div className="text-center max-w-sm">
+                  <h3 className="text-base font-medium mb-1.5">No wiki yet</h3>
+                  <p className="text-sm text-muted-foreground leading-relaxed">
+                    Add some sources, then ask Claude to compile a wiki from them.
+                  </p>
+                </div>
+                <div className="flex items-center gap-3 mt-2">
+                  <button
+                    onClick={() => handleUploadClick()}
+                    className="inline-flex items-center gap-2 rounded-full bg-foreground text-background px-5 py-2 text-sm font-medium hover:opacity-90 transition-opacity cursor-pointer"
+                  >
+                    <UploadIcon className="size-3.5 opacity-60" />
+                    Upload Sources
+                  </button>
+                  <a
+                    href="https://claude.ai"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-2 rounded-full border border-border px-5 py-2 text-sm font-medium hover:bg-accent transition-colors"
+                  >
+                    Open Claude
+                    <ArrowUpRight className="size-3.5 opacity-60" />
+                  </a>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
       </div>
 

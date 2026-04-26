@@ -13,6 +13,7 @@ import { cn } from '@/lib/utils'
 import { apiFetch } from '@/lib/api'
 import { useUserStore } from '@/stores'
 import { MermaidBlock } from './MermaidBlock'
+import { ExpandableMedia } from './DiagramViewer'
 import type { DocumentListItem } from '@/lib/types'
 
 export interface TocItem {
@@ -289,28 +290,32 @@ function WikiImage({
     }
   }, [src, documents, token, wikiActivePath])
 
-  // Inline SVG rendering — encode as data URI to avoid React DOM warnings for SVG elements like <text>
+  // Inline SVG rendering
   if (svgContent) {
     const dataUri = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svgContent)}`
     return (
-      // eslint-disable-next-line @next/next/no-img-element
-      <img
-        src={dataUri}
-        alt={alt || ''}
-        className="max-w-full h-auto my-5 mx-auto block"
-      />
+      <ExpandableMedia content={svgContent} type="svg" alt={alt}>
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={dataUri}
+          alt={alt || ''}
+          className="max-w-full h-auto my-5 mx-auto block"
+        />
+      </ExpandableMedia>
     )
   }
 
   // Resolved image URL (binary or data URI)
   if (imageUrl) {
     return (
-      // eslint-disable-next-line @next/next/no-img-element
-      <img
-        src={imageUrl}
-        alt={alt || ''}
-        className="max-w-full h-auto rounded-lg my-5 border border-border/30"
-      />
+      <ExpandableMedia content={imageUrl} type="img" alt={alt}>
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={imageUrl}
+          alt={alt || ''}
+          className="max-w-full h-auto rounded-lg my-5 border border-border/30"
+        />
+      </ExpandableMedia>
     )
   }
 

@@ -352,20 +352,55 @@ class HostedDocumentService(DocumentService):
         return dict(row) if row else None
 
     async def delete(self, doc_id: str) -> bool:
-        result = await self.pool.execute(
-            "UPDATE documents SET archived = true, updated_at = now() WHERE id = $1 AND user_id = $2",
+        # Wiki pages are archived to preserve slugs and cross-references;
+        # source documents are hard-deleted so the filename can be re-used.
+        row = await self.pool.fetchrow(
+            "SELECT path FROM documents WHERE id = $1 AND user_id = $2",
             doc_id, self.user_id,
         )
-        return result != "UPDATE 0"
+        if not row:
+            return False
+        if (row["path"] or "").startswith("/wiki/"):
+            result = await self.pool.execute(
+                "UPDATE documents SET archived = true, updated_at = now() WHERE id = $1 AND user_id = $2",
+                doc_id, self.user_id,
+            )
+            return result != "UPDATE 0"
+        await self.pool.execute("DELETE FROM document_pages WHERE document_id = $1", doc_id)
+        await self.pool.execute("DELETE FROM document_chunks WHERE document_id = $1", doc_id)
+        await self.pool.execute("DELETE FROM document_references WHERE source_document_id = $1 OR target_document_id = $1", doc_id)
+        result = await self.pool.execute(
+            "DELETE FROM documents WHERE id = $1 AND user_id = $2",
+            doc_id, self.user_id,
+        )
+        return result != "DELETE 0"
 
     async def bulk_delete(self, doc_ids: list[str]) -> int:
         if not doc_ids:
             return 0
-        result = await self.pool.execute(
-            "UPDATE documents SET archived = true, updated_at = now() WHERE id = ANY($1::uuid[]) AND user_id = $2",
+        rows = await self.pool.fetch(
+            "SELECT id::text, path FROM documents WHERE id = ANY($1::uuid[]) AND user_id = $2",
             doc_ids, self.user_id,
         )
-        return int(result.split()[-1]) if result else 0
+        wiki_ids = [r["id"] for r in rows if (r["path"] or "").startswith("/wiki/")]
+        source_ids = [r["id"] for r in rows if not (r["path"] or "").startswith("/wiki/")]
+        count = 0
+        if wiki_ids:
+            result = await self.pool.execute(
+                "UPDATE documents SET archived = true, updated_at = now() WHERE id = ANY($1::uuid[]) AND user_id = $2",
+                wiki_ids, self.user_id,
+            )
+            count += int(result.split()[-1]) if result else 0
+        if source_ids:
+            await self.pool.execute("DELETE FROM document_pages WHERE document_id = ANY($1::uuid[])", source_ids)
+            await self.pool.execute("DELETE FROM document_chunks WHERE document_id = ANY($1::uuid[])", source_ids)
+            await self.pool.execute("DELETE FROM document_references WHERE source_document_id = ANY($1::uuid[]) OR target_document_id = ANY($1::uuid[])", source_ids)
+            result = await self.pool.execute(
+                "DELETE FROM documents WHERE id = ANY($1::uuid[]) AND user_id = $2",
+                source_ids, self.user_id,
+            )
+            count += int(result.split()[-1]) if result else 0
+        return count
 
 
 class HostedServiceFactory(ServiceFactory):

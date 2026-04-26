@@ -105,6 +105,12 @@ export function SignupForm() {
           Already have an account?{' '}
           <a href="/login" className="font-medium text-foreground underline">Sign in</a>
         </p>
+        <p className="text-center text-xs text-muted-foreground/60">
+          By signing up, you agree to our{' '}
+          <a href="/terms" target="_blank" rel="noopener noreferrer" className="underline underline-offset-2 hover:text-muted-foreground transition-colors">Terms of Service</a>
+          {' '}and{' '}
+          <a href="/privacy" target="_blank" rel="noopener noreferrer" className="underline underline-offset-2 hover:text-muted-foreground transition-colors">Privacy Policy</a>.
+        </p>
       </div>
     </div>
   )

@@ -74,7 +74,8 @@ export default function LandingPage() {
         <div className="max-w-2xl mx-auto text-center">
           <MotionDiv
             initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
+            whileInView={{ opacity: 1, y: 0 }}
+            viewport={{ once: true }}
             transition={{ duration: 0.8, ease }}
           >
             <p className="text-sm text-muted-foreground mb-4">
@@ -93,7 +94,8 @@ export default function LandingPage() {
 
           <MotionP
             initial={{ opacity: 0, y: 16 }}
-            animate={{ opacity: 1, y: 0 }}
+            whileInView={{ opacity: 1, y: 0 }}
+            viewport={{ once: true }}
             transition={{ duration: 0.8, delay: 0.12, ease }}
             className="mt-6 text-base sm:text-lg text-muted-foreground max-w-md mx-auto leading-relaxed"
           >
@@ -102,7 +104,8 @@ export default function LandingPage() {
 
           <MotionDiv
             initial={{ opacity: 0, y: 12 }}
-            animate={{ opacity: 1, y: 0 }}
+            whileInView={{ opacity: 1, y: 0 }}
+            viewport={{ once: true }}
             transition={{ duration: 0.7, delay: 0.25, ease }}
             className="mt-9 flex items-center justify-center gap-3"
           >
@@ -127,7 +130,8 @@ export default function LandingPage() {
       <section className="px-6 lg:px-10 pb-28">
         <MotionDiv
           initial={{ opacity: 0, y: 30 }}
-          animate={{ opacity: 1, y: 0 }}
+          whileInView={{ opacity: 1, y: 0 }}
+          viewport={{ once: true }}
           transition={{ duration: 0.9, delay: 0.4, ease }}
           className="max-w-5xl mx-auto"
         >
@@ -359,7 +363,11 @@ export default function LandingPage() {
       {/* Footer */}
       <footer className="border-t border-border px-6 lg:px-10 py-6 flex items-center justify-between text-xs text-muted-foreground/50">
         <span>LLM Wiki</span>
-        <span>Free &amp; open source &middot; Apache 2.0</span>
+        <div className="flex items-center gap-4">
+          <Link href="/terms" className="hover:text-muted-foreground transition-colors">Terms</Link>
+          <Link href="/privacy" className="hover:text-muted-foreground transition-colors">Privacy</Link>
+          <span>Free &amp; open source &middot; Apache 2.0</span>
+        </div>
       </footer>
     </div>
   )

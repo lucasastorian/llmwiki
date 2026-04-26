@@ -2,6 +2,7 @@
 
 import * as React from 'react'
 import { useRouter } from 'next/navigation'
+import { motion } from 'framer-motion'
 import { useKBStore, useUserStore } from '@/stores'
 import {
   Plus, Loader2, Upload, LogOut, Moon, Sun, BookOpen,
@@ -112,14 +113,20 @@ export default function WikisPage() {
                   title: 'Ask Claude',
                   desc: 'Claude reads your sources and compiles a wiki with cross-references and summaries.',
                 },
-              ].map((item) => (
-                <div key={item.step} className="rounded-xl border border-border p-5 bg-card">
+              ].map((item, i) => (
+                <motion.div
+                  key={item.step}
+                  initial={{ opacity: 0, y: 12 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.3, delay: i * 0.08, ease: [0.25, 0.1, 0.25, 1] }}
+                  className="rounded-xl border border-border p-5 bg-card"
+                >
                   <div className="flex items-center justify-center w-7 h-7 rounded-full bg-foreground text-background text-xs font-bold mb-3">
                     {item.step}
                   </div>
                   <h3 className="text-sm font-semibold mb-1">{item.title}</h3>
                   <p className="text-xs text-muted-foreground leading-relaxed">{item.desc}</p>
-                </div>
+                </motion.div>
               ))}
             </div>
 
@@ -164,14 +171,19 @@ export default function WikisPage() {
       <div className="flex-1 overflow-y-auto">
         <div className="max-w-4xl mx-auto px-8 py-6">
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            {knowledgeBases.map((kb) => {
+            {knowledgeBases.map((kb, index) => {
               const stats: string[] = []
               if (kb.source_count > 0) stats.push(`${kb.source_count} source${kb.source_count !== 1 ? 's' : ''}`)
               if (kb.wiki_page_count > 0) stats.push(`${kb.wiki_page_count} page${kb.wiki_page_count !== 1 ? 's' : ''}`)
 
               return (
-                <button
+                <motion.div
                   key={kb.id}
+                  initial={{ opacity: 0, y: 12 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.3, delay: index * 0.05, ease: [0.25, 0.1, 0.25, 1] }}
+                >
+                <button
                   onClick={() => router.push(`/wikis/${kb.slug}`)}
                   className="flex flex-col items-start gap-3 p-5 rounded-xl border border-border bg-card hover:bg-accent/50 transition-colors cursor-pointer text-left group overflow-hidden"
                 >
@@ -197,6 +209,7 @@ export default function WikisPage() {
                     </span>
                   </div>
                 </button>
+                </motion.div>
               )
             })}
 

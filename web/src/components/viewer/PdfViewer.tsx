@@ -17,11 +17,12 @@ type Props = {
   title?: string
   className?: string
   initialPage?: number
+  hideToolbar?: boolean
 }
 
 const VIRTUALIZE_BUFFER = 2
 
-export default function PdfViewer({ fileUrl, title, className, initialPage }: Props) {
+export default function PdfViewer({ fileUrl, title, className, initialPage, hideToolbar }: Props) {
   const [numPages, setNumPages] = useState(0)
   const [currentPage, setCurrentPage] = useState(1)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -448,7 +449,7 @@ export default function PdfViewer({ fileUrl, title, className, initialPage }: Pr
 
   return (
     <div className={cn('flex flex-col h-full', className)}>
-      {numPages > 0 && (
+      {numPages > 0 && !hideToolbar && (
         <div className="flex items-center gap-0.5 px-4 py-1.5 border-b border-border text-xs text-muted-foreground flex-shrink-0">
           {searchOpen ? (
             <>

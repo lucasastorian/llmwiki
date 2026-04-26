@@ -42,11 +42,11 @@ function ErrorMessage({ message }: { message: string }) {
   )
 }
 
-export function PdfDocViewer({ documentId, title, initialPage }: { documentId: string; title: string; initialPage?: number }) {
+export function PdfDocViewer({ documentId, title, initialPage, hideToolbar }: { documentId: string; title: string; initialPage?: number; hideToolbar?: boolean }) {
   const { url, error } = useDocumentUrl(documentId)
   if (error) return <ErrorMessage message="Failed to load PDF" />
   if (!url) return <LoadingSpinner />
-  return <PdfViewer fileUrl={url} title={title} initialPage={initialPage} />
+  return <PdfViewer fileUrl={url} title={title} initialPage={initialPage} hideToolbar={hideToolbar} />
 }
 
 export function ImageViewer({ documentId, title }: { documentId: string; title: string }) {

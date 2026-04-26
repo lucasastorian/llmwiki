@@ -103,6 +103,12 @@ function LoginFormInner() {
           Don&apos;t have an account?{' '}
           <a href="/signup" className="font-medium text-foreground underline">Sign up</a>
         </p>
+        <p className="text-center text-xs text-muted-foreground/60">
+          By signing in, you agree to our{' '}
+          <a href="/terms" target="_blank" rel="noopener noreferrer" className="underline underline-offset-2 hover:text-muted-foreground transition-colors">Terms of Service</a>
+          {' '}and{' '}
+          <a href="/privacy" target="_blank" rel="noopener noreferrer" className="underline underline-offset-2 hover:text-muted-foreground transition-colors">Privacy Policy</a>.
+        </p>
       </div>
     </div>
   )

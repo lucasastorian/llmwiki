@@ -196,6 +196,44 @@
   .prose a {
     @apply text-foreground underline underline-offset-2 decoration-foreground/30 hover:decoration-foreground transition-colors;
   }
+
+  /* Policy page styling — roomier than wiki prose */
+  .policy-prose {
+    @apply text-[15px] leading-[1.75] text-muted-foreground;
+  }
+  .policy-prose h1 {
+    @apply text-3xl font-bold tracking-tight text-foreground mb-1 leading-tight;
+  }
+  .policy-prose h2 {
+    @apply text-xl font-semibold tracking-tight text-foreground mt-12 mb-4 pt-6 border-t border-border;
+  }
+  .policy-prose h3 {
+    @apply text-base font-semibold text-foreground mt-8 mb-3;
+  }
+  .policy-prose p {
+    @apply my-4;
+  }
+  .policy-prose ul {
+    @apply my-4 list-disc pl-6 space-y-2;
+  }
+  .policy-prose ol {
+    @apply my-4 list-decimal pl-6 space-y-2;
+  }
+  .policy-prose li {
+    @apply pl-1;
+  }
+  .policy-prose strong {
+    @apply font-semibold text-foreground;
+  }
+  .policy-prose a {
+    @apply text-foreground underline underline-offset-2 decoration-foreground/30 hover:decoration-foreground transition-colors;
+  }
+  .policy-prose hr {
+    @apply my-10 border-border;
+  }
+  .policy-prose blockquote {
+    @apply border-l-2 border-border pl-4 my-4 italic text-muted-foreground/80;
+  }
 }
 
 @layer utilities {

@@ -212,12 +212,13 @@ class TestUpdateMetadata:
 
 class TestDeleteDocument:
 
-    async def test_delete_archives_document(self, client, pool):
+    async def test_delete_wiki_page_archives(self, client, pool):
+        """Wiki pages (path=/wiki/) are archived, not hard-deleted."""
         headers = auth_headers(USER_ID)
         create_resp = await client.post(
             f"/v1/knowledge-bases/{KB_ID}/documents/note",
             headers=headers,
-            json={"filename": "to-archive.md", "content": "x " * 70},
+            json={"filename": "to-archive.md", "path": "/wiki/", "content": "x " * 70},
         )
         doc_id = create_resp.json()["id"]
 
@@ -225,9 +226,26 @@ class TestDeleteDocument:
         assert resp.status_code == 204
 
         row = await pool.fetchrow("SELECT archived FROM documents WHERE id = $1", doc_id)
+        assert row is not None
         assert row["archived"] is True
 
-    async def test_archived_doc_not_in_list(self, client):
+    async def test_delete_source_doc_hard_deletes(self, client, pool):
+        """Source documents (non-wiki path) are hard-deleted from the database."""
+        headers = auth_headers(USER_ID)
+        create_resp = await client.post(
+            f"/v1/knowledge-bases/{KB_ID}/documents/note",
+            headers=headers,
+            json={"filename": "to-delete.md", "path": "/", "content": "x " * 70},
+        )
+        doc_id = create_resp.json()["id"]
+
+        resp = await client.delete(f"/v1/documents/{doc_id}", headers=headers)
+        assert resp.status_code == 204
+
+        row = await pool.fetchrow("SELECT id FROM documents WHERE id = $1", doc_id)
+        assert row is None
+
+    async def test_deleted_doc_not_in_list(self, client):
         headers = auth_headers(USER_ID)
         create_resp = await client.post(
             f"/v1/knowledge-bases/{KB_ID}/documents/note",
@@ -244,14 +262,15 @@ class TestDeleteDocument:
         doc_ids = [d["id"] for d in list_resp.json()]
         assert doc_id not in doc_ids
 
-    async def test_bulk_delete_archives_multiple(self, client, pool):
+    async def test_bulk_delete_wiki_archives(self, client, pool):
+        """Bulk delete archives wiki pages."""
         headers = auth_headers(USER_ID)
         ids = []
         for i in range(3):
             r = await client.post(
                 f"/v1/knowledge-bases/{KB_ID}/documents/note",
                 headers=headers,
-                json={"filename": f"bulk-{i}.md", "content": "x " * 70},
+                json={"filename": f"bulk-wiki-{i}.md", "path": "/wiki/", "content": "x " * 70},
             )
             ids.append(r.json()["id"])
 
@@ -264,4 +283,28 @@ class TestDeleteDocument:
 
         for doc_id in ids:
             row = await pool.fetchrow("SELECT archived FROM documents WHERE id = $1", doc_id)
+            assert row is not None
             assert row["archived"] is True
+
+    async def test_bulk_delete_source_hard_deletes(self, client, pool):
+        """Bulk delete hard-deletes source documents."""
+        headers = auth_headers(USER_ID)
+        ids = []
+        for i in range(3):
+            r = await client.post(
+                f"/v1/knowledge-bases/{KB_ID}/documents/note",
+                headers=headers,
+                json={"filename": f"bulk-src-{i}.md", "path": "/", "content": "x " * 70},
+            )
+            ids.append(r.json()["id"])
+
+        resp = await client.post(
+            "/v1/documents/bulk-delete",
+            headers=headers,
+            json={"ids": ids},
+        )
+        assert resp.status_code == 204
+
+        for doc_id in ids:
+            row = await pool.fetchrow("SELECT id FROM documents WHERE id = $1", doc_id)
+            assert row is None
