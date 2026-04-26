@@ -1,4 +1,4 @@
-"""Local document processor — runs OCR/extraction without S3 or Postgres.
+"""Local document processor — runs extraction without S3 or Postgres.
 
 Processes files directly from the workspace filesystem and updates SQLite.
 Respects PDF_BACKEND config and optional Mistral/LibreOffice backends.
@@ -23,6 +23,8 @@ PDF_TYPES = frozenset({"pdf"})
 SPREADSHEET_TYPES = frozenset({"xlsx", "xls"})
 IMAGE_TYPES = frozenset({"png", "jpg", "jpeg", "webp", "gif"})
 OFFICE_TYPES = frozenset({"pptx", "ppt", "docx", "doc"})
+
+from services.pdf_extract import extract_pdf
 
 
 async def process_document(db: aiosqlite.Connection, doc_id: str, workspace: Path) -> None:
@@ -103,90 +105,46 @@ async def _store_chunks(db: aiosqlite.Connection, doc_id: str, chunks: list) -> 
         )
 
 
+# ── PDF extraction ────────────────────────────────────────────────────────
+
+async def _store_page_contents(
+    db: aiosqlite.Connection, doc_id: str,
+    page_contents: list[tuple[int, str]], parser: str,
+) -> None:
+    """Store extracted pages, chunks, and update document status."""
+    num_pages = len(page_contents)
+
+    await db.execute("DELETE FROM document_pages WHERE document_id = ?", (doc_id,))
+    for page_num, content in page_contents:
+        await db.execute(
+            "INSERT INTO document_pages (id, document_id, page, content) VALUES (?, ?, ?, ?)",
+            (str(uuid.uuid4()), doc_id, page_num, content),
+        )
+
+    full_content = "\n\n---\n\n".join(md for _, md in page_contents)
+
+    from services.chunker import chunk_pages
+    chunks = chunk_pages(page_contents)
+    await _store_chunks(db, doc_id, chunks)
+
+    await db.execute(
+        "UPDATE documents SET status = 'ready', content = ?, page_count = ?, "
+        "parser = ?, updated_at = datetime('now') WHERE id = ?",
+        (full_content, num_pages, parser, doc_id),
+    )
+    await db.commit()
+
+
 async def _process_pdf(db: aiosqlite.Connection, doc_id: str, file_path: Path, workspace: Path) -> None:
-    """Extract PDF text. Uses pdf_oxide by default, Mistral if configured."""
+    """Extract PDF text. Uses opendataloader by default, Mistral if configured."""
     if settings.PDF_BACKEND == "mistral" and settings.MISTRAL_API_KEY:
         await _process_pdf_mistral(db, doc_id, file_path, workspace)
     else:
-        await _process_pdf_oxide(db, doc_id, file_path)
+        page_contents = await asyncio.to_thread(extract_pdf, str(file_path))
+        await _store_page_contents(db, doc_id, page_contents, "opendataloader")
 
 
-async def _process_pdf_oxide(db: aiosqlite.Connection, doc_id: str, file_path: Path) -> None:
-    """Extract PDF text via pdf-oxide (free, local)."""
-    from services.ocr import OCRService
-
-    page_contents = await asyncio.to_thread(
-        OCRService._extract_pdf_oxide, str(file_path),
-    )
-    num_pages = len(page_contents)
-
-    await db.execute("DELETE FROM document_pages WHERE document_id = ?", (doc_id,))
-    for page_num, content in page_contents:
-        await db.execute(
-            "INSERT INTO document_pages (id, document_id, page, content) VALUES (?, ?, ?, ?)",
-            (str(uuid.uuid4()), doc_id, page_num, content),
-        )
-
-    full_content = "\n\n---\n\n".join(md for _, md in page_contents)
-
-    from services.chunker import chunk_pages
-    chunks = chunk_pages(page_contents)
-    await _store_chunks(db, doc_id, chunks)
-
-    await db.execute(
-        "UPDATE documents SET status = 'ready', content = ?, page_count = ?, "
-        "parser = 'pdf_oxide', updated_at = datetime('now') WHERE id = ?",
-        (full_content, num_pages, doc_id),
-    )
-    await db.commit()
-
-
-async def _process_pdf_mistral(db: aiosqlite.Connection, doc_id: str, file_path: Path, workspace: Path) -> None:
-    """Extract PDF via Mistral OCR API (better tables/layout, requires API key)."""
-    import httpx
-
-    # Upload file to get a signed URL Mistral can access
-    # For local mode, we send the file directly as base64
-    import base64
-    pdf_bytes = file_path.read_bytes()
-    pdf_b64 = base64.b64encode(pdf_bytes).decode()
-
-    async with httpx.AsyncClient(timeout=120) as client:
-        resp = await client.post(
-            "https://api.mistral.ai/v1/ocr",
-            headers={"Authorization": f"Bearer {settings.MISTRAL_API_KEY}"},
-            json={
-                "model": "mistral-ocr-latest",
-                "document": {"type": "document_url", "document_url": f"data:application/pdf;base64,{pdf_b64}"},
-            },
-        )
-        resp.raise_for_status()
-        result = resp.json()
-
-    pages = result.get("pages", [])
-    page_contents = [(i + 1, p.get("markdown", "")) for i, p in enumerate(pages)]
-    num_pages = len(page_contents)
-
-    await db.execute("DELETE FROM document_pages WHERE document_id = ?", (doc_id,))
-    for page_num, content in page_contents:
-        await db.execute(
-            "INSERT INTO document_pages (id, document_id, page, content) VALUES (?, ?, ?, ?)",
-            (str(uuid.uuid4()), doc_id, page_num, content),
-        )
-
-    full_content = "\n\n---\n\n".join(md for _, md in page_contents)
-
-    from services.chunker import chunk_pages
-    chunks = chunk_pages(page_contents)
-    await _store_chunks(db, doc_id, chunks)
-
-    await db.execute(
-        "UPDATE documents SET status = 'ready', content = ?, page_count = ?, "
-        "parser = 'mistral', updated_at = datetime('now') WHERE id = ?",
-        (full_content, num_pages, doc_id),
-    )
-    await db.commit()
-
+# ── Office processing ─────────────────────────────────────────────────────
 
 async def _process_office(db: aiosqlite.Connection, doc_id: str, file_path: Path, workspace: Path) -> None:
     """Convert Office docs to PDF via local LibreOffice, then extract text."""
@@ -221,16 +179,38 @@ async def _process_office(db: aiosqlite.Connection, doc_id: str, file_path: Path
         cache_dir.mkdir(parents=True, exist_ok=True)
         shutil.copy2(converted_pdf, cache_dir / "converted.pdf")
 
-        # Now extract text from the converted PDF
-        await _process_pdf_oxide(db, doc_id, converted_pdf)
+        page_contents = await asyncio.to_thread(extract_pdf, str(converted_pdf))
+        await _store_page_contents(db, doc_id, page_contents, "libreoffice+opendataloader")
 
-        # Update parser to reflect the conversion
-        await db.execute(
-            "UPDATE documents SET parser = 'libreoffice+pdf_oxide' WHERE id = ?",
-            (doc_id,),
+
+# ── Mistral OCR ───────────────────────────────────────────────────────────
+
+async def _process_pdf_mistral(db: aiosqlite.Connection, doc_id: str, file_path: Path, workspace: Path) -> None:
+    """Extract PDF via Mistral OCR API (better tables/layout, requires API key)."""
+    import httpx
+    import base64
+
+    pdf_bytes = file_path.read_bytes()
+    pdf_b64 = base64.b64encode(pdf_bytes).decode()
+
+    async with httpx.AsyncClient(timeout=120) as client:
+        resp = await client.post(
+            "https://api.mistral.ai/v1/ocr",
+            headers={"Authorization": f"Bearer {settings.MISTRAL_API_KEY}"},
+            json={
+                "model": "mistral-ocr-latest",
+                "document": {"type": "document_url", "document_url": f"data:application/pdf;base64,{pdf_b64}"},
+            },
         )
-        await db.commit()
+        resp.raise_for_status()
+        result = resp.json()
 
+    pages = result.get("pages", [])
+    page_contents = [(i + 1, p.get("markdown", "")) for i, p in enumerate(pages)]
+    await _store_page_contents(db, doc_id, page_contents, "mistral")
+
+
+# ── Spreadsheet processing ────────────────────────────────────────────────
 
 async def _process_spreadsheet(db: aiosqlite.Connection, doc_id: str, file_path: Path) -> None:
     """Extract spreadsheet data via openpyxl. Stores pages AND chunks for search."""
@@ -262,7 +242,6 @@ async def _process_spreadsheet(db: aiosqlite.Connection, doc_id: str, file_path:
     wb.close()
     full_content = "\n\n".join(all_content)
 
-    # Chunk for full-text search
     from services.chunker import chunk_pages
     chunks = chunk_pages(page_contents)
     await _store_chunks(db, doc_id, chunks)
@@ -274,6 +253,8 @@ async def _process_spreadsheet(db: aiosqlite.Connection, doc_id: str, file_path:
     )
     await db.commit()
 
+
+# ── Image / HTML processing ──────────────────────────────────────────────
 
 async def _process_image(db: aiosqlite.Connection, doc_id: str) -> None:
     """Images are stored as-is — just mark ready."""
