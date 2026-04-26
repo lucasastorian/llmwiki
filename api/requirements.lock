@@ -1052,6 +1052,10 @@ multidict==6.7.1 \
     #   aiobotocore
     #   aiohttp
     #   yarl
+opendataloader-pdf==2.3.0 \
+    --hash=sha256:1a6245d3f774dab2414ae759b1fc04edfad2f6e17b3c9f9b386b74a58604e20d \
+    --hash=sha256:4abb0737c70b6b6a42b04748945b598f3776d2af7bb26ed275ed1e1f26629ee2
+    # via -r requirements.txt
 openpyxl==3.1.5 \
     --hash=sha256:5282c12b107bffeef825f4617dc029afaf41d0ea60823bbb665ef3079dc79de2 \
     --hash=sha256:cf0e3cf56142039133628b5acffe8ef0c12bc902d2aadd3e0fe5878dc08d1050
@@ -1126,12 +1130,6 @@ packaging==26.2 \
     --hash=sha256:5fc45236b9446107ff2415ce77c807cee2862cb6fac22b8a73826d0693b0980e \
     --hash=sha256:ff452ff5a3e828ce110190feff1178bb1f2ea2281fa2075aadb987c2fb221661
     # via opentelemetry-instrumentation
-pdf-oxide==0.3.21 \
-    --hash=sha256:6d731886f9f33ed89d2a3bd3dec6e3f8a7edc5cf46ef6d8feeb32a30e26b9ac0 \
-    --hash=sha256:6ec7c64959a641619807fc52cf4637ceedbed7e89ca88d3d92b11810a041792e \
-    --hash=sha256:75cc5a286123d3cb760fb66e6208fcbe6bc23b70051926d1470bf69bfc5e5bdc \
-    --hash=sha256:ebfe77ffd0c1c5e55793f48f3128f7da77167a2ad7e2515940791e148a5186c7
-    # via -r requirements.txt
 propcache==0.4.1 \
     --hash=sha256:0002004213ee1f36cfb3f9a42b5066100c44276b9b72b4e1504cddd3d692e86e \
     --hash=sha256:0013cb6f8dde4b2a2f66903b8ba740bdfe378c943c4377a200551ceb27f379e4 \

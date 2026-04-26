@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [master]
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   unit:
     name: Unit tests (no DB)
@@ -25,7 +28,8 @@ jobs:
         run: pip install -r tests/requirements.txt cryptography
 
       - name: Run unit tests
-        run: PYTHONPATH=mcp pytest tests/unit/ -v
+        working-directory: mcp
+        run: pytest ../tests/unit/ -v
 
   mcp-integration:
     name: MCP integration tests (SQLite)
@@ -45,7 +49,8 @@ jobs:
         run: pip install -r tests/requirements.txt cryptography
 
       - name: Run MCP VaultFS + tool handler tests
-        run: PYTHONPATH=mcp pytest tests/integration/mcp/ -v
+        working-directory: mcp
+        run: pytest ../tests/integration/mcp/ -v
 
   api-integration:
     name: API integration tests (Postgres)
