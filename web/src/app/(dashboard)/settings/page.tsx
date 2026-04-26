@@ -121,31 +121,43 @@ export default function SettingsPage() {
 
       {/* MCP Config */}
       <section>
-        <h2 className="text-base font-medium">Connect via OAuth</h2>
+        <h2 className="text-base font-medium">
+          {process.env.NEXT_PUBLIC_MODE === 'local' ? 'Connect Claude' : 'Connect via OAuth'}
+        </h2>
         <p className="mt-2 text-sm text-muted-foreground">
-          Add this configuration to your MCP client. On first connection, it should prompt you to sign in with Supabase.
+          {process.env.NEXT_PUBLIC_MODE === 'local'
+            ? 'Run this command to get the Claude Desktop / Claude Code MCP config for this workspace:'
+            : 'Add this configuration to your MCP client. On first connection, it should prompt you to sign in with Supabase.'
+          }
         </p>
         <div className="relative mt-4">
           <pre className="rounded-lg bg-muted border border-border p-4 text-sm font-mono overflow-x-auto text-foreground">
-            {oauthConfigJson}
+            {process.env.NEXT_PUBLIC_MODE === 'local'
+              ? 'llmwiki mcp-config <workspace-path>'
+              : oauthConfigJson
+            }
           </pre>
-          <button
-            onClick={handleCopyConfig}
-            className={cn(
-              'absolute top-3 right-3 flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs transition-colors cursor-pointer',
-              configCopied
-                ? 'bg-green-500/10 text-green-600 dark:text-green-400'
-                : 'bg-background border border-border text-muted-foreground hover:text-foreground hover:bg-accent'
-            )}
-          >
-            {configCopied ? <><Check size={12} />Copied</> : <><Copy size={12} />Copy</>}
-          </button>
+          {process.env.NEXT_PUBLIC_MODE !== 'local' && (
+            <button
+              onClick={handleCopyConfig}
+              className={cn(
+                'absolute top-3 right-3 flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs transition-colors cursor-pointer',
+                configCopied
+                  ? 'bg-green-500/10 text-green-600 dark:text-green-400'
+                  : 'bg-background border border-border text-muted-foreground hover:text-foreground hover:bg-accent'
+              )}
+            >
+              {configCopied ? <><Check size={12} />Copied</> : <><Copy size={12} />Copy</>}
+            </button>
+          )}
         </div>
-        <p className="mt-3 text-xs text-muted-foreground">
-          MCP URL:
-          {' '}
-          <code className="text-xs bg-muted px-1.5 py-0.5 rounded font-mono">{MCP_URL}</code>
-        </p>
+        {process.env.NEXT_PUBLIC_MODE !== 'local' && (
+          <p className="mt-3 text-xs text-muted-foreground">
+            MCP URL:
+            {' '}
+            <code className="text-xs bg-muted px-1.5 py-0.5 rounded font-mono">{MCP_URL}</code>
+          </p>
+        )}
       </section>
     </div>
   )

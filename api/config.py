@@ -1,10 +1,15 @@
+from typing import Literal
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file="../.env", extra="ignore")
 
-    DATABASE_URL: str
+    MODE: Literal["local", "hosted"] = "local"
+    WORKSPACE_PATH: str = "."
+
+    DATABASE_URL: str = ""
     SUPABASE_URL: str = ""
     SUPABASE_JWT_SECRET: str = ""
     VOYAGE_API_KEY: str = ""
@@ -17,7 +22,7 @@ class Settings(BaseSettings):
     AWS_REGION: str = "us-east-1"
     S3_BUCKET: str = "supavault-documents"
     MISTRAL_API_KEY: str = ""
-    PDF_BACKEND: str = "pdf_oxide"  # "pdf_oxide" or "mistral"
+    PDF_BACKEND: str = "opendataloader"  # "opendataloader" or "mistral"
     STAGE: str = "dev"
     APP_URL: str = "http://localhost:3000"
     API_URL: str = "http://localhost:8000"
@@ -30,8 +35,8 @@ class Settings(BaseSettings):
     CONVERTER_SECRET: str = ""
 
     GLOBAL_OCR_ENABLED: bool = True
-    GLOBAL_MAX_PAGES: int = 50_000
-    GLOBAL_MAX_USERS: int = 200
+    GLOBAL_MAX_PAGES: int = 1_000_000
+    GLOBAL_MAX_USERS: int = 10_000
 
     SENTRY_DSN: str = ""
 

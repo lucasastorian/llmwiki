@@ -6,8 +6,57 @@ on:
   pull_request:
     branches: [master]
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
-  test:
+  unit:
+    name: Unit tests (no DB)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install all dependencies
+        run: |
+          pip install -r api/requirements.txt
+          pip install -r mcp/requirements.txt
+          pip install -r tests/requirements.txt cryptography
+
+      - name: Run API unit tests
+        run: PYTHONPATH=api pytest tests/unit/test_chunker.py tests/unit/test_helpers.py tests/unit/test_pdf_extract.py -v
+
+      - name: Run MCP unit tests
+        working-directory: mcp
+        run: pytest ../tests/unit/mcp/ -v
+
+  mcp-integration:
+    name: MCP integration tests (SQLite)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install MCP dependencies
+        run: pip install -r mcp/requirements.txt
+
+      - name: Install test dependencies
+        run: pip install -r tests/requirements.txt cryptography
+
+      - name: Run MCP VaultFS + tool handler tests
+        working-directory: mcp
+        run: pytest ../tests/integration/mcp/test_vaultfs_contract.py ../tests/integration/mcp/test_tool_handlers.py -v
+
+  postgres-integration:
+    name: Integration tests (Postgres)
     runs-on: ubuntu-latest
 
     services:
@@ -32,11 +81,18 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
-        run: |
-          pip install -r api/requirements.txt
-          pip install -r tests/requirements.txt
-          pip install cryptography
+      - name: Install API dependencies
+        run: pip install -r api/requirements.txt
 
-      - name: Run tests
-        run: pytest -v
+      - name: Install MCP dependencies
+        run: pip install -r mcp/requirements.txt
+
+      - name: Install test dependencies
+        run: pip install -r tests/requirements.txt cryptography
+
+      - name: Run API isolation + lifecycle tests
+        run: PYTHONPATH=api MODE=hosted pytest tests/integration/isolation/ tests/integration/test_kb_lifecycle.py tests/integration/test_note_lifecycle.py -v
+
+      - name: Run MCP Postgres isolation tests
+        working-directory: mcp
+        run: pytest ../tests/integration/mcp/test_mcp_isolation.py -v

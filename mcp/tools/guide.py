@@ -1,8 +1,6 @@
 from mcp.server.fastmcp import FastMCP, Context
 
 from config import settings
-from db import scoped_query
-from .helpers import get_user_id
 
 GUIDE_TEXT = """# LLM Wiki — How It Works
 
@@ -82,6 +80,27 @@ Parent pages summarize; child pages go deep. The UI renders this as an expandabl
 
 **Wiki pages must be substantially richer than a chat response.** They are persistent, curated artifacts.
 
+### Frontmatter — REQUIRED
+
+Every wiki page MUST begin with YAML frontmatter. This metadata powers search, the knowledge graph, and the UI.
+
+```yaml
+---
+title: KV Cache Efficiency
+description: Memory optimization strategies for transformer inference at scale
+date: 2025-03-15
+tags: [inference, memory, optimization, transformers]
+---
+```
+
+Fields:
+- `title` — human-readable page title (required)
+- `description` — one-sentence summary of what this page covers (required). Keep it concrete and specific — this shows up in graph tooltips and search results.
+- `date` — when the page was created or last substantially revised, YYYY-MM-DD (required)
+- `tags` — list of relevant topic tags for filtering and discovery (required, at least 2)
+
+When updating a page, update `date` if the revision is substantial. Always preserve existing frontmatter fields when editing.
+
 ### Structure
 - Start with a summary paragraph (no H1 — the title is rendered by the UI)
 - Use `##` for major sections, `###` for subsections
@@ -152,12 +171,24 @@ Link between wiki pages using standard markdown links to other wiki paths.
 ### Maintain the Wiki (Lint)
 Check for: contradictions, orphan pages, missing cross-references, stale claims, concepts mentioned but lacking their own page. Append a lint entry to `/wiki/log.md`.
 
+## Reference Graph
+
+Every write automatically parses citations and cross-references and stores them as graph edges. This means:
+
+- **After every write**, the response shows which other pages reference the page you just edited — update them if needed.
+- **Backlinks on read**: when you read a page, you see "Referenced by" at the bottom — the incoming graph.
+- **`search(mode="references", path="page.md")`** — shows what a page cites (forward) and what cites it (backlinks).
+- **`search(mode="references", query="uncited")`** — sources uploaded but never cited in any wiki page.
+- **`search(mode="references", query="stale")`** — pages flagged as potentially stale because a page they link to was updated.
+
+Use the reference graph to maintain consistency. After editing a page, check the impact surface in the response and update affected pages.
+
 ## Available Knowledge Bases
 
 """
 
 
-def register(mcp: FastMCP) -> None:
+def register(mcp: FastMCP, get_user_id, fs_factory) -> None:
 
     @mcp.tool(
         name="guide",
@@ -165,17 +196,12 @@ def register(mcp: FastMCP) -> None:
     )
     async def guide(ctx: Context) -> str:
         user_id = get_user_id(ctx)
-        kbs = await scoped_query(
-            user_id,
-            "SELECT name, slug, "
-            "  (SELECT count(*) FROM documents d WHERE d.knowledge_base_id = kb.id AND d.path NOT LIKE '/wiki/%%' AND NOT d.archived) as source_count, "
-            "  (SELECT count(*) FROM documents d WHERE d.knowledge_base_id = kb.id AND d.path LIKE '/wiki/%%' AND NOT d.archived) as wiki_count "
-            "FROM knowledge_bases kb ORDER BY created_at DESC",
-        )
+        fs = fs_factory(user_id)
+        kbs = await fs.list_knowledge_bases()
         if not kbs:
             return GUIDE_TEXT + "No knowledge bases yet. Create one at " + settings.APP_URL + "/wikis"
 
         lines = []
         for kb in kbs:
-            lines.append(f"- **{kb['name']}** (`{kb['slug']}`) — {kb['source_count']} sources, {kb['wiki_count']} wiki pages")
+            lines.append(f"- **{kb['name']}** (`{kb['slug']}`)")
         return GUIDE_TEXT + "\n".join(lines)

@@ -5,15 +5,15 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
-import rehypeSanitize from 'rehype-sanitize'
 import 'katex/dist/katex.min.css'
 import type { Components } from 'react-markdown'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import { FileText } from 'lucide-react'
+import { FileText, Copy, Download, Check, Network } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { apiFetch } from '@/lib/api'
 import { useUserStore } from '@/stores'
 import { MermaidBlock } from './MermaidBlock'
+import { ExpandableMedia } from './DiagramViewer'
 import type { DocumentListItem } from '@/lib/types'
 
 export interface TocItem {
@@ -152,7 +152,7 @@ function CitationBadge({
 }: {
   num: string
   source: string
-  onSourceClick: (source: string) => void
+  onSourceClick: (source: string, page?: number) => void
 }) {
   const [isOpen, setIsOpen] = React.useState(false)
   const hoverTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -177,6 +177,7 @@ function CitationBadge({
   const parts = source.match(/^(.+?)(?:,\s*p\.?\s*(.+))?$/)
   const filename = parts?.[1]?.trim() ?? source
   const pageRef = parts?.[2]?.trim()
+  const pageNum = pageRef ? parseInt(pageRef, 10) : undefined
 
   return (
     <Popover open={isOpen} onOpenChange={setIsOpen}>
@@ -187,7 +188,7 @@ function CitationBadge({
           onMouseLeave={handleMouseLeave}
           onClick={(e) => {
             e.preventDefault()
-            onSourceClick(filename)
+            onSourceClick(filename, pageNum)
           }}
           className="inline-flex items-center gap-0.5 px-1.5 py-0 text-[10px] font-medium bg-accent-blue/10 text-accent-blue rounded-full border border-accent-blue/20 hover:bg-accent-blue/20 transition-colors leading-tight cursor-pointer"
         >
@@ -207,7 +208,7 @@ function CitationBadge({
           className="flex items-start gap-2.5 px-3 py-2.5 cursor-pointer hover:bg-accent/50 transition-colors"
           onClick={() => {
             setIsOpen(false)
-            onSourceClick(filename)
+            onSourceClick(filename, pageNum)
           }}
         >
           <span className="text-muted-foreground shrink-0 mt-0.5">
@@ -289,28 +290,32 @@ function WikiImage({
     }
   }, [src, documents, token, wikiActivePath])
 
-  // Inline SVG rendering — encode as data URI to avoid React DOM warnings for SVG elements like <text>
+  // Inline SVG rendering
   if (svgContent) {
     const dataUri = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svgContent)}`
     return (
-      // eslint-disable-next-line @next/next/no-img-element
-      <img
-        src={dataUri}
-        alt={alt || ''}
-        className="max-w-full h-auto my-5 mx-auto block"
-      />
+      <ExpandableMedia content={svgContent} type="svg" alt={alt}>
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={dataUri}
+          alt={alt || ''}
+          className="max-w-full h-auto my-5 mx-auto block"
+        />
+      </ExpandableMedia>
     )
   }
 
   // Resolved image URL (binary or data URI)
   if (imageUrl) {
     return (
-      // eslint-disable-next-line @next/next/no-img-element
-      <img
-        src={imageUrl}
-        alt={alt || ''}
-        className="max-w-full h-auto rounded-lg my-5 border border-border/30"
-      />
+      <ExpandableMedia content={imageUrl} type="img" alt={alt}>
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={imageUrl}
+          alt={alt || ''}
+          className="max-w-full h-auto rounded-lg my-5 border border-border/30"
+        />
+      </ExpandableMedia>
     )
   }
 
@@ -338,14 +343,34 @@ interface WikiContentProps {
   content: string
   title: string
   onNavigate: (path: string) => void
-  onSourceClick?: (filename: string) => void
+  onSourceClick?: (filename: string, page?: number) => void
+  onGraphClick?: () => void
   documents?: DocumentListItem[]
 }
 
-export function WikiContent({ content, title, onNavigate, onSourceClick, documents }: WikiContentProps) {
+export function WikiContent({ content, title, onNavigate, onSourceClick, onGraphClick, documents }: WikiContentProps) {
   const processedContent = React.useMemo(() => stripLeadingH1(content, title), [content, title])
   const tocItems = React.useMemo(() => extractTocFromMarkdown(processedContent), [processedContent])
   const footnoteSources = React.useMemo(() => parseFootnoteSources(processedContent), [processedContent])
+  const [copied, setCopied] = React.useState(false)
+
+  const handleCopy = React.useCallback(() => {
+    navigator.clipboard.writeText(content).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    })
+  }, [content])
+
+  const handleDownload = React.useCallback(() => {
+    const filename = title ? `${title.replace(/[^\w\s-]/g, '').replace(/\s+/g, '-').toLowerCase()}.md` : 'page.md'
+    const blob = new Blob([content], { type: 'text/markdown' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    a.click()
+    URL.revokeObjectURL(url)
+  }, [content, title])
 
   const components: Components = React.useMemo(
     () => ({
@@ -512,8 +537,8 @@ export function WikiContent({ content, title, onNavigate, onSourceClick, documen
                 <CitationBadge
                   num={num}
                   source={source}
-                  onSourceClick={(filename) => {
-                    if (onSourceClick) onSourceClick(filename)
+                  onSourceClick={(filename, page) => {
+                    if (onSourceClick) onSourceClick(filename, page)
                   }}
                 />
               </sup>
@@ -669,7 +694,34 @@ export function WikiContent({ content, title, onNavigate, onSourceClick, documen
             hasToc ? 'flex-1 max-w-[720px]' : 'w-full',
           )}>
             {title && (
-              <h1 className="text-3xl font-bold tracking-tight mb-2">{title}</h1>
+              <div className="flex items-start justify-between gap-4 mb-2">
+                <h1 className="text-3xl font-bold tracking-tight">{title}</h1>
+                <div className="flex items-center gap-1 shrink-0 mt-1.5">
+                  <button
+                    onClick={handleCopy}
+                    className="p-1.5 rounded-md text-muted-foreground/40 hover:text-muted-foreground hover:bg-accent transition-colors cursor-pointer"
+                    title="Copy markdown"
+                  >
+                    {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+                  </button>
+                  {/* <button
+                    onClick={handleDownload}
+                    className="p-1.5 rounded-md text-muted-foreground/40 hover:text-muted-foreground hover:bg-accent transition-colors cursor-pointer"
+                    title="Download as .md"
+                  >
+                    <Download className="size-3.5" />
+                  </button> */}
+                  {onGraphClick && (
+                    <button
+                      onClick={onGraphClick}
+                      className="p-1.5 rounded-md text-muted-foreground/40 hover:text-muted-foreground hover:bg-accent transition-colors cursor-pointer"
+                      title="Show in graph"
+                    >
+                      <Network className="size-3.5" />
+                    </button>
+                  )}
+                </div>
+              </div>
             )}
             <div className="wiki-content text-[15px] leading-relaxed">
               <ReactMarkdown

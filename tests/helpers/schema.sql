@@ -118,6 +118,39 @@ CREATE TABLE document_chunks (
     UNIQUE(document_id, chunk_index)
 );
 
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS stale_since TIMESTAMPTZ;
+
+CREATE TABLE document_references (
+    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+    source_document_id UUID NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    target_document_id UUID NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    knowledge_base_id UUID NOT NULL REFERENCES knowledge_bases(id) ON DELETE CASCADE,
+    reference_type TEXT NOT NULL CHECK (reference_type IN ('cites', 'links_to')),
+    page INTEGER,
+    created_at TIMESTAMPTZ DEFAULT now() NOT NULL,
+    UNIQUE(source_document_id, target_document_id, reference_type)
+);
+
+CREATE INDEX idx_refs_source ON document_references(source_document_id);
+CREATE INDEX idx_refs_target ON document_references(target_document_id);
+
+CREATE POLICY document_references_select ON document_references
+    FOR SELECT TO authenticated
+    USING (knowledge_base_id IN (
+        SELECT id FROM knowledge_bases WHERE user_id = auth.uid()
+    ));
+
+CREATE POLICY document_references_write ON document_references
+    FOR ALL TO authenticated
+    USING (knowledge_base_id IN (
+        SELECT id FROM knowledge_bases WHERE user_id = auth.uid()
+    ))
+    WITH CHECK (knowledge_base_id IN (
+        SELECT id FROM knowledge_bases WHERE user_id = auth.uid()
+    ));
+
+ALTER TABLE document_references ENABLE ROW LEVEL SECURITY;
+
 CREATE INDEX idx_documents_knowledge_base_id ON documents(knowledge_base_id);
 CREATE INDEX idx_documents_user_id ON documents(user_id);
 CREATE INDEX idx_documents_tags ON documents USING GIN(tags);
@@ -279,3 +312,36 @@ CREATE UNIQUE INDEX idx_documents_kb_number ON documents(knowledge_base_id, docu
 
 GRANT USAGE ON SCHEMA public TO authenticated;
 GRANT SELECT ON ALL TABLES IN SCHEMA public TO authenticated;
+-- Supabase grants full CRUD to authenticated by default; mirror those grants
+-- so RLS write tests and scoped_execute work correctly.
+GRANT INSERT, UPDATE, DELETE ON document_references TO authenticated;
+GRANT INSERT, UPDATE, DELETE ON documents TO authenticated;
+GRANT INSERT, UPDATE, DELETE ON knowledge_bases TO authenticated;
+GRANT UPDATE ON users TO authenticated;
+
+-- Document change notification trigger (mirrors 003_document_notify.sql)
+CREATE OR REPLACE FUNCTION notify_document_change() RETURNS trigger AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    PERFORM pg_notify('document_changes', json_build_object(
+      'event', TG_OP,
+      'id', OLD.id::text,
+      'knowledge_base_id', OLD.knowledge_base_id::text,
+      'user_id', OLD.user_id::text
+    )::text);
+    RETURN OLD;
+  ELSE
+    PERFORM pg_notify('document_changes', json_build_object(
+      'event', TG_OP,
+      'id', NEW.id::text,
+      'knowledge_base_id', NEW.knowledge_base_id::text,
+      'user_id', NEW.user_id::text
+    )::text);
+    RETURN NEW;
+  END IF;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER document_change_trigger
+  AFTER INSERT OR UPDATE OR DELETE ON documents
+  FOR EACH ROW EXECUTE FUNCTION notify_document_change();

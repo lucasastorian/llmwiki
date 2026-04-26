@@ -36,7 +36,8 @@ class APIKeyCreated(APIKeyOut):
 async def list_api_keys(db: Annotated[ScopedDB, Depends(get_scoped_db)]):
     rows = await db.fetch(
         "SELECT id, name, key_prefix, created_at, last_used_at, revoked_at "
-        "FROM api_keys WHERE revoked_at IS NULL ORDER BY created_at DESC"
+        "FROM api_keys WHERE revoked_at IS NULL AND user_id = $1 ORDER BY created_at DESC",
+        db.user_id,
     )
     return rows
 

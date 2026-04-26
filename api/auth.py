@@ -31,27 +31,26 @@ async def _fetch_jwks() -> None:
     logger.info("Fetched %d JWKS keys from Supabase", len(_jwks_cache))
 
 
-async def get_current_user(request: Request) -> str:
-    auth_header = request.headers.get("Authorization")
-    if not auth_header or not auth_header.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Missing authorization header")
+async def verify_token(token: str) -> str:
+    """Verify a Supabase JWT and return the user_id (sub claim).
 
-    token = auth_header.removeprefix("Bearer ").strip()
-
+    Raises ValueError on any verification failure. Use this for non-HTTP contexts
+    (e.g. WebSocket auth) where HTTPException is not appropriate.
+    """
     try:
         header = jwt.get_unverified_header(token)
     except jwt.InvalidTokenError:
-        raise HTTPException(status_code=401, detail="Invalid token")
+        raise ValueError("Invalid token")
 
     kid = header.get("kid")
     if not kid:
-        raise HTTPException(status_code=401, detail="Token missing kid header")
+        raise ValueError("Token missing kid header")
 
     if kid not in _jwks_cache:
         if time.monotonic() - _jwks_last_fetch >= _JWKS_MIN_REFRESH:
             await _fetch_jwks()
         if kid not in _jwks_cache:
-            raise HTTPException(status_code=401, detail="Unknown signing key")
+            raise ValueError("Unknown signing key")
 
     jwk = _jwks_cache[kid]
     try:
@@ -63,10 +62,22 @@ async def get_current_user(request: Request) -> str:
         )
     except jwt.InvalidTokenError as e:
         logger.debug("JWT verification failed: %s", e)
-        raise HTTPException(status_code=401, detail="Invalid token")
+        raise ValueError("Invalid token")
 
     user_id = payload.get("sub")
     if not user_id:
-        raise HTTPException(status_code=401, detail="Token missing sub claim")
+        raise ValueError("Token missing sub claim")
 
     return user_id
+
+
+async def get_current_user(request: Request) -> str:
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing authorization header")
+
+    token = auth_header.removeprefix("Bearer ").strip()
+    try:
+        return await verify_token(token)
+    except ValueError as e:
+        raise HTTPException(status_code=401, detail=str(e))

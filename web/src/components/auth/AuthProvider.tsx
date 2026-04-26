@@ -3,8 +3,9 @@
 import * as React from 'react'
 import { useRouter, usePathname } from 'next/navigation'
 import { useUserStore, useKBStore } from '@/stores'
-import { createClient } from '@/lib/supabase/client'
 import { apiFetch } from '@/lib/api'
+
+const isLocal = process.env.NEXT_PUBLIC_MODE === 'local'
 
 interface AuthProviderProps {
   userId: string
@@ -27,46 +28,63 @@ export function AuthProvider({ userId, email, children }: AuthProviderProps) {
     if (initialized.current) return
     initialized.current = true
 
-    const supabase = createClient()
-    supabase.auth.getSession().then(async ({ data: { session } }) => {
-      if (!session) {
-        signOut()
-        useKBStore.setState({ knowledgeBases: [], loading: false, error: null })
-        return
-      }
+    if (isLocal) {
+      // Local mode: static session, no Supabase
       setUser({ id: userId, email })
-      setAccessToken(session.access_token)
+      setAccessToken('local')
+      setOnboarded(true)
       fetchKBs()
+      return
+    }
 
-      try {
-        const me = await apiFetch<{ onboarded: boolean }>('/v1/me', session.access_token)
-        setOnboarded(me.onboarded)
-        if (!me.onboarded && pathname !== '/onboarding') {
-          router.replace('/onboarding')
+    // Hosted mode: Supabase session
+    import('@/lib/supabase/client').then(({ createClient }) => {
+      const supabase = createClient()
+      supabase.auth.getUser().then(async ({ data: { user: authUser } }) => {
+        if (!authUser) {
+          signOut()
+          useKBStore.setState({ knowledgeBases: [], loading: false, error: null })
+          return
         }
-      } catch {
-        // If the API is unreachable, don't block — let them through
-        // but only if they've been onboarded before (stored in localStorage)
-        const stored = useUserStore.getState().onboarded
-        if (stored === null) setOnboarded(true)
-      }
-    })
+        // Still need the session for the access_token
+        const { data: { session } } = await supabase.auth.getSession()
+        if (!session) {
+          signOut()
+          useKBStore.setState({ knowledgeBases: [], loading: false, error: null })
+          return
+        }
+        setUser({ id: userId, email })
+        setAccessToken(session.access_token)
+        fetchKBs()
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (session) {
-        useUserStore.getState().setAccessToken(session.access_token)
-      } else {
-        signOut()
-        useKBStore.setState({ knowledgeBases: [], loading: false, error: null })
-        router.replace('/login')
-      }
-    })
+        try {
+          const me = await apiFetch<{ onboarded: boolean }>('/v1/me', session.access_token)
+          setOnboarded(me.onboarded)
+          if (!me.onboarded && pathname !== '/onboarding') {
+            router.replace('/onboarding')
+          }
+        } catch {
+          const stored = useUserStore.getState().onboarded
+          if (stored === null) setOnboarded(true)
+        }
+      })
 
-    return () => subscription.unsubscribe()
+      const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+        if (session) {
+          useUserStore.getState().setAccessToken(session.access_token)
+        } else {
+          signOut()
+          useKBStore.setState({ knowledgeBases: [], loading: false, error: null })
+          router.replace('/login')
+        }
+      })
+
+      return () => subscription.unsubscribe()
+    })
   }, [userId, email, setUser, setAccessToken, setOnboarded, fetchKBs, router, pathname, signOut])
 
   React.useEffect(() => {
-    if (onboarded === false && pathname !== '/onboarding') {
+    if (!isLocal && onboarded === false && pathname !== '/onboarding') {
       router.replace('/onboarding')
     }
   }, [onboarded, pathname, router])
