@@ -1,5 +1,7 @@
 """Hosted service implementations — Postgres + S3."""
 
+from __future__ import annotations
+
 import re
 from datetime import datetime
 

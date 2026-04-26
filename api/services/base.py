@@ -1,5 +1,7 @@
 """Service layer ABCs. One implementation per mode (hosted/local)."""
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 
 

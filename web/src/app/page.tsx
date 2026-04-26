@@ -1,11 +1,7 @@
-'use client'
-
-import * as React from 'react'
-import { useRouter } from 'next/navigation'
-import { motion } from 'framer-motion'
 import Link from 'next/link'
-import { useUserStore } from '@/stores'
 import { ArrowRight, BookOpen, FileText, PenTool, Search, GitBranch } from 'lucide-react'
+import { AuthRedirect } from './AuthRedirect'
+import { MotionDiv, MotionP } from './LandingMotion'
 
 const ease: [number, number, number, number] = [0.16, 1, 0.3, 1]
 
@@ -20,16 +16,28 @@ const WIKI_TREE = [
   { label: 'Log', depth: 0 },
 ]
 
+const jsonLd = {
+  '@context': 'https://schema.org',
+  '@type': 'SoftwareApplication',
+  name: 'LLM Wiki',
+  applicationCategory: 'ProductivityApplication',
+  operatingSystem: 'Web',
+  offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD' },
+  url: 'https://llmwiki.app',
+  description:
+    "Free, open-source implementation of Karpathy's LLM Wiki. Upload documents and build a compounding wiki directly via Claude.",
+}
+
 export default function LandingPage() {
-  const user = useUserStore((s) => s.user)
-  const router = useRouter()
-
-  React.useEffect(() => {
-    if (user) router.replace('/wikis')
-  }, [user, router])
-
   return (
     <div className="min-h-svh bg-background text-foreground">
+      <AuthRedirect />
+
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
+      />
+
       {/* Nav */}
       <nav className="fixed top-0 inset-x-0 z-50 flex items-center justify-between px-6 lg:px-10 h-14 bg-background/80 backdrop-blur-sm">
         <span className="flex items-center gap-2.5 text-sm font-semibold tracking-tight">
@@ -64,7 +72,7 @@ export default function LandingPage() {
       {/* Hero */}
       <section className="pt-32 pb-20 px-6 lg:px-10">
         <div className="max-w-2xl mx-auto text-center">
-          <motion.div
+          <MotionDiv
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.8, ease }}
@@ -81,18 +89,18 @@ export default function LandingPage() {
             <h1 className="text-4xl sm:text-5xl md:text-6xl font-bold tracking-tight leading-[1.05]">
               LLM Wiki
             </h1>
-          </motion.div>
+          </MotionDiv>
 
-          <motion.p
+          <MotionP
             initial={{ opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.8, delay: 0.12, ease }}
             className="mt-6 text-base sm:text-lg text-muted-foreground max-w-md mx-auto leading-relaxed"
           >
             Your LLM compiles and maintains a structured wiki from raw&nbsp;sources.
-          </motion.p>
+          </MotionP>
 
-          <motion.div
+          <MotionDiv
             initial={{ opacity: 0, y: 12 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.7, delay: 0.25, ease }}
@@ -111,13 +119,13 @@ export default function LandingPage() {
             >
               GitHub
             </Link>
-          </motion.div>
+          </MotionDiv>
         </div>
       </section>
 
       {/* Product Preview */}
       <section className="px-6 lg:px-10 pb-28">
-        <motion.div
+        <MotionDiv
           initial={{ opacity: 0, y: 30 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.9, delay: 0.4, ease }}
@@ -194,7 +202,7 @@ export default function LandingPage() {
               </div>
             </div>
           </div>
-        </motion.div>
+        </MotionDiv>
       </section>
 
       {/* Divider */}
@@ -203,7 +211,7 @@ export default function LandingPage() {
       {/* Three Layers */}
       <section className="px-6 lg:px-10 py-24">
         <div className="max-w-5xl mx-auto">
-          <motion.div
+          <MotionDiv
             initial={{ opacity: 0 }}
             whileInView={{ opacity: 1 }}
             viewport={{ once: true, margin: '-100px' }}
@@ -214,7 +222,7 @@ export default function LandingPage() {
             <p className="mt-3 text-muted-foreground max-w-md mx-auto">
               You rarely ever write the wiki yourself &mdash; the wiki is the domain of the LLM.
             </p>
-          </motion.div>
+          </MotionDiv>
 
           <div className="grid sm:grid-cols-3 gap-6">
             {[
@@ -234,7 +242,7 @@ export default function LandingPage() {
                 body: 'A config file that tells the LLM how the wiki is structured, what conventions to follow, and what workflows to run on ingest.',
               },
             ].map((item, i) => (
-              <motion.div
+              <MotionDiv
                 key={item.title}
                 initial={{ opacity: 0, y: 20 }}
                 whileInView={{ opacity: 1, y: 0 }}
@@ -245,7 +253,7 @@ export default function LandingPage() {
                 <item.icon className="size-5 text-muted-foreground mb-4" strokeWidth={1.5} />
                 <h3 className="font-semibold text-sm mb-2">{item.title}</h3>
                 <p className="text-sm text-muted-foreground leading-relaxed">{item.body}</p>
-              </motion.div>
+              </MotionDiv>
             ))}
           </div>
         </div>
@@ -257,7 +265,7 @@ export default function LandingPage() {
       {/* How It Works */}
       <section className="px-6 lg:px-10 py-24">
         <div className="max-w-5xl mx-auto">
-          <motion.div
+          <MotionDiv
             initial={{ opacity: 0 }}
             whileInView={{ opacity: 1 }}
             viewport={{ once: true, margin: '-100px' }}
@@ -265,19 +273,19 @@ export default function LandingPage() {
             className="text-center mb-14"
           >
             <h2 className="text-2xl sm:text-3xl font-bold tracking-tight">How it works</h2>
-          </motion.div>
+          </MotionDiv>
 
           <div className="grid sm:grid-cols-3 gap-10 sm:gap-8">
             {[
               {
                 step: '01',
                 title: 'Ingest',
-                body: 'Drop a source into raw/. The LLM reads it, writes a summary, updates entity and concept pages across the wiki, and flags anything that contradicts existing knowledge. A single source might touch 10–15 wiki pages.',
+                body: 'Drop a source into raw/. The LLM reads it, writes a summary, updates entity and concept pages across the wiki, and flags anything that contradicts existing knowledge. A single source might touch 10\u201315 wiki pages.',
               },
               {
                 step: '02',
                 title: 'Query',
-                body: 'Ask complex questions against the compiled wiki. Knowledge is already synthesized — not re-derived from raw chunks each time. Good answers get filed back as new pages, so your explorations compound.',
+                body: 'Ask complex questions against the compiled wiki. Knowledge is already synthesized \u2014 not re-derived from raw chunks each time. Good answers get filed back as new pages, so your explorations compound.',
               },
               {
                 step: '03',
@@ -285,7 +293,7 @@ export default function LandingPage() {
                 body: 'Run health checks over the wiki. Find inconsistent data, stale claims, orphan pages, missing cross-references. The LLM suggests new questions to ask and new sources to look for.',
               },
             ].map((item, i) => (
-              <motion.div
+              <MotionDiv
                 key={item.step}
                 initial={{ opacity: 0, y: 20 }}
                 whileInView={{ opacity: 1, y: 0 }}
@@ -295,7 +303,7 @@ export default function LandingPage() {
                 <span className="text-xs font-mono text-muted-foreground/40 mb-3 block">{item.step}</span>
                 <h3 className="font-semibold mb-2">{item.title}</h3>
                 <p className="text-sm text-muted-foreground leading-relaxed">{item.body}</p>
-              </motion.div>
+              </MotionDiv>
             ))}
           </div>
         </div>
@@ -306,7 +314,7 @@ export default function LandingPage() {
 
       {/* Quote */}
       <section className="px-6 lg:px-10 py-24">
-        <motion.div
+        <MotionDiv
           initial={{ opacity: 0 }}
           whileInView={{ opacity: 1 }}
           viewport={{ once: true, margin: '-80px' }}
@@ -319,7 +327,7 @@ export default function LandingPage() {
           <p className="mt-5 text-sm text-muted-foreground">
             Andrej Karpathy
           </p>
-        </motion.div>
+        </MotionDiv>
       </section>
 
       {/* Divider */}
@@ -327,7 +335,7 @@ export default function LandingPage() {
 
       {/* CTA */}
       <section className="px-6 lg:px-10 py-24">
-        <motion.div
+        <MotionDiv
           initial={{ opacity: 0, y: 16 }}
           whileInView={{ opacity: 1, y: 0 }}
           viewport={{ once: true, margin: '-60px' }}
@@ -345,7 +353,7 @@ export default function LandingPage() {
             Get started free
             <ArrowRight className="size-3.5 opacity-60" />
           </Link>
-        </motion.div>
+        </MotionDiv>
       </section>
 
       {/* Footer */}

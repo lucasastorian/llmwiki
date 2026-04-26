@@ -11,5 +11,6 @@ os.environ["LOGFIRE_TOKEN"] = ""
 os.environ["SENTRY_DSN"] = ""
 os.environ["APP_URL"] = "http://localhost:3000"
 os.environ["GLOBAL_MAX_USERS"] = "1000"
+os.environ["MODE"] = "hosted"
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "api"))

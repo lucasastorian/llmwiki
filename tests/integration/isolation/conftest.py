@@ -66,13 +66,13 @@ async def seed_two_tenants(pool):
     )
 
     await pool.execute(
-        "INSERT INTO documents (id, knowledge_base_id, user_id, filename, title, path, file_type, status, content, version) "
-        "VALUES ($1, $2, $3, 'notes.md', 'Notes', '/wiki/', 'md', 'ready', 'Alice secret content', 1)",
+        "INSERT INTO documents (id, knowledge_base_id, user_id, filename, title, path, file_type, status, content, version, page_count, file_size) "
+        "VALUES ($1, $2, $3, 'notes.md', 'Notes', '/wiki/', 'md', 'ready', 'Alice secret content', 1, 3, 1024)",
         DOC_A_ID, KB_A_ID, USER_A_ID,
     )
     await pool.execute(
-        "INSERT INTO documents (id, knowledge_base_id, user_id, filename, title, path, file_type, status, content, version) "
-        "VALUES ($1, $2, $3, 'notes.md', 'Notes', '/wiki/', 'md', 'ready', 'Bob secret content', 1)",
+        "INSERT INTO documents (id, knowledge_base_id, user_id, filename, title, path, file_type, status, content, version, page_count, file_size) "
+        "VALUES ($1, $2, $3, 'notes.md', 'Notes', '/wiki/', 'md', 'ready', 'Bob secret content', 1, 10, 5000)",
         DOC_B_ID, KB_B_ID, USER_B_ID,
     )
 
@@ -177,6 +177,7 @@ async def client_no_rls(pool):
     protect data access."""
     import deps
     from main import app
+    from services.hosted import HostedServiceFactory
 
     async def _unscoped_db(request: Request):
         from auth import get_current_user
@@ -199,6 +200,7 @@ async def client_no_rls(pool):
     app.state.s3_service = None
     app.state.ocr_service = None
     app.state.auth_provider = None
+    app.state.factory = HostedServiceFactory(pool)
     seed_jwks_cache()
 
     app.dependency_overrides[deps.get_scoped_db] = _unscoped_db

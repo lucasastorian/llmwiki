@@ -192,6 +192,73 @@ class TestRLSBlocksDocumentReferences:
         assert "DELETE 1" in result
 
 
+class TestRLSBlocksDocumentWrites:
+    """RLS default-deny blocks UPDATE/DELETE on documents (no write policy exists)."""
+
+    async def test_cannot_update_other_tenant_document(self, rls_session):
+        async with rls_session(USER_A_ID) as conn:
+            result = await conn.execute(
+                "UPDATE documents SET content = 'pwned' WHERE id = $1", DOC_B_ID,
+            )
+        assert "UPDATE 0" in result
+        # Verify Bob's content unchanged
+        async with rls_session(USER_B_ID) as conn:
+            row = await conn.fetchrow("SELECT content FROM documents WHERE id = $1", DOC_B_ID)
+        assert row["content"] == "Bob secret content"
+
+    async def test_cannot_delete_other_tenant_document(self, rls_session):
+        async with rls_session(USER_A_ID) as conn:
+            result = await conn.execute(
+                "DELETE FROM documents WHERE id = $1", DOC_B_ID,
+            )
+        assert "DELETE 0" in result
+        # Verify Bob's doc still exists
+        async with rls_session(USER_B_ID) as conn:
+            row = await conn.fetchrow("SELECT id FROM documents WHERE id = $1", DOC_B_ID)
+        assert row is not None
+
+
+class TestRLSBlocksKBWrites:
+    """RLS default-deny blocks UPDATE/DELETE on knowledge_bases."""
+
+    async def test_cannot_update_other_tenant_kb(self, rls_session):
+        async with rls_session(USER_A_ID) as conn:
+            result = await conn.execute(
+                "UPDATE knowledge_bases SET name = 'Hijacked' WHERE id = $1", KB_B_ID,
+            )
+        assert "UPDATE 0" in result
+        # Verify Bob's KB name unchanged
+        async with rls_session(USER_B_ID) as conn:
+            row = await conn.fetchrow("SELECT name FROM knowledge_bases WHERE id = $1", KB_B_ID)
+        assert row["name"] == "Bob KB"
+
+    async def test_cannot_delete_other_tenant_kb(self, rls_session):
+        async with rls_session(USER_A_ID) as conn:
+            result = await conn.execute(
+                "DELETE FROM knowledge_bases WHERE id = $1", KB_B_ID,
+            )
+        assert "DELETE 0" in result
+        # Verify Bob's KB still exists
+        async with rls_session(USER_B_ID) as conn:
+            row = await conn.fetchrow("SELECT id FROM knowledge_bases WHERE id = $1", KB_B_ID)
+        assert row is not None
+
+
+class TestRLSBlocksUserWrites:
+    """RLS users_update policy blocks cross-tenant user modifications."""
+
+    async def test_cannot_update_other_tenant_user(self, rls_session):
+        async with rls_session(USER_A_ID) as conn:
+            result = await conn.execute(
+                "UPDATE users SET display_name = 'Hacked' WHERE id = $1", USER_B_ID,
+            )
+        assert "UPDATE 0" in result
+        # Verify Bob's display name unchanged
+        async with rls_session(USER_B_ID) as conn:
+            row = await conn.fetchrow("SELECT display_name FROM users WHERE id = $1", USER_B_ID)
+        assert row["display_name"] == "Bob"
+
+
 class TestRLSBidirectional:
     """Same checks from Bob's perspective."""
 

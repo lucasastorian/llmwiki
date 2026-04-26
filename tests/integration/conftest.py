@@ -27,11 +27,13 @@ async def pool():
 @pytest.fixture
 async def client(pool):
     from main import app
+    from services.hosted import HostedServiceFactory
 
     app.state.pool = pool
     app.state.s3_service = None
     app.state.ocr_service = None
     app.state.auth_provider = None
+    app.state.factory = HostedServiceFactory(pool)
 
     seed_jwks_cache()
 

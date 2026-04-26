@@ -13,7 +13,9 @@ from tests.helpers.jwt import auth_headers
 from tests.integration.isolation.conftest import (
     USER_A_ID, USER_B_ID,
     KB_A_ID, KB_B_ID,
-    DOC_A_ID, DOC_B_ID,
+    DOC_A_ID, DOC_A2_ID, DOC_B_ID,
+    KEY_A_ID, KEY_B_ID,
+    REF_B_ID,
 )
 
 
@@ -184,3 +186,69 @@ class TestBidirectionalWithoutRLS:
             json={"content": "overwritten by bob"},
         )
         assert resp.status_code == 404
+
+
+class TestAPIKeyIsolationWithoutRLS:
+    """API key list uses ScopedDB — tests app-layer WHERE with RLS disabled."""
+
+    async def test_list_api_keys_only_returns_own(self, client_no_rls):
+        resp = await client_no_rls.get("/v1/api-keys", headers=auth_headers(USER_A_ID))
+        assert resp.status_code == 200
+        names = [k["name"] for k in resp.json()]
+        assert "Alice Key" in names
+        assert "Bob Key" not in names
+
+    async def test_revoke_api_key_cross_tenant_returns_404(self, client_no_rls):
+        resp = await client_no_rls.delete(
+            f"/v1/api-keys/{KEY_B_ID}",
+            headers=auth_headers(USER_A_ID),
+        )
+        assert resp.status_code == 404
+
+
+class TestGraphIsolationWithoutRLS:
+    """Graph routes use ScopedDB — tests app-layer WHERE with RLS disabled."""
+
+    async def test_get_graph_returns_own_nodes(self, client_no_rls):
+        resp = await client_no_rls.get(
+            f"/v1/knowledge-bases/{KB_A_ID}/graph",
+            headers=auth_headers(USER_A_ID),
+        )
+        assert resp.status_code == 200
+        node_ids = {n["id"] for n in resp.json()["nodes"]}
+        assert str(DOC_A_ID) in node_ids
+        assert str(DOC_B_ID) not in node_ids
+
+    async def test_get_graph_cross_tenant_returns_empty(self, client_no_rls):
+        resp = await client_no_rls.get(
+            f"/v1/knowledge-bases/{KB_B_ID}/graph",
+            headers=auth_headers(USER_A_ID),
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["nodes"] == []
+
+    @pytest.mark.xfail(
+        reason="Known defense-in-depth gap: rebuild_hosted DELETE by kb_id has no user_id check — "
+               "RLS protects in production, but app-layer alone does not.",
+        strict=True,
+    )
+    async def test_rebuild_graph_cross_tenant_does_not_delete_refs(self, client_no_rls, pool):
+        """Alice rebuilding Bob's KB should not delete Bob's references.
+
+        This test is expected to FAIL because rebuild_hosted() does
+        DELETE FROM document_references WHERE knowledge_base_id = $1
+        without checking user_id. With RLS disabled, Bob's refs get wiped.
+        """
+        before = await pool.fetchval(
+            "SELECT COUNT(*) FROM document_references WHERE knowledge_base_id = $1", KB_B_ID,
+        )
+        assert before > 0
+        await client_no_rls.post(
+            f"/v1/knowledge-bases/{KB_B_ID}/graph/rebuild",
+            headers=auth_headers(USER_A_ID),
+        )
+        after = await pool.fetchval(
+            "SELECT COUNT(*) FROM document_references WHERE knowledge_base_id = $1", KB_B_ID,
+        )
+        assert after == before

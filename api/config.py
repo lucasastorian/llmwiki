@@ -1,10 +1,12 @@
+from typing import Literal
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file="../.env", extra="ignore")
 
-    MODE: str = "local"  # "local" or "hosted"
+    MODE: Literal["local", "hosted"] = "local"
     WORKSPACE_PATH: str = "."
 
     DATABASE_URL: str = ""
