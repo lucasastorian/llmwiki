@@ -2,17 +2,24 @@
 
 import * as React from 'react'
 import { toast } from 'sonner'
-import { apiFetch } from '@/lib/api'
+import { apiFetch, getDocumentsWsUrl } from '@/lib/api'
 import { useUserStore } from '@/stores'
 import type { DocumentListItem } from '@/lib/types'
 
 const isLocal = process.env.NEXT_PUBLIC_MODE === 'local'
 const POLL_INTERVAL = 2000
+const WS_RECONNECT_BASE = 1000
+const WS_RECONNECT_MAX = 30000
+const DEBOUNCE_MS = 300
 
 export function useKBDocuments(knowledgeBaseId: string) {
   const [documents, setDocuments] = React.useState<DocumentListItem[]>([])
   const [loading, setLoading] = React.useState(true)
   const accessToken = useUserStore((s) => s.accessToken)
+  const wsRef = React.useRef<WebSocket | null>(null)
+  const reconnectTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null)
+  const reconnectDelay = React.useRef(WS_RECONNECT_BASE)
+  const debounceTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const fetchDocs = React.useCallback(async () => {
     if (!knowledgeBaseId || !accessToken) return
@@ -27,112 +34,80 @@ export function useKBDocuments(knowledgeBaseId: string) {
     }
   }, [knowledgeBaseId, accessToken])
 
-  // Initial load
+  // Initial load — always use the API
   React.useEffect(() => {
     if (!knowledgeBaseId) {
       setDocuments([])
       setLoading(false)
       return
     }
-
-    if (isLocal) {
-      // Local mode: fetch from API
-      setLoading(true)
-      fetchDocs().finally(() => setLoading(false))
-      return
-    }
-
-    // Hosted mode: fetch from Supabase directly
-    let cancelled = false
     setLoading(true)
-
-    import('@/lib/supabase/client').then(({ createClient }) => {
-      const supabase = createClient()
-      supabase
-        .from('documents')
-        .select('*')
-        .eq('knowledge_base_id', knowledgeBaseId)
-        .order('created_at', { ascending: false })
-        .then(({ data, error }) => {
-          if (cancelled) return
-          if (error) {
-            console.error('Failed to load documents:', error)
-            toast.error('Failed to load documents')
-            setDocuments([])
-          } else {
-            setDocuments((data as DocumentListItem[]) ?? [])
-          }
-          setLoading(false)
-        })
-    })
-
-    return () => { cancelled = true }
+    fetchDocs().finally(() => setLoading(false))
   }, [knowledgeBaseId, fetchDocs])
 
-  // Polling (local mode) or realtime (hosted mode)
+  // Real-time updates: WebSocket (hosted) or polling (local)
   React.useEffect(() => {
-    if (!knowledgeBaseId) return
+    if (!knowledgeBaseId || !accessToken) return
 
     if (isLocal) {
-      // Poll every 2s
       const interval = setInterval(fetchDocs, POLL_INTERVAL)
       return () => clearInterval(interval)
     }
 
-    // Hosted mode: Supabase realtime
-    let channel: ReturnType<ReturnType<typeof import('@/lib/supabase/client').createClient>['channel']> | null = null
+    // Hosted mode — connect to API WebSocket
     let cancelled = false
 
-    import('@/lib/supabase/client').then(({ createClient }) => {
+    function connect() {
       if (cancelled) return
-      const supabase = createClient()
 
-      const fetchDoc = async (id: string): Promise<DocumentListItem | null> => {
-        const { data } = await supabase
-          .from('documents')
-          .select('*')
-          .eq('id', id)
-          .single()
-        return data as DocumentListItem | null
+      const url = getDocumentsWsUrl(knowledgeBaseId)
+      const ws = new WebSocket(url)
+      wsRef.current = ws
+
+      ws.onopen = () => {
+        // Send token as first message — keeps JWT out of URLs and logs
+        ws.send(accessToken!)
+        reconnectDelay.current = WS_RECONNECT_BASE
       }
 
-      channel = supabase
-        .channel(`documents:${knowledgeBaseId}`)
-        .on(
-          'postgres_changes',
-          { event: '*', schema: 'public', table: 'documents', filter: `knowledge_base_id=eq.${knowledgeBaseId}` },
-          async (payload) => {
-            if (payload.eventType === 'INSERT') {
-              const id = (payload.new as { id: string }).id
-              const item = await fetchDoc(id)
-              if (!item) return
-              setDocuments((prev) => {
-                if (prev.some((d) => d.id === item.id)) return prev
-                return [item, ...prev]
-              })
-            } else if (payload.eventType === 'UPDATE') {
-              const id = (payload.new as { id: string }).id
-              const item = await fetchDoc(id)
-              if (!item) return
-              setDocuments((prev) => prev.map((d) => d.id === item.id ? item : d))
-            } else if (payload.eventType === 'DELETE') {
-              const id = (payload.old as { id: string }).id
-              setDocuments((prev) => prev.filter((d) => d.id !== id))
-            }
-          }
-        )
-        .subscribe()
-    })
+      ws.onmessage = () => {
+        // Debounce refetches — OCR updates can fire many events in quick succession
+        if (debounceTimer.current) clearTimeout(debounceTimer.current)
+        debounceTimer.current = setTimeout(fetchDocs, DEBOUNCE_MS)
+      }
+
+      ws.onclose = (e) => {
+        wsRef.current = null
+        if (cancelled) return
+        // 4001 = auth failure, don't reconnect
+        if (e.code === 4001) {
+          console.error('WebSocket auth failed:', e.reason)
+          return
+        }
+        // Reconnect with exponential backoff
+        const delay = reconnectDelay.current
+        reconnectDelay.current = Math.min(delay * 2, WS_RECONNECT_MAX)
+        reconnectTimer.current = setTimeout(connect, delay)
+      }
+
+      ws.onerror = () => {
+        // onclose will fire after this, which handles reconnection
+      }
+    }
+
+    connect()
 
     return () => {
       cancelled = true
-      if (channel) {
-        import('@/lib/supabase/client').then(({ createClient }) => {
-          createClient().removeChannel(channel!)
-        })
+      if (debounceTimer.current) clearTimeout(debounceTimer.current)
+      if (reconnectTimer.current) clearTimeout(reconnectTimer.current)
+      if (wsRef.current) {
+        wsRef.current.onclose = null
+        wsRef.current.close()
+        wsRef.current = null
       }
     }
-  }, [knowledgeBaseId, fetchDocs])
+  }, [knowledgeBaseId, accessToken, fetchDocs])
 
   const refetchDocuments = React.useCallback(() => {
     fetchDocs()

@@ -6,10 +6,6 @@ from fastapi import Depends, Request
 from scoped_db import ScopedDB
 
 
-def _quote_literal(s: str) -> str:
-    return "'" + s.replace("'", "''") + "'"
-
-
 async def get_pool(request: Request):
     return request.app.state.pool
 
@@ -54,7 +50,7 @@ async def get_scoped_db(
     try:
         claims = json.dumps({"sub": user_id})
         await conn.execute("SET LOCAL ROLE authenticated")
-        await conn.execute(f"SET LOCAL request.jwt.claims = {_quote_literal(claims)}")
+        await conn.execute("SELECT set_config('request.jwt.claims', $1, true)", claims)
         yield ScopedDB(pool, conn, user_id)
         await tr.commit()
     except Exception:

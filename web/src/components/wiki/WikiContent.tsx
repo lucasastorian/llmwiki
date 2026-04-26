@@ -8,7 +8,7 @@ import rehypeKatex from 'rehype-katex'
 import 'katex/dist/katex.min.css'
 import type { Components } from 'react-markdown'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import { FileText, Copy, Download, Check } from 'lucide-react'
+import { FileText, Copy, Download, Check, Network } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { apiFetch } from '@/lib/api'
 import { useUserStore } from '@/stores'
@@ -339,10 +339,11 @@ interface WikiContentProps {
   title: string
   onNavigate: (path: string) => void
   onSourceClick?: (filename: string, page?: number) => void
+  onGraphClick?: () => void
   documents?: DocumentListItem[]
 }
 
-export function WikiContent({ content, title, onNavigate, onSourceClick, documents }: WikiContentProps) {
+export function WikiContent({ content, title, onNavigate, onSourceClick, onGraphClick, documents }: WikiContentProps) {
   const processedContent = React.useMemo(() => stripLeadingH1(content, title), [content, title])
   const tocItems = React.useMemo(() => extractTocFromMarkdown(processedContent), [processedContent])
   const footnoteSources = React.useMemo(() => parseFootnoteSources(processedContent), [processedContent])
@@ -698,13 +699,22 @@ export function WikiContent({ content, title, onNavigate, onSourceClick, documen
                   >
                     {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
                   </button>
-                  <button
+                  {/* <button
                     onClick={handleDownload}
                     className="p-1.5 rounded-md text-muted-foreground/40 hover:text-muted-foreground hover:bg-accent transition-colors cursor-pointer"
                     title="Download as .md"
                   >
                     <Download className="size-3.5" />
-                  </button>
+                  </button> */}
+                  {onGraphClick && (
+                    <button
+                      onClick={onGraphClick}
+                      className="p-1.5 rounded-md text-muted-foreground/40 hover:text-muted-foreground hover:bg-accent transition-colors cursor-pointer"
+                      title="Show in graph"
+                    >
+                      <Network className="size-3.5" />
+                    </button>
+                  )}
                 </div>
               </div>
             )}

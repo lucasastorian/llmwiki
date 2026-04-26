@@ -1,7 +1,7 @@
 'use client'
 
 import * as React from 'react'
-import { useSearchParams, useRouter } from 'next/navigation'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { Upload as UploadIcon, BookOpen, ArrowUpRight, Loader2 } from 'lucide-react'
 import * as tus from 'tus-js-client'
 import { useUserStore } from '@/stores'
@@ -10,58 +10,19 @@ import { apiFetch } from '@/lib/api'
 import { toast } from 'sonner'
 import { KBSidenav } from '@/components/kb/KBSidenav'
 import { FilesGrid } from '@/components/kb/FilesGrid'
+import { GraphViewer } from '@/components/kb/GraphViewer'
 import { SelectionActionBar } from '@/components/kb/SelectionActionBar'
 import { WikiContent, extractTocFromMarkdown } from '@/components/wiki/WikiContent'
 import type { DocumentListItem, WikiNode, WikiSubsection } from '@/lib/types'
+import type { ViewMode } from '@/app/(dashboard)/wikis/[slug]/[[...path]]/page'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
-const wikiPathCache = new Map<string, string>()
-
-function getWikiPathStorageKey(kbId: string): string {
-  return `llmwiki:active-wiki-path:${kbId}`
-}
-
-function readCachedWikiPath(kbId: string): string | null {
-  const cached = wikiPathCache.get(kbId)
-  if (cached) return cached
-  if (typeof window === 'undefined') return null
-
-  try {
-    return window.sessionStorage.getItem(getWikiPathStorageKey(kbId))
-  } catch {
-    return null
-  }
-}
-
-function writeCachedWikiPath(kbId: string, path: string | null): void {
-  if (path) {
-    wikiPathCache.set(kbId, path)
-  } else {
-    wikiPathCache.delete(kbId)
-  }
-
-  if (typeof window === 'undefined') return
-
-  try {
-    if (path) {
-      window.sessionStorage.setItem(getWikiPathStorageKey(kbId), path)
-    } else {
-      window.sessionStorage.removeItem(getWikiPathStorageKey(kbId))
-    }
-  } catch {
-    // Ignore storage failures and fall back to in-memory cache only.
-  }
-}
-
 
 function buildTreeFromDocs(docs: DocumentListItem[]): WikiNode[] {
-  // Sort all docs by sort_order first
   const sorted = [...docs].sort((a, b) => (a.sort_order ?? 999) - (b.sort_order ?? 999))
-
-  // Separate top-level pages (/wiki/X.md) and child pages (/wiki/folder/X.md)
-  const topLevel: Array<{ title: string; path: string; slug: string }> = []
-  const childPages = new Map<string, Array<{ title: string; path: string }>>()
+  const topLevel: Array<{ title: string; path: string; slug: string; docNumber: number | null }> = []
+  const childPages = new Map<string, Array<{ title: string; path: string; docNumber: number | null }>>()
 
   for (const doc of sorted) {
     const relative = (doc.path + doc.filename).replace(/^\/wiki\/?/, '')
@@ -71,18 +32,15 @@ function buildTreeFromDocs(docs: DocumentListItem[]): WikiNode[] {
       parts[parts.length - 1].replace(/\.(md|txt|json)$/, '').replace(/[-_]/g, ' ')
 
     if (parts.length === 1) {
-      // Top-level: overview.md → slug "overview", path "overview.md"
       const slug = parts[0].replace(/\.(md|txt|json)$/, '')
-      topLevel.push({ title, path: relative, slug })
+      topLevel.push({ title, path: relative, slug, docNumber: doc.document_number })
     } else {
-      // Child: overview/investment-philosophy.md → folder "overview"
       const folder = parts[0]
       if (!childPages.has(folder)) childPages.set(folder, [])
-      childPages.get(folder)!.push({ title, path: relative })
+      childPages.get(folder)!.push({ title, path: relative, docNumber: doc.document_number })
     }
   }
 
-  // Build tree: parent pages with matching child folders become expandable
   const tree: WikiNode[] = []
   const usedFolders = new Set<string>()
 
@@ -91,23 +49,20 @@ function buildTreeFromDocs(docs: DocumentListItem[]): WikiNode[] {
     if (children && children.length > 0) {
       usedFolders.add(parent.slug)
       tree.push({
-        title: parent.title,
-        path: parent.path,
-        children: children.map((c) => ({ title: c.title, path: c.path })),
+        title: parent.title, path: parent.path, docNumber: parent.docNumber,
+        children: children.map((c) => ({ title: c.title, path: c.path, docNumber: c.docNumber })),
       })
     } else {
-      tree.push({ title: parent.title, path: parent.path })
+      tree.push({ title: parent.title, path: parent.path, docNumber: parent.docNumber })
     }
   }
 
-  // Orphan folders without a parent page
   for (const [folder, children] of childPages) {
     if (usedFolders.has(folder)) continue
     const folderTitle = folder.replace(/[-_]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
-    tree.push({ title: folderTitle, children: children.map((c) => ({ title: c.title, path: c.path })) })
+    tree.push({ title: folderTitle, children: children.map((c) => ({ title: c.title, path: c.path, docNumber: c.docNumber })) })
   }
 
-  // Sort: Overview first, Log last, everything else alphabetical
   const slug = (n: WikiNode) => n.path?.replace(/\.(md|txt|json)$/, '').split('/')[0] ?? ''
   tree.sort((a, b) => {
     const sa = slug(a), sb = slug(b)
@@ -121,9 +76,25 @@ function buildTreeFromDocs(docs: DocumentListItem[]): WikiNode[] {
   return tree
 }
 
-function findFirstPath(nodes: WikiNode[]): string | null {
+function enrichTreeWithDocNumbers(tree: WikiNode[], docs: DocumentListItem[]): WikiNode[] {
+  const pathToDocNumber = new Map<string, number | null>()
+  for (const doc of docs) {
+    const relative = (doc.path + doc.filename).replace(/^\/wiki\/?/, '')
+    pathToDocNumber.set(relative, doc.document_number)
+  }
+  function enrich(nodes: WikiNode[]): WikiNode[] {
+    return nodes.map((node) => ({
+      ...node,
+      docNumber: node.path ? (pathToDocNumber.get(node.path) ?? null) : null,
+      children: node.children ? enrich(node.children) : undefined,
+    }))
+  }
+  return enrich(tree)
+}
+
+function findFirstPath(nodes: WikiNode[]): { path: string; docNumber: number | null } | null {
   for (const node of nodes) {
-    if (node.path) return node.path
+    if (node.path) return { path: node.path, docNumber: node.docNumber ?? null }
     if (node.children) {
       const found = findFirstPath(node.children)
       if (found) return found
@@ -134,18 +105,47 @@ function findFirstPath(nodes: WikiNode[]): string | null {
 
 type Props = {
   kbId: string
-  kbSlug?: string
+  kbSlug: string
   kbName: string
+  viewMode: ViewMode
+  routeFilesPath: string
 }
 
-export function KBDetail({ kbId, kbName }: Props) {
+export function KBDetail({ kbId, kbSlug, kbName, viewMode, routeFilesPath }: Props) {
   const router = useRouter()
   const searchParams = useSearchParams()
   const token = useUserStore((s) => s.accessToken)
   const userId = useUserStore((s) => s.user?.id)
   const { documents, setDocuments, loading } = useKBDocuments(kbId)
 
-  // Split documents into wiki and sources
+  // ─── URL helpers ─────────────────────────────────────────────
+  // Search param updates are instant (no Next.js route recompilation).
+  // Path changes only happen on view-mode switches (rare).
+
+  const updateParam = React.useCallback((key: string, value: string | null) => {
+    const url = new URL(window.location.href)
+    if (value != null) url.searchParams.set(key, value)
+    else url.searchParams.delete(key)
+    router.replace(url.pathname + url.search, { scroll: false })
+  }, [router])
+
+  const navigateToView = React.useCallback((view: ViewMode, opts?: { filesPath?: string; searchParams?: Record<string, string> }) => {
+    let url = `/wikis/${kbSlug}`
+    if (view === 'files') {
+      const path = opts?.filesPath ?? '/'
+      const clean = path === '/' ? '' : path.replace(/^\//, '').replace(/\/$/, '')
+      url += clean ? `/files/${encodeURI(clean)}` : '/files'
+    } else if (view === 'graph') {
+      url += '/graph'
+    }
+    if (opts?.searchParams) {
+      const sp = new URLSearchParams(opts.searchParams)
+      url += '?' + sp.toString()
+    }
+    router.push(url, { scroll: false })
+  }, [kbSlug, router])
+
+  // ─── Document splits ─────────────────────────────────────────
   const wikiDocs = React.useMemo(
     () => documents.filter((d) => (d.path === '/wiki/' || d.path.startsWith('/wiki/')) && !d.archived && d.file_type === 'md'),
     [documents],
@@ -155,7 +155,60 @@ export function KBDetail({ kbId, kbName }: Props) {
     [documents],
   )
 
-  // Wiki state
+  // ─── View state ──────────────────────────────────────────────
+  // activeView tracks the current tab. Initialized from the viewMode prop
+  // (path segment) and kept in sync when the prop changes (back/forward).
+  const [activeView, setActiveView] = React.useState<ViewMode | 'doc'>(viewMode)
+  React.useEffect(() => { setActiveView(viewMode) }, [viewMode])
+
+  const filesViewActive = activeView === 'files' || activeView === 'doc'
+  const graphViewActive = activeView === 'graph'
+
+  // ─── Wiki page selection (from ?p= search param) ─────────────
+  const pParam = searchParams.get('p')
+  const urlWikiDocNumber = pParam ? parseInt(pParam, 10) : null
+
+  const [wikiActivePath, setWikiActivePath] = React.useState<string | null>(null)
+  const lastWikiDocNumberRef = React.useRef<number | null>(urlWikiDocNumber)
+
+  // Initialize wikiActivePath from ?p= on mount and when ?p= changes
+  React.useEffect(() => {
+    if (urlWikiDocNumber == null) return
+    if (!documents.length) return
+    const doc = documents.find((d) => d.document_number === urlWikiDocNumber)
+    if (doc) {
+      const path = (doc.path + doc.filename).replace(/^\/wiki\/?/, '')
+      setWikiActivePath(path)
+      lastWikiDocNumberRef.current = urlWikiDocNumber
+    }
+  }, [urlWikiDocNumber, documents])
+
+  // ─── Source doc selection (from ?doc= search param) ───────────
+  const docParam = searchParams.get('doc')
+  const urlSourceDocNumber = docParam ? parseInt(docParam, 10) : null
+
+  const filesInitialDocId = React.useMemo(() => {
+    if (urlSourceDocNumber == null) return null
+    const doc = documents.find((d) => d.document_number === urlSourceDocNumber)
+    return doc?.id ?? null
+  }, [urlSourceDocNumber, documents])
+
+  // Switch to doc view when ?doc= appears
+  React.useEffect(() => {
+    if (urlSourceDocNumber != null) setActiveView('doc')
+    else if (activeView === 'doc') setActiveView('files')
+  }, [urlSourceDocNumber])
+
+  const [filesInitialPage, setFilesInitialPage] = React.useState<number | undefined>()
+  const filesCurrentPathRef = React.useRef(routeFilesPath)
+
+  // Sync filesPath from route prop (for back/forward on folder navigation)
+  React.useEffect(() => { filesCurrentPathRef.current = routeFilesPath }, [routeFilesPath])
+
+  // ─── Graph state ─────────────────────────────────────────────
+  const [graphFocusNodeId, setGraphFocusNodeId] = React.useState<string | null>(null)
+
+  // ─── Wiki tree ───────────────────────────────────────────────
   const indexDoc = wikiDocs.find((d) => d.filename === 'index.json' && d.path === '/wiki/')
   const SCAFFOLD_FILES = new Set(['index.json', 'overview.md', 'log.md'])
   const hasNavigableWiki = React.useMemo(
@@ -163,216 +216,18 @@ export function KBDetail({ kbId, kbName }: Props) {
     [wikiDocs],
   )
   const [wikiTree, setWikiTree] = React.useState<WikiNode[]>([])
-  const [wikiActivePath, setWikiActivePath] = React.useState<string | null>(null)
-  const [pageContent, setPageContent] = React.useState('')
-  const [pageTitle, setPageTitle] = React.useState('')
-  const [pageLoading, setPageLoading] = React.useState(false)
-  const [pageLoadedPath, setPageLoadedPath] = React.useState<string | null>(null)
   const [indexLoaded, setIndexLoaded] = React.useState(false)
-  const [selectionHydrated, setSelectionHydrated] = React.useState(false)
 
-  // Files grid view state
-  const [filesViewActive, setFilesViewActive] = React.useState(false)
-  const [filesInitialDocId, setFilesInitialDocId] = React.useState<string | null>(null)
-  const [filesInitialPage, setFilesInitialPage] = React.useState<number | undefined>()
-
-  const docParam = searchParams.get('doc')
-  const pageParam = searchParams.get('page')
-
-  // Token helper (used by multiple handlers below)
-  const getToken = () => {
-    const t = useUserStore.getState().accessToken
-    if (!t) { toast.error('Not authenticated'); return null }
-    return t
-  }
-
-  // Multi-selection state
-  const [selectedIds, setSelectedIds] = React.useState<Set<string>>(new Set())
-  const lastSelectedIdRef = React.useRef<string | null>(null)
-
-  // Flat ordered list of source doc IDs for shift-select range
-  const sourceDocIds = React.useMemo(() => sourceDocs.map((d) => d.id), [sourceDocs])
-
-  const handleSelect = React.useCallback((docId: string, e: React.MouseEvent) => {
-    setSelectedIds((prev) => {
-      const next = new Set(prev)
-
-      if (e.shiftKey && lastSelectedIdRef.current) {
-        // Range select
-        const lastIdx = sourceDocIds.indexOf(lastSelectedIdRef.current)
-        const currIdx = sourceDocIds.indexOf(docId)
-        if (lastIdx !== -1 && currIdx !== -1) {
-          const [start, end] = lastIdx < currIdx ? [lastIdx, currIdx] : [currIdx, lastIdx]
-          for (let i = start; i <= end; i++) {
-            next.add(sourceDocIds[i])
-          }
-        } else {
-          next.add(docId)
-        }
-      } else if (e.metaKey || e.ctrlKey) {
-        // Toggle single
-        if (next.has(docId)) {
-          next.delete(docId)
-        } else {
-          next.add(docId)
-        }
-      } else {
-        // Plain click — select only this one
-        next.clear()
-        next.add(docId)
-      }
-
-      lastSelectedIdRef.current = docId
-      return next
-    })
-  }, [sourceDocIds])
-
-  const clearSelection = React.useCallback(() => {
-    setSelectedIds(new Set())
-    lastSelectedIdRef.current = null
-  }, [])
-
-  // ESC clears selection
-  React.useEffect(() => {
-    if (selectedIds.size === 0) return
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') clearSelection()
-    }
-    document.addEventListener('keydown', handleKeyDown)
-    return () => document.removeEventListener('keydown', handleKeyDown)
-  }, [selectedIds.size, clearSelection])
-
-  const handleDeleteSelected = async () => {
-    const t = getToken()
-    if (!t) return
-    const ids = Array.from(selectedIds)
-    const count = ids.length
-    if (!window.confirm(`Delete ${count} selected document${count > 1 ? 's' : ''}?`)) return
-
-    const results = await Promise.allSettled(
-      ids.map((id) => apiFetch(`/v1/documents/${id}`, t, { method: 'DELETE' }))
-    )
-
-    const succeeded = ids.filter((_, i) => results[i].status === 'fulfilled')
-    const failed = ids.filter((_, i) => results[i].status === 'rejected')
-
-    if (succeeded.length > 0) {
-      setDocuments((prev) => prev.filter((d) => !succeeded.includes(d.id)))
-    }
-    if (failed.length > 0) {
-      toast.error(`Failed to delete ${failed.length} document${failed.length > 1 ? 's' : ''}`)
-    }
-    clearSelection()
-  }
-
-  // Restore from URL on initial load
-  const hasSelectionParam = !!docParam || !!pageParam
-  const [urlRestored, setUrlRestored] = React.useState(!hasSelectionParam)
-  React.useEffect(() => {
-    if (urlRestored || loading) return
-
-    if (docParam) {
-      if (!documents.length) return
-      const num = parseInt(docParam, 10)
-      const doc = documents.find((d) => d.document_number === num)
-      setFilesViewActive(true)
-      setFilesInitialDocId(doc?.id ?? null)
-      setWikiActivePath(null)
-      setUrlRestored(true)
-      return
-    }
-
-    if (pageParam) {
-      setFilesViewActive(false)
-      setWikiActivePath(pageParam.replace(/^\/wiki\/?/, ''))
-      setUrlRestored(true)
-      return
-    }
-
-    if (!documents.length) return
-    setUrlRestored(true)
-  }, [docParam, pageParam, loading, documents, urlRestored])
-
-  // Sync selection to URL
-  const updateUrl = React.useCallback((selection: { docNumber?: number | null; pagePath?: string | null }) => {
-    const { docNumber = null, pagePath = null } = selection
-    const url = new URL(window.location.href)
-    if (docNumber) {
-      url.searchParams.set('doc', String(docNumber))
-    } else {
-      url.searchParams.delete('doc')
-    }
-    if (pagePath) {
-      url.searchParams.set('page', pagePath)
-    } else {
-      url.searchParams.delete('page')
-    }
-    router.replace(url.pathname + url.search, { scroll: false })
-  }, [router])
-
-  const handleWikiSelect = React.useCallback((path: string) => {
-    setWikiActivePath(path)
-
-    setFilesViewActive(false)
-    updateUrl({ pagePath: path })
-  }, [updateUrl])
-
-  const handleFilesToggle = React.useCallback(() => {
-    setFilesViewActive((prev) => {
-      if (!prev) {
-        // Entering files view — clear deep-link state but preserve wiki path
-        setFilesInitialDocId(null)
-        setFilesInitialPage(undefined)
-      }
-      return !prev
-    })
-  }, [])
-
-  const handleOpenSourceDoc = React.useCallback((docId: string) => {
-    setFilesViewActive(true)
-    setFilesInitialDocId(docId)
-    setFilesInitialPage(undefined)
-  }, [])
-
-  const handleCitationSourceClick = React.useCallback((filename: string, page?: number) => {
-    const lower = filename.toLowerCase()
-    const match = sourceDocs.find((d) => {
-      const fn = d.filename.toLowerCase()
-      const title = (d.title || '').toLowerCase()
-      return fn === lower || title === lower || fn === lower + '.md' || fn.replace(/\.md$/, '') === lower
-    })
-    setFilesViewActive(true)
-    setFilesInitialDocId(match?.id ?? null)
-    setFilesInitialPage(page)
-  }, [sourceDocs])
-
-  // Restore the last-opened wiki page after a hard reload.
-  React.useEffect(() => {
-    if (!docParam && !pageParam) {
-      const cachedPath = readCachedWikiPath(kbId)
-      if (cachedPath) setWikiActivePath((prev) => prev ?? cachedPath)
-    }
-    setSelectionHydrated(true)
-  }, [kbId, docParam, pageParam])
-
-  // Cache active path
-  React.useEffect(() => {
-    if (!selectionHydrated) return
-    writeCachedWikiPath(kbId, wikiActivePath)
-  }, [kbId, wikiActivePath, selectionHydrated])
-
-  // Build wiki tree
   React.useEffect(() => {
     let cancelled = false
     setIndexLoaded(false)
-
     if (indexDoc && token) {
       apiFetch<{ content: string }>(`/v1/documents/${indexDoc.id}/content`, token)
         .then((res) => {
           if (cancelled) return
           try {
             const parsed = JSON.parse(res.content)
-            setWikiTree(parsed.tree || [])
+            setWikiTree(enrichTreeWithDocNumbers(parsed.tree || [], wikiDocs))
           } catch {
             setWikiTree(buildTreeFromDocs(wikiDocs.filter((d) => d.id !== indexDoc.id)))
           }
@@ -387,23 +242,28 @@ export function KBDetail({ kbId, kbName }: Props) {
       setWikiTree(buildTreeFromDocs(wikiDocs))
       setIndexLoaded(true)
     }
-
     return () => { cancelled = true }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [indexDoc?.id, token, wikiDocs.length, wikiDocs.map((d) => d.id).join()])
 
-  // Auto-select first wiki page
+  // Auto-select first wiki page when none is selected
   React.useEffect(() => {
-    if (indexLoaded && urlRestored && !filesViewActive && !wikiActivePath && wikiTree.length) {
+    if (indexLoaded && activeView === 'wiki' && !wikiActivePath && urlWikiDocNumber == null && wikiTree.length && !loading) {
       const first = findFirstPath(wikiTree)
       if (first) {
-        setWikiActivePath(first)
-        updateUrl({ pagePath: first })
+        setWikiActivePath(first.path)
+        lastWikiDocNumberRef.current = first.docNumber
+        if (first.docNumber != null) updateParam('p', String(first.docNumber))
       }
     }
-  }, [indexLoaded, wikiTree, wikiActivePath, filesViewActive, urlRestored, updateUrl])
+  }, [indexLoaded, wikiTree, wikiActivePath, activeView, urlWikiDocNumber, loading, updateParam])
 
-  // Track the active wiki doc's version to avoid re-fetching on unrelated updates
+  // ─── Wiki content loading ────────────────────────────────────
+  const [pageContent, setPageContent] = React.useState('')
+  const [pageTitle, setPageTitle] = React.useState('')
+  const [pageLoading, setPageLoading] = React.useState(false)
+  const [pageLoadedPath, setPageLoadedPath] = React.useState<string | null>(null)
+
   const activeWikiDoc = React.useMemo(() => {
     if (!wikiActivePath) return null
     return wikiDocs.find((d) => {
@@ -415,29 +275,23 @@ export function KBDetail({ kbId, kbName }: Props) {
   const activeWikiVersion = activeWikiDoc?.version ?? -1
   const activeWikiDocId = activeWikiDoc?.id ?? null
 
-  // Fetch wiki page content — only when path changes or version bumps
   React.useEffect(() => {
     if (!wikiActivePath || !token) {
       setPageLoadedPath(null)
       return
     }
-
     if (!activeWikiDoc) {
       setPageContent(`Page not found: ${wikiActivePath}`)
       setPageTitle('')
       setPageLoadedPath(wikiActivePath)
       return
     }
-
     setPageTitle(activeWikiDoc.title || activeWikiDoc.filename.replace(/\.(md|txt)$/, ''))
-
-    // Skip loading state on version bumps (live updates from MCP) to avoid flash
     const isLiveUpdate = pageLoadedPath === wikiActivePath
     if (!isLiveUpdate) {
       setPageLoading(true)
       setPageLoadedPath(null)
     }
-
     apiFetch<{ content: string }>(`/v1/documents/${activeWikiDoc.id}/content`, token)
       .then((res) => setPageContent(res.content || ''))
       .catch(() => setPageContent('Failed to load page content.'))
@@ -446,6 +300,151 @@ export function KBDetail({ kbId, kbName }: Props) {
         setPageLoadedPath(wikiActivePath)
       })
   }, [wikiActivePath, token, activeWikiDocId, activeWikiVersion])
+
+  // ─── Token helper ────────────────────────────────────────────
+  const getToken = () => {
+    const t = useUserStore.getState().accessToken
+    if (!t) { toast.error('Not authenticated'); return null }
+    return t
+  }
+
+  // ─── Multi-selection ─────────────────────────────────────────
+  const [selectedIds, setSelectedIds] = React.useState<Set<string>>(new Set())
+  const lastSelectedIdRef = React.useRef<string | null>(null)
+  const sourceDocIds = React.useMemo(() => sourceDocs.map((d) => d.id), [sourceDocs])
+
+  const handleSelect = React.useCallback((docId: string, e: React.MouseEvent) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (e.shiftKey && lastSelectedIdRef.current) {
+        const lastIdx = sourceDocIds.indexOf(lastSelectedIdRef.current)
+        const currIdx = sourceDocIds.indexOf(docId)
+        if (lastIdx !== -1 && currIdx !== -1) {
+          const [start, end] = lastIdx < currIdx ? [lastIdx, currIdx] : [currIdx, lastIdx]
+          for (let i = start; i <= end; i++) next.add(sourceDocIds[i])
+        } else {
+          next.add(docId)
+        }
+      } else if (e.metaKey || e.ctrlKey) {
+        if (next.has(docId)) next.delete(docId)
+        else next.add(docId)
+      } else {
+        next.clear()
+        next.add(docId)
+      }
+      lastSelectedIdRef.current = docId
+      return next
+    })
+  }, [sourceDocIds])
+
+  const clearSelection = React.useCallback(() => {
+    setSelectedIds(new Set())
+    lastSelectedIdRef.current = null
+  }, [])
+
+  React.useEffect(() => {
+    if (selectedIds.size === 0) return
+    const handleKeyDown = (e: KeyboardEvent) => { if (e.key === 'Escape') clearSelection() }
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [selectedIds.size, clearSelection])
+
+  const handleDeleteSelected = async () => {
+    const t = getToken()
+    if (!t) return
+    const ids = Array.from(selectedIds)
+    if (!window.confirm(`Delete ${ids.length} selected document${ids.length > 1 ? 's' : ''}?`)) return
+    const results = await Promise.allSettled(ids.map((id) => apiFetch(`/v1/documents/${id}`, t, { method: 'DELETE' })))
+    const succeeded = ids.filter((_, i) => results[i].status === 'fulfilled')
+    const failed = ids.filter((_, i) => results[i].status === 'rejected')
+    if (succeeded.length > 0) setDocuments((prev) => prev.filter((d) => !succeeded.includes(d.id)))
+    if (failed.length > 0) toast.error(`Failed to delete ${failed.length} document${failed.length > 1 ? 's' : ''}`)
+    clearSelection()
+  }
+
+  // ─── Navigation handlers ─────────────────────────────────────
+
+  // Wiki page click: only updates ?p= search param (instant, no route change)
+  const handleWikiSelect = React.useCallback((path: string, docNumber?: number | null) => {
+    setActiveView('wiki')
+    setWikiActivePath(path)
+    const num = docNumber ?? wikiDocs.find((d) => {
+      const relative = (d.path + d.filename).replace(/^\/wiki\/?/, '')
+      return relative === path
+    })?.document_number ?? null
+    lastWikiDocNumberRef.current = num
+    if (num != null) updateParam('p', String(num))
+  }, [updateParam, wikiDocs])
+
+  const handleFilesToggle = React.useCallback(() => {
+    if (filesViewActive) {
+      // Back to wiki — restore last wiki page via ?p=
+      const sp = lastWikiDocNumberRef.current != null
+        ? { p: String(lastWikiDocNumberRef.current) }
+        : undefined
+      navigateToView('wiki', { searchParams: sp })
+    } else {
+      setActiveView('files')
+      navigateToView('files')
+    }
+  }, [filesViewActive, navigateToView])
+
+  const handleGraphToggle = React.useCallback(() => {
+    if (graphViewActive) {
+      const sp = lastWikiDocNumberRef.current != null
+        ? { p: String(lastWikiDocNumberRef.current) }
+        : undefined
+      navigateToView('wiki', { searchParams: sp })
+    } else {
+      setActiveView('graph')
+      setGraphFocusNodeId(null)
+      navigateToView('graph')
+    }
+  }, [graphViewActive, navigateToView])
+
+  const handleGraphNodeClick = React.useCallback((docId: string, sourceKind: string) => {
+    const doc = documents.find((d) => d.id === docId)
+    if (!doc) return
+    if (sourceKind === 'wiki') {
+      const wikiPath = (doc.path + doc.filename).replace(/^\/wiki\/?/, '')
+      setActiveView('wiki')
+      setWikiActivePath(wikiPath)
+      lastWikiDocNumberRef.current = doc.document_number
+      navigateToView('wiki', { searchParams: doc.document_number != null ? { p: String(doc.document_number) } : undefined })
+      return
+    }
+    setActiveView('doc')
+    navigateToView('files', { searchParams: doc.document_number != null ? { doc: String(doc.document_number) } : undefined })
+  }, [documents, navigateToView])
+
+  const handleOpenSourceDoc = React.useCallback((docId: string) => {
+    const doc = documents.find((d) => d.id === docId)
+    setActiveView('doc')
+    if (doc?.document_number != null) {
+      navigateToView('files', { searchParams: { doc: String(doc.document_number) } })
+    }
+  }, [documents, navigateToView])
+
+  const handleCitationSourceClick = React.useCallback((filename: string, page?: number) => {
+    const lower = filename.toLowerCase()
+    const match = sourceDocs.find((d) => {
+      const fn = d.filename.toLowerCase()
+      const title = (d.title || '').toLowerCase()
+      return fn === lower || title === lower || fn === lower + '.md' || fn.replace(/\.md$/, '') === lower
+    })
+    setActiveView('doc')
+    setFilesInitialPage(page)
+    if (match?.document_number != null) {
+      navigateToView('files', { searchParams: { doc: String(match.document_number) } })
+    }
+  }, [sourceDocs, navigateToView])
+
+  const handlePageGraphClick = React.useCallback(() => {
+    if (!activeWikiDocId) return
+    setActiveView('graph')
+    setGraphFocusNodeId(activeWikiDocId)
+    navigateToView('graph')
+  }, [activeWikiDocId, navigateToView])
 
   const wikiPathSet = React.useMemo(() => {
     const set = new Set<string>()
@@ -459,35 +458,48 @@ export function KBDetail({ kbId, kbName }: Props) {
   const handleWikiNavigate = React.useCallback(
     (path: string) => {
       let nextPath = path
-  
       if (path.startsWith('/wiki/')) {
         nextPath = path.replace(/^\/wiki\/?/, '')
       } else if (path.startsWith('/')) {
         nextPath = path.slice(1)
       } else if (wikiPathSet.has(path)) {
-        // Path directly matches an existing wiki doc — use as-is
         nextPath = path
       } else if (wikiActivePath) {
-        // Resolve relative to current page's directory
         const dir = wikiActivePath.includes('/')
           ? wikiActivePath.substring(0, wikiActivePath.lastIndexOf('/'))
           : ''
         let resolved = path.startsWith('./')
           ? (dir ? dir + '/' : '') + path.slice(2)
           : (dir ? dir + '/' : '') + path
-
         while (resolved.includes('../')) {
           resolved = resolved.replace(/[^/]*\/\.\.\//, '')
         }
         nextPath = resolved
       }
       setWikiActivePath(nextPath)
-      updateUrl({ pagePath: nextPath })
+      const doc = wikiDocs.find((d) => {
+        const relative = (d.path + d.filename).replace(/^\/wiki\/?/, '')
+        return relative === nextPath
+      })
+      lastWikiDocNumberRef.current = doc?.document_number ?? null
+      if (doc?.document_number != null) updateParam('p', String(doc.document_number))
     },
-    [wikiActivePath, wikiPathSet, updateUrl],
+    [wikiActivePath, wikiPathSet, updateParam, wikiDocs],
   )
 
-  // Document actions
+  // ─── Wiki subsections ────────────────────────────────────────
+  const wikiActiveSubsections: WikiSubsection[] = React.useMemo(() => {
+    if (!pageContent || !wikiActivePath) return []
+    const toc = extractTocFromMarkdown(pageContent)
+    return toc.filter((item) => item.level === 2).map((item) => ({ id: item.id, title: item.text }))
+  }, [pageContent, wikiActivePath])
+
+  const handleSubsectionClick = React.useCallback((id: string) => {
+    const el = document.getElementById(id)
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }, [])
+
+  // ─── Document CRUD ───────────────────────────────────────────
   const handleCreateNote = async (targetPath: string = '/') => {
     const t = getToken()
     if (!t || !userId) return
@@ -498,8 +510,8 @@ export function KBDetail({ kbId, kbName }: Props) {
       })
       setDocuments((prev) => [data, ...prev])
       if (!filesViewActive) {
-        setFilesViewActive(true)
-        setWikiActivePath(null)
+        setActiveView('files')
+        navigateToView('files')
       }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to create note')
@@ -517,8 +529,8 @@ export function KBDetail({ kbId, kbName }: Props) {
       .then((data) => {
         setDocuments((prev) => [data, ...prev])
         if (!filesViewActive) {
-          setFilesViewActive(true)
-          setWikiActivePath(null)
+          setActiveView('files')
+          navigateToView('files')
         }
       })
       .catch((err: Error) => toast.error(err.message || 'Failed to create folder'))
@@ -528,14 +540,9 @@ export function KBDetail({ kbId, kbName }: Props) {
     const t = getToken()
     if (!t) return
     try {
-      await apiFetch(`/v1/documents/${docId}`, t, {
-        method: 'PATCH',
-        body: JSON.stringify({ path: targetPath }),
-      })
+      await apiFetch(`/v1/documents/${docId}`, t, { method: 'PATCH', body: JSON.stringify({ path: targetPath }) })
       setDocuments((prev) => prev.map((d) => d.id === docId ? { ...d, path: targetPath } : d))
-    } catch {
-      toast.error('Failed to move document')
-    }
+    } catch { toast.error('Failed to move document') }
   }
 
   const handleDeleteDocument = async (docId: string) => {
@@ -544,25 +551,19 @@ export function KBDetail({ kbId, kbName }: Props) {
     try {
       await apiFetch(`/v1/documents/${docId}`, t, { method: 'DELETE' })
       setDocuments((prev) => prev.filter((d) => d.id !== docId))
-    } catch {
-      toast.error('Failed to delete document')
-    }
+    } catch { toast.error('Failed to delete document') }
   }
 
   const handleRenameDocument = async (docId: string, newTitle: string) => {
     const t = getToken()
     if (!t) return
     try {
-      await apiFetch(`/v1/documents/${docId}`, t, {
-        method: 'PATCH',
-        body: JSON.stringify({ title: newTitle }),
-      })
+      await apiFetch(`/v1/documents/${docId}`, t, { method: 'PATCH', body: JSON.stringify({ title: newTitle }) })
       setDocuments((prev) => prev.map((d) => d.id === docId ? { ...d, title: newTitle } : d))
-    } catch {
-      toast.error('Failed to rename document')
-    }
+    } catch { toast.error('Failed to rename document') }
   }
 
+  // ─── File upload ─────────────────────────────────────────────
   const uploadPathRef = React.useRef('/')
   const handleUploadClick = (targetPath: string = '/') => {
     uploadPathRef.current = targetPath
@@ -570,33 +571,21 @@ export function KBDetail({ kbId, kbName }: Props) {
     input.type = 'file'
     input.accept = '.md,.txt,.pdf,.pptx,.ppt,.docx,.doc,.png,.jpg,.jpeg,.webp,.gif,.svg,.xlsx,.xls,.csv,.html,.htm'
     input.multiple = true
-    input.onchange = () => {
-      if (input.files) uploadFiles(Array.from(input.files), uploadPathRef.current)
-    }
+    input.onchange = () => { if (input.files) uploadFiles(Array.from(input.files), uploadPathRef.current) }
     input.click()
   }
 
   const tusUploadFile = React.useCallback((file: File): Promise<void> => {
     const t = getToken()
     if (!t) return Promise.reject(new Error('Not authenticated'))
-
     return new Promise((resolve, reject) => {
       const upload = new tus.Upload(file, {
         endpoint: `${API_URL}/v1/uploads`,
         retryDelays: [0, 1000, 3000, 5000],
-        metadata: {
-          filename: file.name,
-          knowledge_base_id: kbId,
-        },
+        metadata: { filename: file.name, knowledge_base_id: kbId },
         headers: { Authorization: `Bearer ${t}` },
-        onError: (error) => {
-          toast.error(`Upload failed: ${file.name}`)
-          reject(error)
-        },
-        onSuccess: () => {
-          toast.success(`${file.name} uploaded, processing...`)
-          resolve()
-        },
+        onError: (error) => { toast.error(`Upload failed: ${file.name}`); reject(error) },
+        onSuccess: () => { toast.success(`${file.name} uploaded, processing...`); resolve() },
       })
       upload.start()
     })
@@ -605,7 +594,6 @@ export function KBDetail({ kbId, kbName }: Props) {
   const uploadFiles = React.useCallback((files: File[], targetPath: string = '/') => {
     const t = getToken()
     if (!t || !userId) return
-
     const uploads = files.map(async (file) => {
       const ext = file.name.split('.').pop()?.toLowerCase()
       if (ext === 'md' || ext === 'txt') {
@@ -617,29 +605,21 @@ export function KBDetail({ kbId, kbName }: Props) {
             body: JSON.stringify({ filename: file.name, title, content, path: targetPath }),
           })
           setDocuments((prev) => [data, ...prev])
-        } catch {
-          toast.error(`Failed to import ${file.name}`)
-        }
+        } catch { toast.error(`Failed to import ${file.name}`) }
       } else {
         const supportedTypes = new Set(['pdf', 'pptx', 'ppt', 'docx', 'doc', 'png', 'jpg', 'jpeg', 'webp', 'gif', 'xlsx', 'xls', 'csv', 'html', 'htm'])
         if (ext && supportedTypes.has(ext)) {
           if (process.env.NEXT_PUBLIC_MODE === 'local') {
-            // Local mode: simple multipart upload
             const formData = new FormData()
             formData.append('file', file)
             formData.append('path', targetPath)
             try {
-              const res = await fetch(`${API_URL}/v1/upload`, {
-                method: 'POST',
-                body: formData,
-              })
+              const res = await fetch(`${API_URL}/v1/upload`, { method: 'POST', body: formData })
               if (!res.ok) throw new Error(`Upload failed: ${res.status}`)
               const data = await res.json()
               setDocuments((prev) => [data, ...prev])
               toast.success(`${file.name} uploaded`)
-            } catch {
-              toast.error(`Upload failed: ${file.name}`)
-            }
+            } catch { toast.error(`Upload failed: ${file.name}`) }
           } else {
             await tusUploadFile(file)
           }
@@ -648,48 +628,37 @@ export function KBDetail({ kbId, kbName }: Props) {
         }
       }
     })
-
     Promise.all(uploads).then(() => {
       const textFiles = files.filter((f) => /\.(md|txt)$/i.test(f.name))
       if (textFiles.length > 0) toast.success(`Imported ${textFiles.length} file${textFiles.length > 1 ? 's' : ''}`)
     })
   }, [kbId, userId, tusUploadFile])
 
-  // Extract H2 subsections from wiki page content for the sidenav
-  const wikiActiveSubsections: WikiSubsection[] = React.useMemo(() => {
-    if (!pageContent || !wikiActivePath) return []
-    const toc = extractTocFromMarkdown(pageContent)
-    return toc
-      .filter((item) => item.level === 2)
-      .map((item) => ({ id: item.id, title: item.text }))
-  }, [pageContent, wikiActivePath])
-
-  const handleSubsectionClick = React.useCallback((id: string) => {
-    const el = document.getElementById(id)
-    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' })
-  }, [])
-
-  // File drag-and-drop
+  // ─── Drag-and-drop ───────────────────────────────────────────
   const [fileDragOver, setFileDragOver] = React.useState(false)
   const dragCounterRef = React.useRef(0)
 
   const handleFileDragEnter = (e: React.DragEvent) => {
+    if (filesViewActive) return
     if (e.dataTransfer.types.includes('application/x-llmwiki-item')) return
     e.preventDefault()
     dragCounterRef.current++
     if (dragCounterRef.current === 1) setFileDragOver(true)
   }
   const handleFileDragLeave = (e: React.DragEvent) => {
+    if (filesViewActive) return
     e.preventDefault()
     dragCounterRef.current--
     if (dragCounterRef.current === 0) setFileDragOver(false)
   }
   const handleFileDragOver = (e: React.DragEvent) => {
+    if (filesViewActive) return
     if (e.dataTransfer.types.includes('application/x-llmwiki-item')) return
     e.preventDefault()
     e.dataTransfer.dropEffect = 'copy'
   }
   const handleFileDrop = (e: React.DragEvent) => {
+    if (filesViewActive) return
     if (e.dataTransfer.types.includes('application/x-llmwiki-item')) return
     e.preventDefault()
     dragCounterRef.current = 0
@@ -698,13 +667,33 @@ export function KBDetail({ kbId, kbName }: Props) {
     if (files.length > 0) uploadFiles(files)
   }
 
+  // ─── FilesGrid URL-sync callbacks ────────────────────────────
+  const handleFilesPathChange = React.useCallback((path: string) => {
+    filesCurrentPathRef.current = path
+    const clean = path === '/' ? '' : path.replace(/^\//, '').replace(/\/$/, '')
+    const url = `/wikis/${kbSlug}` + (clean ? `/files/${encodeURI(clean)}` : '/files')
+    router.replace(url, { scroll: false })
+  }, [kbSlug, router])
+
+  const handleFilesDocOpen = React.useCallback((docNumber: number | null) => {
+    if (docNumber != null) {
+      setActiveView('doc')
+      updateParam('doc', String(docNumber))
+    }
+  }, [updateParam])
+
+  const handleFilesDocClose = React.useCallback(() => {
+    setActiveView('files')
+    updateParam('doc', null)
+  }, [updateParam])
+
+  // ─── Loading state ───────────────────────────────────────────
   const showMainLoading =
     loading ||
-    !selectionHydrated ||
-    !urlRestored ||
-    (!filesViewActive && hasNavigableWiki && !wikiActivePath) ||
-    (!filesViewActive && !!wikiActivePath && pageLoadedPath !== wikiActivePath)
+    (!filesViewActive && !graphViewActive && hasNavigableWiki && !wikiActivePath) ||
+    (!filesViewActive && !graphViewActive && !!wikiActivePath && pageLoadedPath !== wikiActivePath)
 
+  // ─── Render ──────────────────────────────────────────────────
   return (
     <div
       className="flex flex-col h-full relative"
@@ -729,7 +718,7 @@ export function KBDetail({ kbId, kbName }: Props) {
             kbId={kbId}
             kbName={kbName}
             wikiTree={wikiTree}
-            wikiActivePath={filesViewActive ? null : wikiActivePath}
+            wikiActivePath={filesViewActive || graphViewActive ? null : wikiActivePath}
             onWikiNavigate={handleWikiSelect}
             wikiActiveSubsections={wikiActiveSubsections}
             onWikiSubsectionClick={handleSubsectionClick}
@@ -739,6 +728,8 @@ export function KBDetail({ kbId, kbName }: Props) {
             onUpload={() => handleUploadClick()}
             filesViewActive={filesViewActive}
             onFilesToggle={handleFilesToggle}
+            graphViewActive={graphViewActive}
+            onGraphToggle={handleGraphToggle}
             onOpenSourceDoc={handleOpenSourceDoc}
           />
         </div>
@@ -747,6 +738,12 @@ export function KBDetail({ kbId, kbName }: Props) {
             <div className="flex items-center justify-center h-full">
               <Loader2 className="size-5 animate-spin text-muted-foreground" />
             </div>
+          ) : graphViewActive ? (
+            <GraphViewer
+              kbId={kbId}
+              focusNodeId={graphFocusNodeId}
+              onNavigateToDoc={handleGraphNodeClick}
+            />
           ) : filesViewActive ? (
             <FilesGrid
               key={filesInitialDocId ?? 'browse'}
@@ -756,8 +753,14 @@ export function KBDetail({ kbId, kbName }: Props) {
               onUpload={handleUploadClick}
               onCreateNote={handleCreateNote}
               onCreateFolder={handleCreateFolder}
+              onMoveDocument={handleMoveDocument}
+              onUploadFiles={uploadFiles}
               initialDocId={filesInitialDocId}
               initialPage={filesInitialPage}
+              initialPath={routeFilesPath}
+              onPathChange={handleFilesPathChange}
+              onDocOpen={handleFilesDocOpen}
+              onDocClose={handleFilesDocClose}
             />
           ) : pageLoading ? (
             <div className="flex items-center justify-center h-full">
@@ -769,6 +772,7 @@ export function KBDetail({ kbId, kbName }: Props) {
               title={pageTitle}
               onNavigate={handleWikiNavigate}
               onSourceClick={handleCitationSourceClick}
+              onGraphClick={handlePageGraphClick}
               documents={documents}
             />
           ) : (
@@ -811,5 +815,3 @@ export function KBDetail({ kbId, kbName }: Props) {
     </div>
   )
 }
-
-

@@ -4,7 +4,7 @@ import * as React from 'react'
 import {
   ChevronRight, FileText, NotepadText, Folder,
   Upload, BookOpen, ArrowUpRight, Search as SearchIcon,
-  Lightbulb, Box, ScrollText,
+  Lightbulb, Box, ScrollText, Network,
 } from 'lucide-react'
 import {
   CommandDialog, CommandInput, CommandList, CommandItem,
@@ -32,7 +32,7 @@ interface KBSidenavProps {
   kbName: string
   wikiTree: WikiNode[]
   wikiActivePath: string | null
-  onWikiNavigate: (path: string) => void
+  onWikiNavigate: (path: string, docNumber?: number | null) => void
   wikiActiveSubsections?: WikiSubsection[]
   onWikiSubsectionClick?: (id: string) => void
   sourceDocs: DocumentListItem[]
@@ -41,6 +41,8 @@ interface KBSidenavProps {
   onUpload: () => void
   filesViewActive: boolean
   onFilesToggle: () => void
+  graphViewActive: boolean
+  onGraphToggle: () => void
   onOpenSourceDoc: (docId: string) => void
 }
 
@@ -58,6 +60,8 @@ export function KBSidenav({
   onUpload,
   filesViewActive,
   onFilesToggle,
+  graphViewActive,
+  onGraphToggle,
   onOpenSourceDoc,
 }: KBSidenavProps) {
   const [searchOpen, setSearchOpen] = React.useState(false)
@@ -78,7 +82,7 @@ export function KBSidenav({
   [])
 
   const allSearchableItems = React.useMemo(() => {
-    const items: { type: 'wiki' | 'source'; title: string; keywords: string; tags: string[]; path?: string; doc?: DocumentListItem }[] = []
+    const items: { type: 'wiki' | 'source'; title: string; keywords: string; tags: string[]; path?: string; docNumber?: number | null; doc?: DocumentListItem }[] = []
     const addWikiNodes = (nodes: WikiNode[], parentPath = '') => {
       for (const node of nodes) {
         if (node.path) {
@@ -90,6 +94,7 @@ export function KBSidenav({
             keywords: [node.title, node.path, parentPath, ...tags].filter(Boolean).join(' '),
             tags,
             path: node.path,
+            docNumber: node.docNumber,
           })
         }
         if (node.children) addWikiNodes(node.children, node.title)
@@ -118,7 +123,7 @@ export function KBSidenav({
         <WikiSelector kbId={kbId} kbName={kbName} />
       </div>
 
-      {/* Search + Upload */}
+      {/* Search + Upload + Graph */}
       <div className="shrink-0 px-2 pb-1 flex items-center gap-1.5">
         <button
           onClick={() => setSearchOpen(true)}
@@ -128,6 +133,18 @@ export function KBSidenav({
           <SearchIcon className="size-3" />
           <span className="flex-1 text-left">Search</span>
           <kbd className="text-[10px] text-muted-foreground/30 bg-muted px-1 rounded">{isMac ? '⌘K' : 'Ctrl+K'}</kbd>
+        </button>
+        <button
+          onClick={onGraphToggle}
+          className={cn(
+            'flex items-center justify-center px-2.5 py-1.5 border rounded-md transition-colors cursor-pointer',
+            graphViewActive
+              ? 'bg-accent text-foreground border-border'
+              : 'text-muted-foreground/50 hover:text-muted-foreground border-border hover:bg-accent',
+          )}
+          title="Knowledge graph"
+        >
+          <Network className="size-3" />
         </button>
         <button
           onClick={onUpload}
@@ -151,7 +168,7 @@ export function KBSidenav({
                   value={item.keywords}
                   onSelect={() => {
                     setSearchOpen(false)
-                    if (item.path) onWikiNavigate(item.path)
+                    if (item.path) onWikiNavigate(item.path, item.docNumber)
                   }}
                   className="flex items-center"
                 >
@@ -211,7 +228,7 @@ export function KBSidenav({
         </CommandList>
       </CommandDialog>
 
-      {/* Sources button — full width, matches search bar style */}
+      {/* Sources button */}
       <div className="shrink-0 px-2 pb-1">
         <button
           onClick={onFilesToggle}
@@ -319,7 +336,7 @@ function WikiTreeNode({
   node: WikiNode
   depth: number
   activePath: string | null
-  onNavigate: (path: string) => void
+  onNavigate: (path: string, docNumber?: number | null) => void
 }) {
   const hasChildren = node.children && node.children.length > 0
   const isActive = node.path != null && node.path === activePath
@@ -353,7 +370,7 @@ function WikiTreeNode({
           <span className="w-3.5" />
         )}
         <button
-          onClick={() => node.path && onNavigate(node.path)}
+          onClick={() => node.path && onNavigate(node.path, node.docNumber)}
           className="flex items-center gap-1.5 flex-1 min-w-0 cursor-pointer"
         >
           {wikiNodeIcon(node, depth)}

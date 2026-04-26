@@ -126,9 +126,19 @@ interface FilesGridProps {
   onUpload: (path: string) => void
   onCreateNote: (path: string) => void
   onCreateFolder: (name: string, parentPath: string) => void
+  onMoveDocument?: (docId: string, targetPath: string) => void
+  onUploadFiles?: (files: File[], targetPath: string) => void
   /** If set, open this doc on mount (e.g. from a citation click) */
   initialDocId?: string | null
   initialPage?: number
+  /** Initial folder path from URL */
+  initialPath?: string
+  /** Notify parent when folder path changes (for URL sync) */
+  onPathChange?: (path: string) => void
+  /** Notify parent when a doc is opened (for URL sync) */
+  onDocOpen?: (docNumber: number | null) => void
+  /** Notify parent when a doc is closed (for URL sync) */
+  onDocClose?: () => void
 }
 
 export function FilesGrid({
@@ -138,12 +148,18 @@ export function FilesGrid({
   onUpload,
   onCreateNote,
   onCreateFolder,
+  onMoveDocument,
+  onUploadFiles,
   initialDocId,
   initialPage,
+  initialPath,
+  onPathChange,
+  onDocOpen,
+  onDocClose,
 }: FilesGridProps) {
   // Navigation state
-  const [currentPath, setCurrentPath] = React.useState('/')
-  const [history, setHistory] = React.useState<string[]>(['/'])
+  const [currentPath, setCurrentPath] = React.useState(initialPath ?? '/')
+  const [history, setHistory] = React.useState<string[]>([initialPath ?? '/'])
   const [historyIdx, setHistoryIdx] = React.useState(0)
 
   // Active document (null = browsing grid)
@@ -189,23 +205,26 @@ export function FilesGrid({
     setActiveDocId(null)
     setDocInitialPage(undefined)
     setCurrentPath(path)
+    onPathChange?.(path)
     setHistory((prev) => {
       const next = prev.slice(0, historyIdx + 1)
       next.push(path)
       return next
     })
     setHistoryIdx((prev) => prev + 1)
-  }, [historyIdx])
+  }, [historyIdx, onPathChange])
 
   const openDoc = React.useCallback((doc: DocumentListItem) => {
     setActiveDocId(doc.id)
     setDocInitialPage(undefined)
-  }, [])
+    onDocOpen?.(doc.document_number)
+  }, [onDocOpen])
 
   const closeDoc = React.useCallback(() => {
     setActiveDocId(null)
     setDocInitialPage(undefined)
-  }, [])
+    onDocClose?.()
+  }, [onDocClose])
 
   const canGoBack = isBrowsing ? historyIdx > 0 : true
   const canGoForward = isBrowsing ? historyIdx < history.length - 1 : false
@@ -219,14 +238,16 @@ export function FilesGrid({
     const newIdx = historyIdx - 1
     setHistoryIdx(newIdx)
     setCurrentPath(history[newIdx])
-  }, [isBrowsing, closeDoc, historyIdx, history])
+    onPathChange?.(history[newIdx])
+  }, [isBrowsing, closeDoc, historyIdx, history, onPathChange])
 
   const goForward = React.useCallback(() => {
     if (!isBrowsing || !canGoForward) return
     const newIdx = historyIdx + 1
     setHistoryIdx(newIdx)
     setCurrentPath(history[newIdx])
-  }, [isBrowsing, canGoForward, historyIdx, history])
+    onPathChange?.(history[newIdx])
+  }, [isBrowsing, canGoForward, historyIdx, history, onPathChange])
 
   // Grid data
   const folders = React.useMemo(() => getChildFolders(sourceDocs, currentPath), [sourceDocs, currentPath])
@@ -276,11 +297,66 @@ export function FilesGrid({
     }
   }, [searchOpen])
 
+  // Drag-and-drop state
+  const [gridDragOver, setGridDragOver] = React.useState(false)
+  const gridDragCounter = React.useRef(0)
+
+  const handleGridDragEnter = (e: React.DragEvent) => {
+    // Ignore internal item drags (handled by folder cards)
+    if (e.dataTransfer.types.includes('application/x-llmwiki-item')) return
+    e.preventDefault()
+    gridDragCounter.current++
+    if (gridDragCounter.current === 1) setGridDragOver(true)
+  }
+  const handleGridDragLeave = (e: React.DragEvent) => {
+    e.preventDefault()
+    gridDragCounter.current--
+    if (gridDragCounter.current === 0) setGridDragOver(false)
+  }
+  const handleGridDragOver = (e: React.DragEvent) => {
+    if (e.dataTransfer.types.includes('application/x-llmwiki-item')) return
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'copy'
+  }
+  const handleGridDrop = (e: React.DragEvent) => {
+    if (e.dataTransfer.types.includes('application/x-llmwiki-item')) return
+    e.preventDefault()
+    gridDragCounter.current = 0
+    setGridDragOver(false)
+    const files = Array.from(e.dataTransfer.files)
+    if (files.length > 0) onUploadFiles?.(files, currentPath)
+  }
+
+  const handleFolderDrop = React.useCallback((docIds: string[], targetPath: string) => {
+    for (const id of docIds) onMoveDocument?.(id, targetPath)
+  }, [onMoveDocument])
+
+  const handleFolderFileDrop = React.useCallback((files: File[], targetPath: string) => {
+    onUploadFiles?.(files, targetPath)
+  }, [onUploadFiles])
+
   const sortLabels: Record<SortField, string> = { name: 'Name', date: 'Modified', type: 'Kind' }
   const isEmpty = filteredFolders.length === 0 && filteredDocs.length === 0
 
   return (
-    <div className="h-full flex flex-col overflow-hidden">
+    <div
+      className="h-full flex flex-col overflow-hidden relative"
+      onDragEnter={handleGridDragEnter}
+      onDragLeave={handleGridDragLeave}
+      onDragOver={handleGridDragOver}
+      onDrop={handleGridDrop}
+    >
+      {/* OS file drop overlay */}
+      {gridDragOver && (
+        <div className="absolute inset-0 z-40 bg-background/80 backdrop-blur-sm flex items-center justify-center pointer-events-none">
+          <div className="flex flex-col items-center gap-3 border-2 border-dashed border-primary rounded-xl px-12 py-10">
+            <Upload className="size-8 text-primary" />
+            <p className="text-sm font-medium text-primary">Drop files to upload</p>
+            <p className="text-xs text-muted-foreground">to {currentPath === '/' ? 'Files' : currentPath.replace(/\/$/, '').split('/').pop()}</p>
+          </div>
+        </div>
+      )}
+
       {/* ── Toolbar (always mounted, never flashes) ── */}
       <div className="shrink-0 flex items-center gap-1.5 px-4 py-2 border-b border-border">
         {/* Back / Forward */}
@@ -335,12 +411,13 @@ export function FilesGrid({
                 ) : isLast ? (
                   <span className="font-medium text-foreground truncate">{seg.label}</span>
                 ) : (
-                  <button
-                    onClick={() => navigateTo(seg.path)}
-                    className="truncate cursor-pointer rounded px-1 -mx-1 transition-colors text-muted-foreground hover:text-foreground"
-                  >
-                    {seg.label}
-                  </button>
+                  <BreadcrumbDropTarget
+                    label={seg.label}
+                    path={seg.path}
+                    onNavigate={() => navigateTo(seg.path)}
+                    onDropDocuments={handleFolderDrop}
+                    onDropFiles={handleFolderFileDrop}
+                  />
                 )}
               </React.Fragment>
             )
@@ -494,7 +571,13 @@ export function FilesGrid({
                         </motion.div>
                         {filteredFolders.map((folder) => (
                           <motion.div key={`folder-${folder.path}`} layout exit={{ opacity: 0, scale: 0.95 }} transition={{ layout: { duration: 0.15, ease: 'easeOut' }, opacity: { duration: 0.1 } }} className="h-full">
-                            <FolderCard name={folder.name} onNavigate={() => navigateTo(folder.path)} />
+                            <FolderCard
+                              name={folder.name}
+                              path={folder.path}
+                              onNavigate={() => navigateTo(folder.path)}
+                              onDropDocuments={handleFolderDrop}
+                              onDropFiles={handleFolderFileDrop}
+                            />
                           </motion.div>
                         ))}
                         {filteredDocs.map((doc) => (
@@ -539,11 +622,50 @@ export function FilesGrid({
 /*  Cards                                                              */
 /* ------------------------------------------------------------------ */
 
-function FolderCard({ name, onNavigate }: { name: string; onNavigate: () => void }) {
+function FolderCard({ name, path, onNavigate, onDropDocuments, onDropFiles }: {
+  name: string
+  path: string
+  onNavigate: () => void
+  onDropDocuments: (docIds: string[], targetPath: string) => void
+  onDropFiles: (files: File[], targetPath: string) => void
+}) {
+  const [dragOver, setDragOver] = React.useState(false)
+  const dragCounter = React.useRef(0)
+
   return (
-    <div onClick={onNavigate} className="group relative rounded-lg border border-border hover:bg-muted/50 cursor-pointer transition-colors flex flex-col overflow-hidden h-full">
+    <div
+      onClick={onNavigate}
+      onDragEnter={(e) => { e.preventDefault(); e.stopPropagation(); dragCounter.current++; if (dragCounter.current === 1) setDragOver(true) }}
+      onDragLeave={(e) => { e.preventDefault(); e.stopPropagation(); dragCounter.current--; if (dragCounter.current === 0) setDragOver(false) }}
+      onDragOver={(e) => {
+        e.preventDefault()
+        e.stopPropagation()
+        e.dataTransfer.dropEffect = e.dataTransfer.types.includes('application/x-llmwiki-item') ? 'move' : 'copy'
+      }}
+      onDrop={(e) => {
+        e.preventDefault()
+        e.stopPropagation()
+        dragCounter.current = 0
+        setDragOver(false)
+        if (e.dataTransfer.types.includes('application/x-llmwiki-item')) {
+          try {
+            const data = JSON.parse(e.dataTransfer.getData('application/x-llmwiki-item'))
+            onDropDocuments(data.ids, path)
+          } catch { /* ignore malformed data */ }
+        } else {
+          const files = Array.from(e.dataTransfer.files)
+          if (files.length > 0) onDropFiles(files, path)
+        }
+      }}
+      className={cn(
+        'group relative rounded-lg border cursor-pointer transition-colors flex flex-col overflow-hidden h-full',
+        dragOver
+          ? 'border-primary bg-primary/10 ring-2 ring-primary/30'
+          : 'border-border hover:bg-muted/50',
+      )}
+    >
       <div className="flex items-center justify-center aspect-square">
-        <Folder className="size-12 text-muted-foreground/70" />
+        <Folder className={cn('size-12', dragOver ? 'text-primary' : 'text-muted-foreground/70')} />
       </div>
       <div className="px-2 py-1.5">
         <span className="text-xs font-medium text-foreground truncate block">{name}</span>
@@ -555,6 +677,7 @@ function FolderCard({ name, onNavigate }: { name: string; onNavigate: () => void
 function DocumentCard({ doc, onOpen, onDelete, onRename }: { doc: DocumentListItem; onOpen: () => void; onDelete: () => void; onRename: (t: string) => void }) {
   const [renaming, setRenaming] = React.useState(false)
   const [renameValue, setRenameValue] = React.useState('')
+  const [dragging, setDragging] = React.useState(false)
   const inputRef = React.useRef<HTMLInputElement>(null)
   const isProcessing = doc.status === 'processing' || doc.status === 'pending'
 
@@ -570,10 +693,28 @@ function DocumentCard({ doc, onOpen, onDelete, onRename }: { doc: DocumentListIt
     setRenaming(false)
   }
 
+  const handleDragStart = (e: React.DragEvent) => {
+    if (renaming) { e.preventDefault(); return }
+    e.dataTransfer.setData('application/x-llmwiki-item', JSON.stringify({ ids: [doc.id] }))
+    e.dataTransfer.effectAllowed = 'move'
+    setDragging(true)
+  }
+
+  const handleDragEnd = () => setDragging(false)
+
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>
-        <div onClick={onOpen} className="group relative rounded-lg border border-border hover:bg-accent/40 cursor-pointer transition-colors flex flex-col overflow-hidden h-full">
+        <div
+          draggable={!renaming}
+          onDragStart={handleDragStart}
+          onDragEnd={handleDragEnd}
+          onClick={onOpen}
+          className={cn(
+            'group relative rounded-lg border border-border hover:bg-accent/40 cursor-pointer transition-colors flex flex-col overflow-hidden h-full',
+            dragging && 'opacity-40',
+          )}
+        >
           <div className="relative flex items-center justify-center bg-muted/30 aspect-square overflow-hidden">
             <span className={cn('text-muted-foreground/40', isProcessing && 'opacity-40')}>{docIcon(doc.file_type)}</span>
             {isProcessing && <div className="absolute inset-0 flex items-center justify-center"><Loader2 className="size-5 text-muted-foreground animate-spin" /></div>}
@@ -622,6 +763,49 @@ function NewCard({ onCreateNote, onUpload, onCreateFolder }: { onCreateNote: () 
         <DropdownMenuItem onClick={onUpload}><Upload className="size-3.5 mr-2" />Upload Files</DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
+  )
+}
+
+function BreadcrumbDropTarget({ label, path, onNavigate, onDropDocuments, onDropFiles }: {
+  label: string
+  path: string
+  onNavigate: () => void
+  onDropDocuments: (docIds: string[], targetPath: string) => void
+  onDropFiles: (files: File[], targetPath: string) => void
+}) {
+  const [dragOver, setDragOver] = React.useState(false)
+
+  return (
+    <button
+      onClick={onNavigate}
+      onDragEnter={(e) => { e.preventDefault(); e.stopPropagation(); setDragOver(true) }}
+      onDragLeave={(e) => { e.preventDefault(); e.stopPropagation(); setDragOver(false) }}
+      onDragOver={(e) => {
+        e.preventDefault()
+        e.stopPropagation()
+        e.dataTransfer.dropEffect = e.dataTransfer.types.includes('application/x-llmwiki-item') ? 'move' : 'copy'
+      }}
+      onDrop={(e) => {
+        e.preventDefault()
+        e.stopPropagation()
+        setDragOver(false)
+        if (e.dataTransfer.types.includes('application/x-llmwiki-item')) {
+          try {
+            const data = JSON.parse(e.dataTransfer.getData('application/x-llmwiki-item'))
+            onDropDocuments(data.ids, path)
+          } catch { /* ignore */ }
+        } else {
+          const files = Array.from(e.dataTransfer.files)
+          if (files.length > 0) onDropFiles(files, path)
+        }
+      }}
+      className={cn(
+        'truncate cursor-pointer rounded px-1 -mx-1 transition-colors text-muted-foreground hover:text-foreground',
+        dragOver && 'bg-primary/15 text-primary ring-1 ring-primary/40',
+      )}
+    >
+      {label}
+    </button>
   )
 }
 

@@ -2,22 +2,23 @@
 
 from mcp.server.fastmcp import FastMCP, Context
 
-from db import scoped_query, scoped_queryrow, service_execute
-from .helpers import get_user_id, resolve_kb, glob_match, resolve_path
+from vaultfs import VaultFS
+from .helpers import glob_match, resolve_path
 
 _PROTECTED_FILES = {("/wiki/", "overview.md"), ("/wiki/", "log.md")}
 
 
 def _is_protected(doc: dict) -> bool:
-    return (doc["path"], doc["filename"]) in _PROTECTED_FILES
+    return (doc.get("path", ""), doc.get("filename", "")) in _PROTECTED_FILES
 
 
 class DeleteHandler:
     """Deletes documents from the knowledge vault."""
 
-    def __init__(self, user_id: str, kb: dict):
-        self.user_id = user_id
+    def __init__(self, fs: VaultFS, kb: dict):
+        self.fs = fs
         self.kb = kb
+        self.kb_id = str(kb["id"])
         self.slug = kb["slug"]
 
     async def delete(self, path: str) -> str:
@@ -36,42 +37,27 @@ class DeleteHandler:
             names = ", ".join(f"`{d['path']}{d['filename']}`" for d in protected)
             return f"Cannot delete {names} — these are structural wiki pages. Use `write` to edit their content instead."
 
-        await self._archive(deletable)
-        return self._format_response(deletable, protected)
+        self.fs.delete_from_disk(deletable)
+
+        doc_ids = [str(d["id"]) for d in deletable]
+        deleted_count = await self.fs.archive_documents(doc_ids)
+
+        return self._format_response(deleted_count or len(deletable), deletable, protected)
 
     async def _find_documents(self, path: str) -> list[dict]:
         """Find documents by exact path or glob pattern."""
         if "*" in path or "?" in path:
-            docs = await scoped_query(
-                self.user_id,
-                "SELECT id, filename, title, path FROM documents "
-                "WHERE knowledge_base_id = $1 AND NOT archived AND user_id = $2 ORDER BY path, filename",
-                self.kb["id"], self.user_id,
-            )
+            docs = await self.fs.list_documents(self.kb_id)
             glob_pat = "/" + path.lstrip("/") if not path.startswith("/") else path
             return [d for d in docs if glob_match(d["path"] + d["filename"], glob_pat)]
 
         dir_path, filename = resolve_path(path)
-        doc = await scoped_queryrow(
-            self.user_id,
-            "SELECT id, filename, title, path FROM documents "
-            "WHERE knowledge_base_id = $1 AND filename = $2 AND path = $3 AND NOT archived AND user_id = $4",
-            self.kb["id"], filename, dir_path, self.user_id,
-        )
+        doc = await self.fs.get_document(self.kb_id, filename, dir_path)
         return [doc] if doc else []
 
-    async def _archive(self, deletable: list[dict]) -> None:
-        """Soft-delete documents by setting archived flag."""
-        doc_ids = [str(d["id"]) for d in deletable]
-        await service_execute(
-            "UPDATE documents SET archived = true, updated_at = now() "
-            "WHERE id = ANY($1::uuid[]) AND user_id = $2",
-            doc_ids, self.user_id,
-        )
-
-    def _format_response(self, deletable: list[dict], protected: list[dict]) -> str:
+    def _format_response(self, deleted_count: int, deletable: list[dict], protected: list[dict]) -> str:
         """Build the response message listing deleted and skipped files."""
-        lines = [f"Deleted {len(deletable)} document(s):\n"]
+        lines = [f"Deleted {deleted_count} document(s):\n"]
         for d in deletable:
             lines.append(f"  {d['path']}{d['filename']}")
         if protected:
@@ -80,7 +66,7 @@ class DeleteHandler:
         return "\n".join(lines)
 
 
-def register(mcp: FastMCP) -> None:
+def register(mcp: FastMCP, get_user_id, fs_factory) -> None:
 
     @mcp.tool(
         name="delete",
@@ -97,10 +83,10 @@ def register(mcp: FastMCP) -> None:
     )
     async def delete(ctx: Context, knowledge_base: str, path: str) -> str:
         user_id = get_user_id(ctx)
-
-        kb = await resolve_kb(user_id, knowledge_base)
+        fs = fs_factory(user_id)
+        kb = await fs.resolve_kb(knowledge_base)
         if not kb:
             return f"Knowledge base '{knowledge_base}' not found."
 
-        handler = DeleteHandler(user_id, kb)
+        handler = DeleteHandler(fs, kb)
         return await handler.delete(path)

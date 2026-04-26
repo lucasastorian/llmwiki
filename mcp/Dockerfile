@@ -17,4 +17,4 @@ COPY . .
 
 ENV MODE=hosted
 EXPOSE 8080
-CMD ["python", "-m", "server"]
+CMD ["python", "-m", "hosted"]

@@ -3,7 +3,22 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.cors import CORSMiddleware as _BaseCORSMiddleware
+from starlette.types import ASGIApp, Receive, Scope, Send
+
+
+class CORSMiddleware(_BaseCORSMiddleware):
+    """CORS middleware that passes WebSocket connections through.
+
+    WebSocket auth is handled by JWT verification in the handler, not by
+    origin checks. HTTP requests still get full CORS protection.
+    """
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "websocket":
+            await self.app(scope, receive, send)
+            return
+        await super().__call__(scope, receive, send)
 
 from config import settings
 
@@ -56,6 +71,10 @@ async def lifespan(app: FastAPI):
     app.state.ocr_service = ocr_service
     app.state.auth_provider = None  # Uses Supabase JWKS auth via deps.py
 
+    # Real-time document change notifications via WebSocket
+    from routes.ws import setup_listener
+    listener_task = await setup_listener(settings.DATABASE_URL)
+
     from infra.tus import cleanup_stale_uploads
     cleanup_task = asyncio.create_task(cleanup_stale_uploads())
 
@@ -71,6 +90,7 @@ async def lifespan(app: FastAPI):
     yield
 
     cleanup_task.cancel()
+    listener_task.cancel()
     await pool.close()
 
 
@@ -174,12 +194,14 @@ if settings.MODE == "local":
     from routes.local_usage import router as local_usage_router
     from routes.local_upload import router as local_upload_router
     from routes.files import router as files_router, set_workspace_root
+    from routes.local_graph import router as local_graph_router
     app.include_router(local_docs_router)
     app.include_router(local_kb_router)
     app.include_router(local_me_router)
     app.include_router(local_usage_router)
     app.include_router(local_upload_router)
     app.include_router(files_router)
+    app.include_router(local_graph_router)
     set_workspace_root(settings.WORKSPACE_PATH)
 else:
     app.include_router(knowledge_bases_router)
@@ -188,7 +210,11 @@ else:
     app.include_router(usage_router)
     from routes.api_keys import router as api_keys_router
     from routes.admin import router as admin_router
+    from routes.graph import router as graph_router
+    from routes.ws import router as ws_router
     from infra.tus import router as tus_router
     app.include_router(api_keys_router)
     app.include_router(admin_router)
     app.include_router(tus_router)
+    app.include_router(graph_router)
+    app.include_router(ws_router)

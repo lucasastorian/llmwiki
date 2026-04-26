@@ -1,4 +1,5 @@
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+const WS_URL = API_URL.replace(/^http/, 'ws')
 const isLocal = process.env.NEXT_PUBLIC_MODE === 'local'
 
 export async function apiFetch<T>(
@@ -26,4 +27,8 @@ export async function apiFetch<T>(
   }
   if (res.status === 204) return undefined as T
   return res.json()
+}
+
+export function getDocumentsWsUrl(kbId: string): string {
+  return `${WS_URL}/v1/ws/documents/${kbId}`
 }

@@ -1,29 +1,11 @@
-import os
-import logging
+"""Pure utility functions shared across tools. No DB, no auth, no state."""
+
 from fnmatch import fnmatch
 
-import aioboto3
-from mcp.server.fastmcp import Context
-from mcp.server.auth.middleware.auth_context import get_access_token
-
 from config import settings
-from db import scoped_queryrow
-
-logger = logging.getLogger(__name__)
 
 MAX_LIST = 50
 MAX_SEARCH = 20
-
-def get_user_id(ctx: Context) -> str:
-    """Extract user ID from the MCP access token. Hosted mode only — requires real auth."""
-    access_token = get_access_token()
-    if not access_token:
-        raise RuntimeError("Not authenticated")
-
-    if access_token.client_id:
-        return access_token.client_id
-
-    raise RuntimeError("No user identifier in token")
 
 
 def deep_link(kb_slug: str, path: str, filename: str) -> str:
@@ -44,41 +26,6 @@ def resolve_path(path: str) -> tuple[str, str]:
         dir_path = "/"
         filename = path_clean
     return dir_path, filename
-
-
-async def resolve_kb(user_id: str, slug: str) -> dict | None:
-    return await scoped_queryrow(
-        user_id,
-        "SELECT id, name, slug FROM knowledge_bases WHERE slug = $1 AND user_id = $2",
-        slug, user_id,
-    )
-
-
-_s3_session = None
-
-
-def _get_s3_session():
-    global _s3_session
-    if _s3_session is None and settings.AWS_ACCESS_KEY_ID:
-        _s3_session = aioboto3.Session(
-            aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
-            aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
-            region_name=settings.AWS_REGION,
-        )
-    return _s3_session
-
-
-async def load_s3_bytes(key: str) -> bytes | None:
-    session = _get_s3_session()
-    if not session:
-        return None
-    try:
-        async with session.client("s3") as s3:
-            resp = await s3.get_object(Bucket=settings.S3_BUCKET, Key=key)
-            return await resp["Body"].read()
-    except Exception as e:
-        logger.warning("Failed to load S3 key %s: %s", key, e)
-        return None
 
 
 def parse_page_range(pages_str: str, max_page: int) -> list[int]:

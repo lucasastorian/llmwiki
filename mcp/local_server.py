@@ -37,36 +37,26 @@ async def _init_workspace(workspace_path: str) -> None:
     (ws / ".llmwiki").mkdir(parents=True, exist_ok=True)
     (ws / ".llmwiki" / "cache").mkdir(parents=True, exist_ok=True)
 
-    from infra.db import sqlite as local_db
-    await local_db.init(str(ws))
+    from vaultfs import SqliteVaultFS
+    await SqliteVaultFS.init(str(ws))
 
-    from infra.storage import local as local_storage
-    local_storage.init(str(ws))
-
-    existing = await local_db.get_workspace()
+    fs = SqliteVaultFS(_LOCAL_USER_ID)
+    existing = await fs.get_workspace()
     if not existing:
         ws_name = ws.name
-        db = await local_db.get_db()
-        ws_id = str(uuid.uuid4())
-        await db.execute(
-            "INSERT INTO workspace (id, name, description, user_id) VALUES (?, ?, '', ?)",
-            (ws_id, ws_name, _LOCAL_USER_ID),
-        )
+        ws_id = await fs.ensure_workspace(ws_name)
 
-        await local_db.create_document(
-            _LOCAL_USER_ID, ws_id, "overview.md", "Overview", "/wiki/",
-            "md",
+        await fs.create_document(
+            ws_id, "overview.md", "Overview", "/wiki/", "md",
             f"This wiki tracks research on {ws_name}.\n\n## Key Findings\n\nNo sources ingested yet.\n\n## Recent Updates\n\nNo activity yet.",
             ["overview"],
         )
-        await local_db.create_document(
-            _LOCAL_USER_ID, ws_id, "log.md", "Log", "/wiki/",
-            "md",
+        await fs.create_document(
+            ws_id, "log.md", "Log", "/wiki/", "md",
             "Chronological record of ingests, queries, and maintenance passes.",
             ["log"],
         )
 
-        # Write actual files to disk
         overview_path = ws / "wiki" / "overview.md"
         if not overview_path.exists():
             overview_path.write_text(
@@ -77,7 +67,6 @@ async def _init_workspace(workspace_path: str) -> None:
         if not log_path.exists():
             log_path.write_text("Chronological record of ingests, queries, and maintenance passes.\n")
 
-        await db.commit()
         logger.info("Initialized workspace: %s", ws)
     else:
         logger.info("Workspace ready: %s", ws)
@@ -88,14 +77,14 @@ def main():
     workspace = args.workspace_flag or args.workspace
     workspace = str(Path(workspace).resolve())
 
-    # Mark as local_server mode (for get_user_id bypass in helpers.py)
     sys.modules["local_server"] = sys.modules[__name__]
 
-    # Initialize workspace synchronously
     loop = asyncio.new_event_loop()
     loop.run_until_complete(_init_workspace(workspace))
 
     from mcp.server.fastmcp import FastMCP
+    from tools import register
+    from vaultfs import SqliteVaultFS
 
     mcp = FastMCP(
         name="LLM Wiki",
@@ -106,10 +95,10 @@ def main():
         ),
     )
 
-    # Register LOCAL tools — these use SQLite + filesystem directly.
-    # No monkey-patching, no compat shims, no hosted schema assumptions.
-    from local.tools import register
-    register(mcp)
+    def _get_user_id(ctx):
+        return _LOCAL_USER_ID
+
+    register(mcp, _get_user_id, lambda user_id: SqliteVaultFS(user_id))
 
     @mcp.tool(name="ping", description="Test connectivity")
     async def ping() -> str:

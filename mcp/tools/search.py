@@ -5,8 +5,8 @@ from typing import Literal
 
 from mcp.server.fastmcp import FastMCP, Context
 
-from db import scoped_query, scoped_queryrow
-from .helpers import get_user_id, resolve_kb, deep_link, glob_match, resolve_path, MAX_LIST, MAX_SEARCH
+from vaultfs import VaultFS
+from .helpers import deep_link, glob_match, resolve_path, MAX_LIST, MAX_SEARCH
 
 logger = logging.getLogger(__name__)
 
@@ -33,21 +33,15 @@ def _extract_snippet(content: str, query: str) -> str:
 class SearchHandler:
     """Executes list, search, and reference queries on the knowledge vault."""
 
-    def __init__(self, user_id: str, kb: dict):
-        self.user_id = user_id
+    def __init__(self, fs: VaultFS, kb: dict):
+        self.fs = fs
         self.kb = kb
         self.kb_id = str(kb["id"])
         self.slug = kb["slug"]
 
     async def list_documents(self, target: str, tags: list[str] | None) -> str:
         """List documents matching a glob pattern and optional tag filter."""
-        docs = await scoped_query(
-            self.user_id,
-            "SELECT id, filename, title, path, file_type, tags, page_count, updated_at "
-            "FROM documents WHERE knowledge_base_id = $1 AND NOT archived AND user_id = $2 "
-            "ORDER BY path, filename",
-            self.kb["id"], self.user_id,
-        )
+        docs = await self.fs.list_documents(self.kb_id)
 
         if target not in ("*", "**", "**/*"):
             glob_pat = "/" + target.lstrip("/") if not target.startswith("/") else target
@@ -55,7 +49,7 @@ class SearchHandler:
 
         if tags:
             tag_set = {t.lower() for t in tags}
-            docs = [d for d in docs if tag_set.issubset({t.lower() for t in (d["tags"] or [])})]
+            docs = [d for d in docs if tag_set.issubset({t.lower() for t in (d.get("tags") or [])})]
 
         if not docs:
             return f"No matches for `{target}` in {self.slug}."
@@ -83,24 +77,9 @@ class SearchHandler:
 
     async def search_chunks(self, query: str, path: str, tags: list[str] | None, limit: int) -> str:
         """Full-text search across document chunks."""
-        path_clause = self._path_filter_clause(path)
+        path_filter = self._path_filter_key(path)
 
-        matches = await scoped_query(
-            self.user_id,
-            f"SELECT dc.content, dc.page, dc.header_breadcrumb, dc.chunk_index, "
-            f"  d.filename, d.title, d.path, d.file_type, d.tags, "
-            f"  pgroonga_score(dc.tableoid, dc.ctid) AS score "
-            f"FROM document_chunks dc "
-            f"JOIN documents d ON dc.document_id = d.id "
-            f"WHERE dc.knowledge_base_id = $1 "
-            f"  AND dc.content &@~ $2 "
-            f"  AND NOT d.archived"
-            f"  AND d.user_id = $3"
-            f"{path_clause} "
-            f"ORDER BY score DESC, dc.chunk_index "
-            f"LIMIT {limit}",
-            self.kb["id"], query, self.user_id,
-        )
+        matches = await self.fs.search_chunks(self.kb_id, query, limit, path_filter)
 
         if tags:
             tag_set = {t.lower() for t in tags}
@@ -125,16 +104,7 @@ class SearchHandler:
 
     async def _find_uncited(self) -> str:
         """Find source documents not cited by any wiki page."""
-        rows = await scoped_query(
-            self.user_id,
-            "SELECT d.filename, d.title, d.path, d.file_type "
-            "FROM documents d "
-            "WHERE d.knowledge_base_id = $1 AND NOT d.archived AND d.user_id = $2 "
-            "  AND d.path NOT LIKE '/wiki/%%' "
-            "  AND d.id NOT IN (SELECT target_document_id FROM document_references WHERE reference_type = 'cites') "
-            "ORDER BY d.filename",
-            self.kb["id"], self.user_id,
-        )
+        rows = await self.fs.find_uncited_sources(self.kb_id)
         if not rows:
             return "All sources are cited in at least one wiki page."
         lines = [f"**{len(rows)} uncited source(s)** — not referenced by any wiki page:\n"]
@@ -144,22 +114,16 @@ class SearchHandler:
 
     async def _find_stale(self) -> str:
         """Find wiki pages flagged as potentially stale."""
-        rows = await scoped_query(
-            self.user_id,
-            "SELECT d.filename, d.title, d.path, d.stale_since "
-            "FROM documents d "
-            "WHERE d.knowledge_base_id = $1 AND NOT d.archived AND d.user_id = $2 "
-            "  AND d.stale_since IS NOT NULL "
-            "ORDER BY d.stale_since DESC",
-            self.kb["id"], self.user_id,
-        )
+        rows = await self.fs.find_stale_pages(self.kb_id)
         if not rows:
             return "No stale pages found."
         lines = [f"**{len(rows)} potentially stale page(s)** — a page they reference was updated:\n"]
         for r in rows:
-            stale = r["stale_since"].strftime("%Y-%m-%d %H:%M") if r["stale_since"] else ""
+            stale = r["stale_since"]
+            if hasattr(stale, "strftime"):
+                stale = stale.strftime("%Y-%m-%d %H:%M")
             title = r["title"] or r["filename"]
-            lines.append(f"  {r['path']}{r['filename']} ({title}) — stale since {stale}")
+            lines.append(f"  {r['path']}{r['filename']} ({title}) — stale since {stale or '?'}")
         return "\n".join(lines)
 
     async def _document_references(self, path: str) -> str:
@@ -168,36 +132,15 @@ class SearchHandler:
             return "references mode requires a `path` to a specific document, or `query=\"uncited\"` / `query=\"stale\"`."
 
         dir_path, filename = resolve_path(path)
-        doc = await scoped_queryrow(
-            self.user_id,
-            "SELECT id, filename, title, path FROM documents "
-            "WHERE knowledge_base_id = $1 AND filename = $2 AND path = $3 AND NOT archived AND user_id = $4",
-            self.kb["id"], filename, dir_path, self.user_id,
-        )
+        doc = await self.fs.get_document(self.kb_id, filename, dir_path)
         if not doc:
             return f"Document '{path}' not found."
 
-        forward = await scoped_query(
-            self.user_id,
-            "SELECT d.filename, d.title, d.path, dr.reference_type, dr.page "
-            "FROM document_references dr "
-            "JOIN documents d ON dr.target_document_id = d.id "
-            "WHERE dr.source_document_id = $1 AND NOT d.archived AND d.user_id = $2 "
-            "ORDER BY dr.reference_type, d.path, d.filename",
-            doc["id"], self.user_id,
-        )
+        doc_id = str(doc["id"])
+        forward = await self.fs.get_forward_references(doc_id)
+        backlinks = await self.fs.get_backlinks(doc_id)
 
-        backlinks = await scoped_query(
-            self.user_id,
-            "SELECT d.filename, d.title, d.path, dr.reference_type, dr.page "
-            "FROM document_references dr "
-            "JOIN documents d ON dr.source_document_id = d.id "
-            "WHERE dr.target_document_id = $1 AND NOT d.archived AND d.user_id = $2 "
-            "ORDER BY dr.reference_type, d.path, d.filename",
-            doc["id"], self.user_id,
-        )
-
-        title = doc["title"] or doc["filename"]
+        title = doc.get("title") or doc["filename"]
         lines = [f"**References for {title}** (`{dir_path}{filename}`):\n"]
 
         if forward:
@@ -206,12 +149,12 @@ class SearchHandler:
             if cites:
                 lines.append(f"**Cites ({len(cites)} sources):**")
                 for r in cites:
-                    page_str = f", p.{r['page']}" if r["page"] else ""
+                    page_str = f", p.{r['page']}" if r.get("page") else ""
                     lines.append(f"  {r['path']}{r['filename']}{page_str}")
             if links:
                 lines.append(f"\n**Links to ({len(links)} pages):**")
                 for r in links:
-                    lines.append(f"  {r['path']}{r['filename']} ({r['title'] or r['filename']})")
+                    lines.append(f"  {r['path']}{r['filename']} ({r.get('title') or r['filename']})")
         else:
             lines.append("No outgoing references.")
 
@@ -220,70 +163,65 @@ class SearchHandler:
             lines.append(f"**Referenced by ({len(backlinks)} pages):**")
             for r in backlinks:
                 ref = "cites" if r["reference_type"] == "cites" else "links to"
-                lines.append(f"  {r['path']}{r['filename']} ({r['title'] or r['filename']}) — {ref}")
+                lines.append(f"  {r['path']}{r['filename']} ({r.get('title') or r['filename']}) — {ref}")
         else:
             lines.append("No incoming references (backlinks).")
 
         return "\n".join(lines)
 
-    def _path_filter_clause(self, path: str) -> str:
-        """Build a SQL path filter clause from a path pattern."""
+    def _path_filter_key(self, path: str) -> str | None:
+        """Map a path pattern to a search filter key."""
         if path in ("*", "**", "**/*"):
-            return ""
+            return None
         if path.startswith("/wiki"):
-            return " AND d.path LIKE '/wiki/%%'"
+            return "wiki"
         if path in ("/", "/*"):
-            return " AND d.path NOT LIKE '/wiki/%%'"
-        return ""
+            return "sources"
+        return None
 
     def _format_source_line(self, doc: dict) -> str:
         """Format a single source document for list output."""
-        tag_str = f" [{', '.join(doc['tags'])}]" if doc["tags"] else ""
-        date_part = f", {doc['updated_at'].strftime('%Y-%m-%d')}" if doc["updated_at"] else ""
-        pages_part = f", {doc['page_count']}p" if doc["page_count"] else ""
-        return f"  {doc['path']}{doc['filename']} ({doc['file_type']}{pages_part}{date_part}){tag_str}"
+        tag_str = f" [{', '.join(doc['tags'])}]" if doc.get("tags") else ""
+        date_part = ""
+        if doc.get("updated_at"):
+            date_val = doc["updated_at"]
+            date_part = f", {date_val.strftime('%Y-%m-%d') if hasattr(date_val, 'strftime') else date_val}"
+        pages_part = f", {doc['page_count']}p" if doc.get("page_count") else ""
+        return f"  {doc['path']}{doc['filename']} ({doc.get('file_type', '')}{pages_part}{date_part}){tag_str}"
 
     def _format_wiki_line(self, doc: dict) -> str:
         """Format a single wiki page for list output."""
-        date_part = f", {doc['updated_at'].strftime('%Y-%m-%d')}" if doc["updated_at"] else ""
+        date_part = ""
+        if doc.get("updated_at"):
+            date_val = doc["updated_at"]
+            date_part = f", {date_val.strftime('%Y-%m-%d') if hasattr(date_val, 'strftime') else date_val}"
         return f"  {doc['path']}{doc['filename']}{date_part}"
 
     def _format_search_result(self, match: dict, query: str) -> str:
         """Format a single search result with snippet."""
         filepath = f"{match['path']}{match['filename']}"
-        page_str = f" (p.{match['page']})" if match["page"] else ""
-        breadcrumb = f"\n  {match['header_breadcrumb']}" if match["header_breadcrumb"] else ""
-        snippet = _extract_snippet(match["content"], query)
+        page_str = f" (p.{match['page']})" if match.get("page") else ""
+        breadcrumb = f"\n  {match['header_breadcrumb']}" if match.get("header_breadcrumb") else ""
+        snippet = _extract_snippet(match.get("content", ""), query)
         link = deep_link(self.slug, match["path"], match["filename"])
         score = match.get("score", 0)
         score_str = f" [{score:.1f}]" if score else ""
         return f"**{filepath}**{page_str}{score_str} — [view]({link}){breadcrumb}\n```\n{snippet}\n```\n"
 
 
-async def _list_all_kbs(user_id: str) -> str:
+async def _list_all_kbs(fs: VaultFS) -> str:
     """List all knowledge bases for the user."""
-    kbs = await scoped_query(
-        user_id,
-        "SELECT name, slug, created_at FROM knowledge_bases WHERE user_id = $1 ORDER BY created_at DESC",
-        user_id,
-    )
+    kbs = await fs.list_knowledge_bases()
     if not kbs:
-        return "No knowledge bases found. Create one first."
+        return "No knowledge bases found."
 
     lines = ["**Knowledge Bases:**\n"]
     for kb in kbs:
-        doc_count = await scoped_queryrow(
-            user_id,
-            "SELECT count(*) as cnt FROM documents WHERE knowledge_base_id = ("
-            "SELECT id FROM knowledge_bases WHERE slug = $1 AND user_id = $2) AND NOT archived",
-            kb["slug"], user_id,
-        )
-        cnt = doc_count["cnt"] if doc_count else 0
-        lines.append(f"  {kb['slug']}/ — {kb['name']} ({cnt} documents)")
+        lines.append(f"  {kb['slug']}/ — {kb['name']}")
     return "\n".join(lines)
 
 
-def register(mcp: FastMCP) -> None:
+def register(mcp: FastMCP, get_user_id, fs_factory) -> None:
 
     @mcp.tool(
         name="search",
@@ -313,15 +251,16 @@ def register(mcp: FastMCP) -> None:
         limit: int = 10,
     ) -> str:
         user_id = get_user_id(ctx)
+        fs = fs_factory(user_id)
 
         if not knowledge_base:
-            return await _list_all_kbs(user_id)
+            return await _list_all_kbs(fs)
 
-        kb = await resolve_kb(user_id, knowledge_base)
+        kb = await fs.resolve_kb(knowledge_base)
         if not kb:
             return f"Knowledge base '{knowledge_base}' not found."
 
-        handler = SearchHandler(user_id, kb)
+        handler = SearchHandler(fs, kb)
 
         if mode == "list":
             return await handler.list_documents(path, tags)

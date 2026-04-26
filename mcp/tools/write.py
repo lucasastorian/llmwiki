@@ -1,25 +1,57 @@
 """Write tool — create, edit, and append wiki pages and notes."""
 
 import re
+import yaml
 from datetime import date
 from typing import Literal
 
 from mcp.server.fastmcp import FastMCP, Context
 
-from db import scoped_queryrow, service_queryrow, service_execute
-from .helpers import get_user_id, resolve_kb, deep_link, resolve_path
-from .references import update_references, propagate_staleness, get_impact_surface
+from vaultfs import VaultFS
+from .helpers import deep_link, resolve_path
+from .references import update_references
 
 _ASSET_EXTENSIONS = {".svg", ".csv", ".json", ".xml", ".html"}
 _FILE_EXT_RE = re.compile(r"\.(md|txt|svg|csv|json|xml|html)$", re.IGNORECASE)
+_FRONTMATTER_RE = re.compile(r"\A---[ \t]*\n(.+?\n)---[ \t]*\n", re.DOTALL)
 _CONTEXT_LINES = 5
+
+
+def _parse_frontmatter(content: str) -> dict:
+    """Extract YAML frontmatter metadata from content. Returns empty dict if none."""
+    m = _FRONTMATTER_RE.match(content)
+    if not m:
+        return {}
+    try:
+        meta = yaml.safe_load(m.group(1))
+        return meta if isinstance(meta, dict) else {}
+    except yaml.YAMLError:
+        return {}
+
+
+def _extract_metadata(meta: dict) -> tuple[str | None, dict]:
+    """Extract date and metadata dict from parsed frontmatter.
+
+    Returns (date_str, metadata_dict). Always returns a dict (possibly empty)
+    so that stale metadata is explicitly cleared when frontmatter changes.
+    """
+    date_str = None
+    if "date" in meta:
+        d = meta["date"]
+        date_str = d.isoformat() if hasattr(d, "isoformat") else str(d)
+
+    metadata: dict = {}
+    if isinstance(meta.get("description"), str) and meta["description"].strip():
+        metadata["description"] = meta["description"].strip()
+
+    return date_str, metadata
 
 
 class WriteHandler:
     """Executes create, edit, and append operations on documents."""
 
-    def __init__(self, user_id: str, kb: dict):
-        self.user_id = user_id
+    def __init__(self, fs: VaultFS, kb: dict):
+        self.fs = fs
         self.kb = kb
         self.kb_id = str(kb["id"])
 
@@ -34,7 +66,7 @@ class WriteHandler:
         filename, file_type = self._title_to_filename(title)
         title = self._humanize_title(title)
 
-        existing = await self._fetch_document(dir_path, filename)
+        existing = await self.fs.get_document(self.kb_id, filename, dir_path)
 
         if existing and not overwrite:
             return (
@@ -42,11 +74,24 @@ class WriteHandler:
                 f"Use `command=\"str_replace\"` to edit it, or pass `overwrite=true` to replace it entirely."
             )
 
-        doc = await self._upsert_document(existing, dir_path, filename, file_type, title, content, tags)
+        if not self.fs.write_to_disk(dir_path, filename, content):
+            return f"Error: invalid path `{dir_path.lstrip('/') + filename}`"
+
+        # Extract date + description from frontmatter
+        meta = _parse_frontmatter(content)
+        fm_date, fm_metadata = _extract_metadata(meta)
+
+        if existing:
+            await self.fs.update_document(str(existing["id"]), content, tags, title=title, date=fm_date, metadata=fm_metadata)
+            doc = existing
+        else:
+            doc = await self.fs.create_document(self.kb_id, filename, title, dir_path, file_type, content, tags, date=fm_date, metadata=fm_metadata)
+
         doc_id = str(doc["id"])
         await self._sync_references(doc_id, content, dir_path, file_type)
 
-        return self._format_create_response(doc, title, tags, dir_path, filename, file_type, date_str)
+        impact = await self._get_wiki_impact(doc_id, dir_path)
+        return self._format_create_response(title, tags, dir_path, filename, file_type, date_str) + impact
 
     async def edit(self, path: str, old_text: str, new_text: str, tags: list[str] | None) -> str:
         """Replace exact text in an existing document."""
@@ -54,11 +99,11 @@ class WriteHandler:
             return "Error: old_text is required for str_replace."
 
         dir_path, filename = resolve_path(path)
-        doc = await self._fetch_document(dir_path, filename)
+        doc = await self.fs.get_document(self.kb_id, filename, dir_path)
         if not doc:
             return f"Document '{path}' not found."
 
-        content = doc["content"] or ""
+        content = doc.get("content") or doc.get("content", "") or ""
         error = self._validate_single_match(content, old_text)
         if error:
             return error
@@ -66,73 +111,58 @@ class WriteHandler:
         replace_start = content.index(old_text)
         new_content = content.replace(old_text, new_text, 1)
 
-        await self._save_content(doc["id"], new_content, tags)
+        self.fs.write_to_disk(dir_path, filename, new_content)
+        meta = _parse_frontmatter(new_content)
+        fm_date, fm_metadata = _extract_metadata(meta)
+        await self.fs.update_document(str(doc["id"]), new_content, tags, date=fm_date, metadata=fm_metadata)
 
         doc_id = str(doc["id"])
         await self._sync_references(doc_id, new_content, dir_path)
 
         snippet = self._extract_context(new_content, replace_start, len(new_text))
-        return self._format_edit_response(path, dir_path, filename, doc_id, snippet)
+        impact = await self._get_wiki_impact(doc_id, dir_path)
+        return self._format_edit_response(path, dir_path, filename, snippet) + impact
 
     async def append(self, path: str, content: str, tags: list[str] | None) -> str:
         """Append content to the end of an existing document."""
         dir_path, filename = resolve_path(path)
-        doc = await self._fetch_document(dir_path, filename)
+        doc = await self.fs.get_document(self.kb_id, filename, dir_path)
         if not doc:
             return f"Document '{path}' not found."
 
-        new_content = (doc["content"] or "") + "\n\n" + content
+        new_content = (doc.get("content") or "") + "\n\n" + content
 
-        await self._save_content(doc["id"], new_content, tags)
+        self.fs.write_to_disk(dir_path, filename, new_content)
+        meta = _parse_frontmatter(new_content)
+        fm_date, fm_metadata = _extract_metadata(meta)
+        await self.fs.update_document(str(doc["id"]), new_content, tags, date=fm_date, metadata=fm_metadata)
 
         doc_id = str(doc["id"])
         await self._sync_references(doc_id, new_content, dir_path)
 
-        return self._format_append_response(path, dir_path, filename, doc_id)
-
-    async def _fetch_document(self, dir_path: str, filename: str) -> dict | None:
-        """Fetch a document by path and filename."""
-        return await scoped_queryrow(
-            self.user_id,
-            "SELECT id, content FROM documents "
-            "WHERE knowledge_base_id = $1 AND filename = $2 AND path = $3 AND NOT archived AND user_id = $4",
-            self.kb["id"], filename, dir_path, self.user_id,
-        )
-
-    async def _upsert_document(self, existing: dict | None, dir_path: str, filename: str, file_type: str, title: str, content: str, tags: list[str]) -> dict:
-        """Insert a new document or overwrite an existing one."""
-        if existing:
-            return await service_queryrow(
-                "UPDATE documents SET title = $3, content = $4, tags = $5, "
-                "version = version + 1, updated_at = now() "
-                "WHERE id = $1 AND user_id = $2 RETURNING id, filename, path",
-                existing["id"], self.user_id, title, content, tags,
-            )
-        return await service_queryrow(
-            "INSERT INTO documents (knowledge_base_id, user_id, filename, title, path, "
-            "file_type, status, content, tags, version) "
-            "VALUES ($1, $2, $3, $4, $5, $6, 'ready', $7, $8, 0) RETURNING id, filename, path",
-            self.kb["id"], self.user_id, filename, title, dir_path, file_type, content, tags,
-        )
-
-    async def _save_content(self, doc_id: str, content: str, tags: list[str] | None) -> None:
-        """Persist updated content and optionally tags."""
-        if tags is not None:
-            await service_execute(
-                "UPDATE documents SET content = $1, tags = $4, version = version + 1 WHERE id = $2 AND user_id = $3",
-                content, doc_id, self.user_id, tags,
-            )
-        else:
-            await service_execute(
-                "UPDATE documents SET content = $1, version = version + 1 WHERE id = $2 AND user_id = $3",
-                content, doc_id, self.user_id,
-            )
+        impact = await self._get_wiki_impact(doc_id, dir_path)
+        return self._format_append_response(path, dir_path, filename) + impact
 
     async def _sync_references(self, doc_id: str, content: str, dir_path: str, file_type: str = "md") -> None:
         """Update citation graph and propagate staleness for wiki pages."""
         if dir_path.startswith("/wiki/") and file_type == "md":
-            await update_references(self.user_id, self.kb_id, doc_id, content, dir_path)
-            await propagate_staleness(self.user_id, doc_id)
+            await update_references(self.fs, self.kb_id, doc_id, content, dir_path)
+            await self.fs.propagate_staleness(doc_id)
+
+    async def _get_wiki_impact(self, doc_id: str, dir_path: str) -> str:
+        """Return impact surface text for wiki pages, empty string otherwise."""
+        if not dir_path.startswith("/wiki/"):
+            return ""
+        rows = await self.fs.get_backlinks(doc_id)
+        if not rows:
+            return ""
+        lines = [f"\n**{len(rows)} page(s) reference this document** — consider updating:"]
+        for r in rows:
+            path = f"{r['path']}{r['filename']}"
+            title = r["title"] or r["filename"]
+            ref = "cites" if r["reference_type"] == "cites" else "links to"
+            lines.append(f"  - `{path}` ({title}) — {ref} this page")
+        return "\n".join(lines)
 
     def _to_dir_path(self, path: str) -> str:
         """Normalize a raw path into a directory path."""
@@ -176,35 +206,29 @@ class WriteHandler:
             return f"Error: found {count} matches for old_text. Provide more context to match exactly once."
         return None
 
-    async def _get_wiki_impact(self, doc_id: str, dir_path: str) -> str:
-        """Return impact surface text for wiki pages, empty string otherwise."""
-        if dir_path.startswith("/wiki/"):
-            return await get_impact_surface(self.user_id, doc_id)
-        return ""
-
-    def _format_create_response(self, doc: dict, title: str, tags: list[str], dir_path: str, filename: str, file_type: str, date_str: str) -> str:
+    def _format_create_response(self, title: str, tags: list[str], dir_path: str, filename: str, file_type: str, date_str: str) -> str:
         """Build the response message for a create operation."""
-        link = deep_link(self.kb["slug"], doc["path"], doc["filename"])
+        link = deep_link(self.kb["slug"], dir_path, filename)
         note_date = date_str or date.today().isoformat()
         suffix = self._embed_hint(title, filename, dir_path, file_type)
         return (
             f"Created **{title}** at `{dir_path}{filename}`\n"
             f"Tags: {', '.join(tags)} | Date: {note_date}\n"
-            f"[View in Supavault]({link}){suffix}"
+            f"[View]({link}){suffix}"
         )
 
-    def _format_edit_response(self, path: str, dir_path: str, filename: str, doc_id: str, snippet: str) -> str:
+    def _format_edit_response(self, path: str, dir_path: str, filename: str, snippet: str) -> str:
         """Build the response message for an edit operation."""
         link = deep_link(self.kb["slug"], dir_path, filename)
         return (
-            f"Edited `{path}`. Replaced 1 occurrence.\n[View in Supavault]({link})\n\n"
+            f"Edited `{path}`. Replaced 1 occurrence.\n[View]({link})\n\n"
             f"**Context after edit:**\n```\n{snippet}\n```"
         )
 
-    def _format_append_response(self, path: str, dir_path: str, filename: str, doc_id: str) -> str:
+    def _format_append_response(self, path: str, dir_path: str, filename: str) -> str:
         """Build the response message for an append operation."""
         link = deep_link(self.kb["slug"], dir_path, filename)
-        return f"Appended to `{path}`.\n[View in Supavault]({link})"
+        return f"Appended to `{path}`.\n[View]({link})"
 
     def _embed_hint(self, title: str, filename: str, dir_path: str, file_type: str) -> str:
         """Return an embed or citation hint for the create response."""
@@ -235,7 +259,7 @@ class WriteHandler:
         return len(lines) - 1
 
 
-def register(mcp: FastMCP) -> None:
+def register(mcp: FastMCP, get_user_id, fs_factory) -> None:
 
     @mcp.tool(
         name="write",
@@ -267,11 +291,12 @@ def register(mcp: FastMCP) -> None:
         overwrite: bool = False,
     ) -> str:
         user_id = get_user_id(ctx)
-        kb = await resolve_kb(user_id, knowledge_base)
+        fs = fs_factory(user_id)
+        kb = await fs.resolve_kb(knowledge_base)
         if not kb:
             return f"Knowledge base '{knowledge_base}' not found."
 
-        handler = WriteHandler(user_id, kb)
+        handler = WriteHandler(fs, kb)
 
         if command == "create":
             return await handler.create(path, title, content, tags or [], date_str, overwrite)
