@@ -115,6 +115,35 @@ async def seed_and_bind_pool(pg_pool):
         REF_B_ID, DOC_B_ID, DOC_B2_ID, KB_B_ID,
     )
 
+    # Document pages for get_pages / get_all_pages tests
+    import uuid
+    await pg_pool.execute(
+        "INSERT INTO document_pages (id, document_id, page, content) VALUES ($1, $2, 1, 'Alice page 1')",
+        str(uuid.uuid4()), DOC_A_ID,
+    )
+    await pg_pool.execute(
+        "INSERT INTO document_pages (id, document_id, page, content) VALUES ($1, $2, 1, 'Bob page 1')",
+        str(uuid.uuid4()), DOC_B_ID,
+    )
+
+    # Document chunks for search_chunks tests (note: PGroonga not available in test, but isolation still testable)
+    long_content = "x " * 70
+    await pg_pool.execute(
+        "INSERT INTO document_chunks (id, document_id, user_id, knowledge_base_id, chunk_index, content, token_count) "
+        "VALUES ($1, $2, $3, $4, 0, $5, 35)",
+        str(uuid.uuid4()), DOC_A_ID, USER_A_ID, KB_A_ID, long_content,
+    )
+    await pg_pool.execute(
+        "INSERT INTO document_chunks (id, document_id, user_id, knowledge_base_id, chunk_index, content, token_count) "
+        "VALUES ($1, $2, $3, $4, 0, $5, 35)",
+        str(uuid.uuid4()), DOC_B_ID, USER_B_ID, KB_B_ID, long_content,
+    )
+
+    # Set stale_since on Bob's wiki doc for find_stale_pages test
+    await pg_pool.execute(
+        "UPDATE documents SET stale_since = now() WHERE id = $1", DOC_B_ID,
+    )
+
     yield
 
     mcp_db._pool = None
@@ -213,6 +242,89 @@ class TestReferenceIsolation:
         assert row is None
 
 
+class TestListDocumentsWithContentIsolation:
+
+    async def test_list_with_content_other_kb_returns_empty(self, fs_alice):
+        docs = await fs_alice.list_documents_with_content(str(KB_B_ID))
+        assert docs == []
+
+    async def test_list_with_content_own_kb_returns_data(self, fs_alice):
+        docs = await fs_alice.list_documents_with_content(str(KB_A_ID))
+        assert len(docs) == 2
+        contents = [d.get("content") for d in docs if d.get("content")]
+        assert "Alice secret" in contents
+
+
+class TestPageIsolation:
+    """get_pages / get_all_pages use RLS on document_pages."""
+
+    async def test_get_pages_other_tenant_doc_returns_empty(self, fs_alice):
+        pages = await fs_alice.get_pages(str(DOC_B_ID), [1])
+        assert pages == []
+
+    async def test_get_pages_own_doc_returns_data(self, fs_alice):
+        pages = await fs_alice.get_pages(str(DOC_A_ID), [1])
+        assert len(pages) == 1
+        assert pages[0]["content"] == "Alice page 1"
+
+    async def test_get_all_pages_other_tenant_doc_returns_empty(self, fs_alice):
+        pages = await fs_alice.get_all_pages(str(DOC_B_ID))
+        assert pages == []
+
+    async def test_get_all_pages_own_doc_returns_data(self, fs_alice):
+        pages = await fs_alice.get_all_pages(str(DOC_A_ID))
+        assert len(pages) == 1
+
+
+class TestGraphQueryIsolation:
+    """Backlinks, forward references, uncited sources, stale pages."""
+
+    async def test_get_backlinks_other_tenant_doc_returns_empty(self, fs_alice):
+        # DOC_B2_ID is the target of Bob's reference — Alice shouldn't see it
+        links = await fs_alice.get_backlinks(str(DOC_B2_ID))
+        assert links == []
+
+    async def test_get_backlinks_own_doc_returns_data(self, fs_alice):
+        # DOC_A2_ID is the target of Alice's reference (DOC_A -> DOC_A2)
+        links = await fs_alice.get_backlinks(str(DOC_A2_ID))
+        assert len(links) == 1
+        assert links[0]["filename"] == "notes.md"
+
+    async def test_get_forward_references_other_tenant_doc_returns_empty(self, fs_alice):
+        refs = await fs_alice.get_forward_references(str(DOC_B_ID))
+        assert refs == []
+
+    async def test_get_forward_references_own_doc_returns_data(self, fs_alice):
+        refs = await fs_alice.get_forward_references(str(DOC_A_ID))
+        assert len(refs) == 1
+        assert refs[0]["filename"] == "source.pdf"
+
+    async def test_find_uncited_sources_other_kb_returns_empty(self, fs_alice):
+        sources = await fs_alice.find_uncited_sources(str(KB_B_ID))
+        assert sources == []
+
+    async def test_find_stale_pages_other_kb_returns_empty(self, fs_alice):
+        stale = await fs_alice.find_stale_pages(str(KB_B_ID))
+        assert stale == []
+
+    async def test_find_stale_pages_own_kb_excludes_other_tenant(self, fs_alice):
+        """Alice's KB has no stale pages (only Bob's doc is stale)."""
+        stale = await fs_alice.find_stale_pages(str(KB_A_ID))
+        assert stale == []
+
+
+class TestPropagateStalenesIsolation:
+    """propagate_staleness uses service_execute with WHERE user_id."""
+
+    async def test_propagate_staleness_does_not_affect_other_tenant(self, fs_alice, pg_pool):
+        """Alice propagating staleness for Bob's doc should not mark Alice's docs stale."""
+        await fs_alice.propagate_staleness(str(DOC_B2_ID))
+        row = await pg_pool.fetchrow(
+            "SELECT stale_since FROM documents WHERE id = $1", DOC_A_ID,
+        )
+        assert row["stale_since"] is None
+
+
 class TestBidirectional:
     """Verify isolation works from Bob's perspective too."""
 
@@ -229,3 +341,11 @@ class TestBidirectional:
         assert count == 0
         row = await pg_pool.fetchrow("SELECT archived FROM documents WHERE id = $1", DOC_A_ID)
         assert row["archived"] is False
+
+    async def test_bob_cannot_read_alice_pages(self, fs_bob):
+        pages = await fs_bob.get_pages(str(DOC_A_ID), [1])
+        assert pages == []
+
+    async def test_bob_cannot_get_alice_backlinks(self, fs_bob):
+        links = await fs_bob.get_backlinks(str(DOC_A2_ID))
+        assert links == []

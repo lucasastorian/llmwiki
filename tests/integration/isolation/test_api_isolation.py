@@ -297,6 +297,112 @@ class TestGraphIsolation:
         assert after == before
 
 
+class TestAdminStatsIsolation:
+    """Admin stats route uses ScopedDB — RLS scopes aggregates to authenticated user."""
+
+    async def test_admin_stats_does_not_leak_cross_tenant_counts(self, client):
+        """RLS on users/documents means 'global' counts only reflect the caller."""
+        resp = await client.get("/v1/admin/stats", headers=auth_headers(USER_A_ID))
+        assert resp.status_code == 200
+        data = resp.json()
+        # RLS on users table: COUNT(DISTINCT id) FROM users → 1 (only Alice)
+        assert data["total_users"] == 1
+        # RLS on documents: Alice has 2 docs (notes.md + source.pdf)
+        assert data["total_documents"] == 2
+        # Alice's notes.md has 3 pages, source.pdf has 0
+        assert data["total_pages"] == 3
+        assert data["total_storage_bytes"] == 1024
+
+    async def test_admin_stats_bob_sees_own_counts(self, client):
+        resp = await client.get("/v1/admin/stats", headers=auth_headers(USER_B_ID))
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total_users"] == 1
+        assert data["total_documents"] == 2
+        assert data["total_pages"] == 10
+        assert data["total_storage_bytes"] == 5000
+
+
+class TestTUSUploadIsolation:
+    """TUS upload routes enforce KB ownership on create and user_id on HEAD/PATCH."""
+
+    def _tus_headers(self, user_id, extra=None):
+        headers = {
+            **auth_headers(user_id),
+            "Tus-Resumable": "1.0.0",
+        }
+        if extra:
+            headers.update(extra)
+        return headers
+
+    def _metadata(self, filename, kb_id):
+        import base64
+        fn = base64.b64encode(filename.encode()).decode()
+        kb = base64.b64encode(kb_id.encode()).decode()
+        return f"filename {fn},knowledge_base_id {kb}"
+
+    async def test_create_upload_in_other_tenant_kb_returns_403(self, client):
+        resp = await client.post(
+            "/v1/uploads",
+            headers=self._tus_headers(USER_A_ID, {
+                "Upload-Length": "1024",
+                "Upload-Metadata": self._metadata("test.pdf", str(KB_B_ID)),
+            }),
+        )
+        assert resp.status_code == 403
+
+    async def test_create_upload_in_own_kb_returns_201(self, client):
+        resp = await client.post(
+            "/v1/uploads",
+            headers=self._tus_headers(USER_A_ID, {
+                "Upload-Length": "1024",
+                "Upload-Metadata": self._metadata("test.pdf", str(KB_A_ID)),
+            }),
+        )
+        assert resp.status_code == 201
+        assert "Location" in resp.headers
+
+    async def test_head_other_users_upload_returns_404(self, client):
+        """Alice creates an upload, Bob tries to HEAD it."""
+        # Alice creates an upload
+        resp = await client.post(
+            "/v1/uploads",
+            headers=self._tus_headers(USER_A_ID, {
+                "Upload-Length": "1024",
+                "Upload-Metadata": self._metadata("test.pdf", str(KB_A_ID)),
+            }),
+        )
+        assert resp.status_code == 201
+        location = resp.headers["Location"]
+
+        # Bob tries to check Alice's upload
+        resp = await client.head(location, headers=self._tus_headers(USER_B_ID))
+        assert resp.status_code == 404
+
+    async def test_patch_other_users_upload_returns_404(self, client):
+        """Alice creates an upload, Bob tries to PATCH it."""
+        resp = await client.post(
+            "/v1/uploads",
+            headers=self._tus_headers(USER_A_ID, {
+                "Upload-Length": "1024",
+                "Upload-Metadata": self._metadata("test.pdf", str(KB_A_ID)),
+            }),
+        )
+        assert resp.status_code == 201
+        location = resp.headers["Location"]
+
+        # Bob tries to write to Alice's upload
+        resp = await client.patch(
+            location,
+            headers=self._tus_headers(USER_B_ID, {
+                "Upload-Offset": "0",
+                "Content-Type": "application/offset+octet-stream",
+            }),
+            content=b"pwned",
+        )
+        assert resp.status_code == 404
+
+
 class TestAuthBoundary:
     """Requests without valid auth are rejected before any data access."""
 
