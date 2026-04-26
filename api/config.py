@@ -4,7 +4,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file="../.env", extra="ignore")
 
-    DATABASE_URL: str
+    MODE: str = "local"  # "local" or "hosted"
+    WORKSPACE_PATH: str = "."
+
+    DATABASE_URL: str = ""
     SUPABASE_URL: str = ""
     SUPABASE_JWT_SECRET: str = ""
     VOYAGE_API_KEY: str = ""

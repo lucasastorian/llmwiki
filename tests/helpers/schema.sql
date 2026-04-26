@@ -118,6 +118,33 @@ CREATE TABLE document_chunks (
     UNIQUE(document_id, chunk_index)
 );
 
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS stale_since TIMESTAMPTZ;
+
+CREATE TABLE document_references (
+    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+    source_document_id UUID NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    target_document_id UUID NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    knowledge_base_id UUID NOT NULL REFERENCES knowledge_bases(id) ON DELETE CASCADE,
+    reference_type TEXT NOT NULL CHECK (reference_type IN ('cites', 'links_to')),
+    page INTEGER,
+    created_at TIMESTAMPTZ DEFAULT now() NOT NULL,
+    UNIQUE(source_document_id, target_document_id, reference_type)
+);
+
+CREATE INDEX idx_refs_source ON document_references(source_document_id);
+CREATE INDEX idx_refs_target ON document_references(target_document_id);
+
+CREATE POLICY document_references_select ON document_references
+    FOR SELECT USING (
+        EXISTS (
+            SELECT 1 FROM documents
+            WHERE documents.id = document_references.source_document_id
+              AND documents.user_id = auth.uid()
+        )
+    );
+
+ALTER TABLE document_references ENABLE ROW LEVEL SECURITY;
+
 CREATE INDEX idx_documents_knowledge_base_id ON documents(knowledge_base_id);
 CREATE INDEX idx_documents_user_id ON documents(user_id);
 CREATE INDEX idx_documents_tags ON documents USING GIN(tags);

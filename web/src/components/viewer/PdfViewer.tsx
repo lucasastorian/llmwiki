@@ -16,11 +16,12 @@ type Props = {
   fileUrl: string
   title?: string
   className?: string
+  initialPage?: number
 }
 
 const VIRTUALIZE_BUFFER = 2
 
-export default function PdfViewer({ fileUrl, title, className }: Props) {
+export default function PdfViewer({ fileUrl, title, className, initialPage }: Props) {
   const [numPages, setNumPages] = useState(0)
   const [currentPage, setCurrentPage] = useState(1)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -39,6 +40,12 @@ export default function PdfViewer({ fileUrl, title, className }: Props) {
   const searchMarksRef = useRef<HTMLElement[]>([])
   const modifiedSpansRef = useRef<Map<HTMLSpanElement, string>>(new Map())
   const searchInputRef = useRef<HTMLInputElement>(null)
+
+  const [isIndexing, setIsIndexing] = useState(false)
+  const searchPagesRef = useRef<Set<number>>(new Set())
+  const searchRafRef = useRef<number>(0)
+  const searchTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined)
+  const debounceTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined)
 
   const [scale, setScale] = useState(1)
   const scaleRef = useRef(1)
@@ -79,6 +86,7 @@ export default function PdfViewer({ fileUrl, title, className }: Props) {
     const doc = pdfDocRef.current
     if (!doc || !numPages) return
     let cancelled = false
+    setIsIndexing(true)
 
     const extractAll = async () => {
       const texts = new Map<number, string>()
@@ -90,7 +98,10 @@ export default function PdfViewer({ fileUrl, title, className }: Props) {
         const text = content.items.map((item: any) => item.str).join(' ')
         texts.set(p, text)
       }
-      if (!cancelled) setPageTexts(texts)
+      if (!cancelled) {
+        setPageTexts(texts)
+        setIsIndexing(false)
+      }
     }
     extractAll()
     return () => { cancelled = true }
@@ -103,6 +114,25 @@ export default function PdfViewer({ fileUrl, title, className }: Props) {
       setCurrentPage(page)
     }
   }, [])
+
+  // Scroll to initial page (e.g., from citation click) after pages render
+  const initialPageScrolled = useRef(false)
+  useEffect(() => {
+    if (!initialPage || initialPage <= 1 || !numPages || initialPageScrolled.current) return
+    const target = Math.min(initialPage, numPages)
+    setVisiblePages((prev) => {
+      const next = new Set(prev)
+      for (let p = Math.max(1, target - VIRTUALIZE_BUFFER); p <= Math.min(numPages, target + VIRTUALIZE_BUFFER); p++) {
+        next.add(p)
+      }
+      return next
+    })
+    const timer = setTimeout(() => {
+      scrollToPage(target)
+      initialPageScrolled.current = true
+    }, 200)
+    return () => clearTimeout(timer)
+  }, [initialPage, numPages, scrollToPage])
 
   useEffect(() => {
     const container = containerRef.current
@@ -245,7 +275,14 @@ export default function PdfViewer({ fileUrl, title, className }: Props) {
     return marks
   }, [numPages])
 
+  const cancelPendingSearch = useCallback(() => {
+    cancelAnimationFrame(searchRafRef.current)
+    clearTimeout(searchTimerRef.current)
+    clearTimeout(debounceTimerRef.current)
+  }, [])
+
   const performSearch = useCallback((query: string) => {
+    cancelPendingSearch()
     clearSearchHighlights()
     if (!query.trim()) return
 
@@ -253,32 +290,45 @@ export default function PdfViewer({ fileUrl, title, className }: Props) {
 
     // Step 1: Find matching pages via in-memory text index (searches ALL pages)
     const matchingPages: number[] = []
+    let indexOccurrences = 0
     if (pageTexts.size > 0) {
       for (const [page, text] of pageTexts) {
-        if (text.toLowerCase().includes(lowerQuery)) {
+        const lower = text.toLowerCase()
+        let idx = 0
+        let count = 0
+        while ((idx = lower.indexOf(lowerQuery, idx)) !== -1) {
+          count++
+          idx += lowerQuery.length
+        }
+        if (count > 0) {
           matchingPages.push(page)
+          indexOccurrences += count
         }
       }
     }
 
     // Step 2: Ensure matching pages are rendered so DOM highlighting works
     if (matchingPages.length > 0) {
+      const newSearchPages = new Set<number>()
       setVisiblePages((prev) => {
         const next = new Set(prev)
-        for (const p of matchingPages) next.add(p)
+        for (const p of matchingPages) {
+          if (!prev.has(p)) newSearchPages.add(p)
+          next.add(p)
+        }
         return next
       })
+      searchPagesRef.current = newSearchPages
     }
 
     // Step 3: Apply DOM highlighting after a frame (gives React time to render new pages)
-    requestAnimationFrame(() => {
-      setTimeout(() => {
+    searchRafRef.current = requestAnimationFrame(() => {
+      searchTimerRef.current = setTimeout(() => {
         const marks = applyDomHighlights(query)
         searchMarksRef.current = marks
 
-        // If DOM didn't have all matches yet (pages still rendering), show count from index
-        const indexMatchCount = matchingPages.length > 0 ? matchingPages.length : marks.length
-        setMatchCount(marks.length || indexMatchCount)
+        // Use real occurrence count from text index when DOM marks aren't all ready yet
+        setMatchCount(marks.length || indexOccurrences)
 
         if (marks.length > 0) {
           setCurrentMatchIndex(0)
@@ -287,7 +337,7 @@ export default function PdfViewer({ fileUrl, title, className }: Props) {
         }
       }, 100)
     })
-  }, [pageTexts, clearSearchHighlights, applyDomHighlights])
+  }, [pageTexts, clearSearchHighlights, applyDomHighlights, cancelPendingSearch])
 
   const navigateMatch = useCallback((delta: number) => {
     const marks = searchMarksRef.current
@@ -303,16 +353,36 @@ export default function PdfViewer({ fileUrl, title, className }: Props) {
     marks[next].scrollIntoView({ behavior: 'smooth', block: 'center' })
   }, [currentMatchIndex])
 
+  // Clean up pending search timers on unmount
+  useEffect(() => {
+    return () => {
+      cancelAnimationFrame(searchRafRef.current)
+      clearTimeout(searchTimerRef.current)
+      clearTimeout(debounceTimerRef.current)
+    }
+  }, [])
+
   const openSearch = useCallback(() => {
     setSearchOpen(true)
     setTimeout(() => searchInputRef.current?.focus(), 0)
   }, [])
 
   const closeSearch = useCallback(() => {
+    cancelPendingSearch()
     setSearchOpen(false)
     setSearchQuery('')
     clearSearchHighlights()
-  }, [clearSearchHighlights])
+    // Remove pages that were only added for search results
+    if (searchPagesRef.current.size > 0) {
+      const toRemove = searchPagesRef.current
+      setVisiblePages((prev) => {
+        const next = new Set(prev)
+        for (const p of toRemove) next.delete(p)
+        return next
+      })
+      searchPagesRef.current = new Set()
+    }
+  }, [clearSearchHighlights, cancelPendingSearch])
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -389,30 +459,36 @@ export default function PdfViewer({ fileUrl, title, className }: Props) {
                   type="text"
                   value={searchQuery}
                   onChange={(e) => {
-                    setSearchQuery(e.target.value)
-                    performSearch(e.target.value)
+                    const value = e.target.value
+                    setSearchQuery(value)
+                    clearTimeout(debounceTimerRef.current)
+                    debounceTimerRef.current = setTimeout(() => performSearch(value), 200)
                   }}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') { e.preventDefault(); navigateMatch(e.shiftKey ? -1 : 1) }
                     if (e.key === 'Escape') closeSearch()
                   }}
                   placeholder="Find in document..."
+                  aria-label="Find in document"
                   className="flex-1 min-w-0 bg-transparent outline-none text-foreground placeholder:text-muted-foreground/50"
                 />
               </div>
               {matchCount > 0 && (
                 <span className="tabular-nums text-[10px] flex-shrink-0">{currentMatchIndex + 1}/{matchCount}</span>
               )}
-              {searchQuery && matchCount === 0 && (
+              {searchQuery && matchCount === 0 && !isIndexing && (
                 <span className="text-[10px] flex-shrink-0 opacity-50">No results</span>
               )}
-              <button onClick={() => navigateMatch(-1)} disabled={matchCount === 0} className="p-1.5 rounded-md hover:text-foreground hover:bg-accent disabled:opacity-30 cursor-pointer">
+              {isIndexing && searchQuery && (
+                <span className="text-[10px] flex-shrink-0 opacity-50">Indexing...</span>
+              )}
+              <button onClick={() => navigateMatch(-1)} disabled={matchCount === 0} aria-label="Previous match" className="p-1.5 rounded-md hover:text-foreground hover:bg-accent disabled:opacity-30 cursor-pointer">
                 <ChevronUp className="size-3.5" />
               </button>
-              <button onClick={() => navigateMatch(1)} disabled={matchCount === 0} className="p-1.5 rounded-md hover:text-foreground hover:bg-accent disabled:opacity-30 cursor-pointer">
+              <button onClick={() => navigateMatch(1)} disabled={matchCount === 0} aria-label="Next match" className="p-1.5 rounded-md hover:text-foreground hover:bg-accent disabled:opacity-30 cursor-pointer">
                 <ChevronDown className="size-3.5" />
               </button>
-              <button onClick={closeSearch} className="p-1.5 rounded-md hover:text-foreground hover:bg-accent cursor-pointer">
+              <button onClick={closeSearch} aria-label="Close search" className="p-1.5 rounded-md hover:text-foreground hover:bg-accent cursor-pointer">
                 <X className="size-3.5" />
               </button>
             </>
@@ -420,7 +496,7 @@ export default function PdfViewer({ fileUrl, title, className }: Props) {
             <>
               {title && <span className="min-w-0 truncate text-foreground mr-auto">{title}</span>}
               {!title && <div className="flex-1" />}
-              <button onClick={openSearch} className="p-1.5 rounded-md hover:text-foreground hover:bg-accent cursor-pointer" title="Find (Cmd+F)">
+              <button onClick={openSearch} aria-label="Find in document" className="p-1.5 rounded-md hover:text-foreground hover:bg-accent cursor-pointer" title="Find (Cmd+F)">
                 <Search className="size-3.5" />
               </button>
               <a href={fileUrl} download className="p-1.5 rounded-md hover:text-foreground hover:bg-accent" title="Download PDF">

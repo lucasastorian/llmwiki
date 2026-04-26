@@ -7,7 +7,48 @@ on:
     branches: [master]
 
 jobs:
-  test:
+  unit:
+    name: Unit tests (no DB)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install MCP dependencies
+        run: pip install -r mcp/requirements.txt
+
+      - name: Install test dependencies
+        run: pip install -r tests/requirements.txt cryptography
+
+      - name: Run unit tests
+        run: PYTHONPATH=mcp pytest tests/unit/ -v
+
+  mcp-integration:
+    name: MCP integration tests (SQLite)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install MCP dependencies
+        run: pip install -r mcp/requirements.txt
+
+      - name: Install test dependencies
+        run: pip install -r tests/requirements.txt cryptography
+
+      - name: Run MCP VaultFS + tool handler tests
+        run: PYTHONPATH=mcp pytest tests/integration/mcp/ -v
+
+  api-integration:
+    name: API integration tests (Postgres)
     runs-on: ubuntu-latest
 
     services:
@@ -32,11 +73,11 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
-        run: |
-          pip install -r api/requirements.txt
-          pip install -r tests/requirements.txt
-          pip install cryptography
+      - name: Install API dependencies
+        run: pip install -r api/requirements.txt
 
-      - name: Run tests
-        run: pytest -v
+      - name: Install test dependencies
+        run: pip install -r tests/requirements.txt cryptography
+
+      - name: Run API integration + isolation tests
+        run: PYTHONPATH=api MODE=hosted pytest tests/integration/isolation/ tests/integration/test_kb_lifecycle.py tests/integration/test_note_lifecycle.py -v

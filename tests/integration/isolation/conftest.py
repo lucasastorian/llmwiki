@@ -1,4 +1,12 @@
+import json
+from contextlib import asynccontextmanager
+
+import httpx
 import pytest
+from fastapi import Request
+
+from scoped_db import ScopedDB
+from tests.helpers.jwt import auth_headers, seed_jwks_cache
 
 USER_A_ID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 USER_A_EMAIL = "alice@test.com"
@@ -14,6 +22,9 @@ DOC_B_ID = "bbbb1111-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
 
 CHUNK_A_ID = "cccc1111-cccc-cccc-cccc-cccccccccccc"
 CHUNK_B_ID = "dddd1111-dddd-dddd-dddd-dddddddddddd"
+
+KEY_A_ID = "eeee1111-eeee-eeee-eeee-eeeeeeeeeeee"
+KEY_B_ID = "ffff1111-ffff-ffff-ffff-ffffffffffff"
 
 
 @pytest.fixture(autouse=True)
@@ -66,4 +77,89 @@ async def seed_two_tenants(pool):
         CHUNK_B_ID, DOC_B_ID, USER_B_ID, KB_B_ID, long_content,
     )
 
+    await pool.execute(
+        "INSERT INTO api_keys (id, user_id, name, key_hash, key_prefix) VALUES ($1, $2, 'Alice Key', 'hash_a', 'sv_alice')",
+        KEY_A_ID, USER_A_ID,
+    )
+    await pool.execute(
+        "INSERT INTO api_keys (id, user_id, name, key_hash, key_prefix) VALUES ($1, $2, 'Bob Key', 'hash_b', 'sv_bob__')",
+        KEY_B_ID, USER_B_ID,
+    )
+
     yield
+
+
+# ── Tier 1 fixture: RLS-enforced DB session (no application-level user_id) ──
+
+def _quote_literal(s: str) -> str:
+    return "'" + s.replace("'", "''") + "'"
+
+
+@pytest.fixture
+def rls_session(pool):
+    """Return an async context manager that yields a raw asyncpg connection
+    with RLS active for a given user_id.  No application-level WHERE user_id
+    clauses — only RLS protects the query."""
+
+    @asynccontextmanager
+    async def _session(user_id: str):
+        conn = await pool.acquire()
+        tr = conn.transaction()
+        await tr.start()
+        try:
+            claims = json.dumps({"sub": user_id})
+            await conn.execute("SET LOCAL ROLE authenticated")
+            await conn.execute(
+                f"SET LOCAL request.jwt.claims = {_quote_literal(claims)}"
+            )
+            yield conn
+            await tr.commit()
+        except Exception:
+            await tr.rollback()
+            raise
+        finally:
+            await pool.release(conn)
+
+    return _session
+
+
+# ── Tier 2 fixture: HTTP client with RLS disabled (application layer only) ──
+
+@pytest.fixture
+async def client_no_rls(pool):
+    """HTTP client where get_scoped_db skips RLS setup (no SET LOCAL ROLE,
+    no JWT claims).  Only the application-level WHERE user_id clauses
+    protect data access."""
+    import deps
+    from main import app
+
+    async def _unscoped_db(request: Request):
+        from auth import get_current_user
+        user_id = await get_current_user(request)
+        _pool = request.app.state.pool
+        conn = await _pool.acquire()
+        tr = conn.transaction()
+        await tr.start()
+        try:
+            # Intentionally NO role switch or JWT claims — RLS is inactive
+            yield ScopedDB(_pool, conn, user_id)
+            await tr.commit()
+        except Exception:
+            await tr.rollback()
+            raise
+        finally:
+            await _pool.release(conn)
+
+    app.state.pool = pool
+    app.state.s3_service = None
+    app.state.ocr_service = None
+    app.state.auth_provider = None
+    seed_jwks_cache()
+
+    app.dependency_overrides[deps.get_scoped_db] = _unscoped_db
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+            yield c
+    finally:
+        app.dependency_overrides.pop(deps.get_scoped_db, None)

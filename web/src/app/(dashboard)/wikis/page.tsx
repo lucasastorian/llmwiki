@@ -14,7 +14,7 @@ import {
   DropdownMenuItem, DropdownMenuSeparator,
 } from '@/components/ui/dropdown-menu'
 import { useTheme } from 'next-themes'
-import { createClient } from '@/lib/supabase/client'
+const isLocal = process.env.NEXT_PUBLIC_MODE === 'local'
 
 function relativeTime(dateStr: string): string {
   const diff = Date.now() - new Date(dateStr).getTime()
@@ -252,9 +252,13 @@ function UserMenu() {
   React.useEffect(() => { setMounted(true) }, [])
 
   const handleSignOut = async () => {
-    const supabase = createClient()
-    await supabase.auth.signOut()
+    if (!isLocal) {
+      const { createClient } = await import('@/lib/supabase/client')
+      const supabase = createClient()
+      await supabase.auth.signOut()
+    }
     signOutLocal()
+    if (isLocal) return
     router.push('/login')
   }
 

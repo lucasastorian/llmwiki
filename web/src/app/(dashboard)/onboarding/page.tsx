@@ -25,6 +25,7 @@ export default function OnboardingPage() {
   const [wikiName, setWikiName] = React.useState('')
   const [creating, setCreating] = React.useState(false)
   const [createdSlug, setCreatedSlug] = React.useState<string | null>(null)
+  const [error, setError] = React.useState<string | null>(null)
   const [urlCopied, setUrlCopied] = React.useState(false)
 
   const stepIndex = STEPS.indexOf(step)
@@ -39,12 +40,14 @@ export default function OnboardingPage() {
   const handleCreateWiki = async () => {
     if (!token || !wikiName.trim()) return
     setCreating(true)
+    setError(null)
     try {
       const kb = await createKB(wikiName.trim())
       setCreatedSlug(kb.slug)
       setStep('connect')
     } catch (err) {
-      console.error('Failed to create wiki:', err)
+      const msg = err instanceof Error ? err.message : 'Failed to create wiki'
+      setError(msg)
     } finally {
       setCreating(false)
     }
@@ -153,9 +156,13 @@ export default function OnboardingPage() {
                 />
               </div>
 
+              {error && (
+                <p className="mt-3 text-sm text-red-500">{error}</p>
+              )}
+
               <button
                 onClick={handleCreateWiki}
-                disabled={creating || !wikiName.trim()}
+                disabled={creating || !wikiName.trim() || !token}
                 className="mt-6 w-full inline-flex items-center justify-center gap-2 rounded-full bg-foreground text-background px-8 py-3 text-sm font-medium hover:opacity-90 transition-opacity cursor-pointer disabled:opacity-40"
               >
                 {creating ? (

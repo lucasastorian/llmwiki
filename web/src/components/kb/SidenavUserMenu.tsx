@@ -9,7 +9,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { useUserStore } from '@/stores'
 import { useTheme } from 'next-themes'
-import { createClient } from '@/lib/supabase/client'
+const isLocal = process.env.NEXT_PUBLIC_MODE === 'local'
 
 export function SidenavUserMenu() {
   const router = useRouter()
@@ -21,9 +21,13 @@ export function SidenavUserMenu() {
   React.useEffect(() => { setMounted(true) }, [])
 
   const handleSignOut = async () => {
-    const supabase = createClient()
-    await supabase.auth.signOut()
+    if (!isLocal) {
+      const { createClient } = await import('@/lib/supabase/client')
+      const supabase = createClient()
+      await supabase.auth.signOut()
+    }
     signOutLocal()
+    if (isLocal) return  // No login page in local mode
     router.push('/login')
   }
 

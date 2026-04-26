@@ -1,9 +1,9 @@
 import re
-import secrets
 from datetime import datetime
 from typing import Annotated
 from uuid import UUID
 
+import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
@@ -55,13 +55,15 @@ def _slugify(name: str) -> str:
 
 
 async def _unique_slug(pool, user_id: str, name: str) -> str:
-    slug = _slugify(name)
-    exists = await pool.fetchval(
+    base = _slugify(name)
+    slug = base
+    counter = 2
+    while await pool.fetchval(
         "SELECT 1 FROM knowledge_bases WHERE slug = $1 AND user_id = $2",
         slug, user_id,
-    )
-    if exists:
-        slug = f"{slug}-{secrets.token_hex(3)}"
+    ):
+        slug = f"{base}-{counter}"
+        counter += 1
     return slug
 
 
@@ -89,7 +91,10 @@ Chronological record of ingests, queries, and maintenance passes.
 
 @router.get("", response_model=list[KnowledgeBaseOut])
 async def list_knowledge_bases(db: Annotated[ScopedDB, Depends(get_scoped_db)]):
-    rows = await db.fetch(f"{_KB_WITH_COUNTS} ORDER BY kb.updated_at DESC")
+    rows = await db.fetch(
+        f"{_KB_WITH_COUNTS} WHERE kb.user_id = $1 ORDER BY kb.updated_at DESC",
+        db.user_id,
+    )
     return rows
 
 
@@ -98,7 +103,10 @@ async def get_knowledge_base(
     kb_id: UUID,
     db: Annotated[ScopedDB, Depends(get_scoped_db)],
 ):
-    row = await db.fetchrow(f"{_KB_WITH_COUNTS} WHERE kb.id = $1", kb_id)
+    row = await db.fetchrow(
+        f"{_KB_WITH_COUNTS} WHERE kb.id = $1 AND kb.user_id = $2",
+        kb_id, db.user_id,
+    )
     if not row:
         raise HTTPException(status_code=404, detail="Knowledge base not found")
     return row
@@ -126,11 +134,20 @@ async def create_knowledge_base(
     conn = await pool.acquire()
     try:
         async with conn.transaction():
-            row = await conn.fetchrow(
-                f"INSERT INTO knowledge_bases (user_id, name, slug, description) "
-                f"VALUES ($1, $2, $3, $4) RETURNING {_KB_COLUMNS}",
-                user_id, body.name, slug, body.description,
-            )
+            name = body.name
+            for attempt in range(10):
+                try:
+                    row = await conn.fetchrow(
+                        f"INSERT INTO knowledge_bases (user_id, name, slug, description) "
+                        f"VALUES ($1, $2, $3, $4) RETURNING {_KB_COLUMNS}",
+                        user_id, name, slug, body.description,
+                    )
+                    break
+                except asyncpg.UniqueViolationError:
+                    name = f"{body.name} ({attempt + 2})"
+                    slug = await _unique_slug(pool, user_id, name)
+            else:
+                raise HTTPException(status_code=409, detail="Could not create wiki — too many duplicates.")
 
             kb_id = row["id"]
             today = datetime.now().strftime("%Y-%m-%d")
@@ -176,6 +193,10 @@ async def update_knowledge_base(
     if body.name is not None:
         updates.append(f"name = ${idx}")
         params.append(body.name)
+        idx += 1
+        new_slug = await _unique_slug(pool, user_id, body.name)
+        updates.append(f"slug = ${idx}")
+        params.append(new_slug)
         idx += 1
     if body.description is not None:
         updates.append(f"description = ${idx}")
