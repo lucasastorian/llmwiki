@@ -51,6 +51,12 @@ class CreateNote(BaseModel):
     content: str = ""
 
 
+class CreateWebClip(BaseModel):
+    url: str
+    title: str
+    html: str
+
+
 class UpdateContent(BaseModel):
     content: str
 

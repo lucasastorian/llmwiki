@@ -53,6 +53,9 @@ class DocumentService(ABC):
     async def create_note(self, kb_id: str, filename: str, path: str, content: str) -> dict: ...
 
     @abstractmethod
+    async def create_web_clip(self, kb_id: str, url: str, title: str, html: str) -> dict: ...
+
+    @abstractmethod
     async def update_content(self, doc_id: str, content: str) -> dict | None: ...
 
     @abstractmethod

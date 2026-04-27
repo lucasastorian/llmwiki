@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from fastapi import HTTPException
@@ -170,6 +171,40 @@ class LocalDocumentService(DocumentService):
 
         if content:
             chunks = chunk_text(content)
+            await self.chunk_repo.store(str(row["id"]), self.user_id, kb_id, chunks)
+
+        return row
+
+    async def create_web_clip(self, kb_id: str, url: str, title: str, html: str) -> dict:
+        from html_parser import Parser
+
+        parser = Parser(html, url=url, content_only=True)
+        result = parser.parse()
+        markdown = result.content
+
+        filename = re.sub(r"[^\w\s\-.]", "", title.lower().replace(" ", "-"))[:80] + ".html"
+        path = "/webclipper/"
+
+        relative = f"webclipper/{filename}"
+        file_path = _safe_resolve(relative)
+        if file_path.exists():
+            base = filename.rsplit(".", 1)[0]
+            for i in range(2, 100):
+                candidate = f"{base}-{i}.html"
+                candidate_path = _safe_resolve(f"webclipper/{candidate}")
+                if not candidate_path.exists():
+                    filename = candidate
+                    file_path = candidate_path
+                    break
+
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        mark_written(str(file_path))
+        file_path.write_text(markdown or "", encoding="utf-8")
+
+        row = await self.doc_repo.create_note(kb_id, self.user_id, filename, path, title, markdown, [])
+
+        if markdown:
+            chunks = chunk_text(markdown)
             await self.chunk_repo.store(str(row["id"]), self.user_id, kb_id, chunks)
 
         return row

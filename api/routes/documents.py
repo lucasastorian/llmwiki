@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from deps import get_document_service
 from services.base import DocumentService
-from services.types import CreateNote, UpdateContent, UpdateMetadata, BulkDelete
+from services.types import CreateNote, CreateWebClip, UpdateContent, UpdateMetadata, BulkDelete
 
 router = APIRouter(tags=["documents"])
 
@@ -50,6 +50,15 @@ async def create_note(
     service: Annotated[DocumentService, Depends(get_document_service)],
 ):
     return await service.create_note(str(kb_id), body.filename, body.path, body.content)
+
+
+@router.post("/v1/knowledge-bases/{kb_id}/documents/web", status_code=201)
+async def create_web_clip(
+    kb_id: UUID,
+    body: CreateWebClip,
+    service: Annotated[DocumentService, Depends(get_document_service)],
+):
+    return await service.create_web_clip(str(kb_id), body.url, body.title, body.html)
 
 
 @router.put("/v1/documents/{doc_id}/content")

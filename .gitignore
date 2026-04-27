@@ -8,6 +8,8 @@ venv/
 
 # Build
 .next/
+.wxt/
+.output/
 dist/
 *.egg-info/
 
