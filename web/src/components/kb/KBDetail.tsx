@@ -657,8 +657,13 @@ export function KBDetail({ kbId, kbSlug, kbName, viewMode, routeFilesPath }: Pro
     Promise.all(uploads).then(() => {
       const textFiles = files.filter((f) => /\.(md|txt)$/i.test(f.name))
       if (textFiles.length > 0) toast.success(`Imported ${textFiles.length} file${textFiles.length > 1 ? 's' : ''}`)
+      // Navigate to files view after first upload
+      if (sourceDocs.length === 0) {
+        setActiveView('files')
+        navigateToView('files')
+      }
     })
-  }, [kbId, userId, tusUploadFile, documents])
+  }, [kbId, userId, tusUploadFile, documents, sourceDocs.length, navigateToView])
 
   // ─── Drag-and-drop ───────────────────────────────────────────
   const [fileDragOver, setFileDragOver] = React.useState(false)
