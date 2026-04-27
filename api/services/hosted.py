@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime
 
@@ -46,7 +47,7 @@ class HostedUserService(UserService):
         )
 
         limits = await self.pool.fetchrow(
-            "SELECT page_limit, storage_limit_bytes FROM users WHERE id = $1",
+            "SELECT storage_limit_bytes FROM users WHERE id = $1",
             self.user_id,
         )
 
@@ -54,7 +55,7 @@ class HostedUserService(UserService):
             "total_pages": row["total_pages"],
             "total_storage_bytes": row["total_storage_bytes"],
             "document_count": row["document_count"],
-            "max_pages": limits["page_limit"] if limits else settings.QUOTA_MAX_PAGES,
+            "max_pages": 0,
             "max_storage_bytes": limits["storage_limit_bytes"] if limits else settings.QUOTA_MAX_STORAGE_BYTES,
         }
 
@@ -264,12 +265,7 @@ class HostedDocumentService(DocumentService):
         return {"url": url}
 
     async def create_note(self, kb_id: str, filename: str, path: str, content: str) -> dict:
-        kb = await self.pool.fetchval(
-            "SELECT id FROM knowledge_bases WHERE id = $1 AND user_id = $2",
-            kb_id, self.user_id,
-        )
-        if not kb:
-            raise HTTPException(status_code=404, detail="Knowledge base not found")
+        await self._validate_kb(kb_id)
 
         meta = parse_frontmatter(content)
         title = meta.get("title", "").strip() or title_from_filename(filename)
@@ -299,6 +295,84 @@ class HostedDocumentService(DocumentService):
         finally:
             await self.pool.release(conn)
         return dict(row)
+
+    async def create_web_clip(self, kb_id: str, url: str, title: str, html: str) -> dict:
+        from html_parser import Parser
+
+        await self._validate_kb(kb_id)
+
+        parser = Parser(html, url=url, content_only=True)
+        markdown = parser.parse().content
+
+        filename = self._slugify_filename(title, "html")
+        filename = await self._dedupe_filename(kb_id, "/webclipper/", filename, "html")
+
+        conn = await self.pool.acquire()
+        try:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    f"INSERT INTO documents (knowledge_base_id, user_id, filename, path, title, "
+                    f"file_type, status, content, tags, metadata) "
+                    f"VALUES ($1, $2, $3, '/webclipper/', $4, 'html', 'ready', $5, $6, $7) "
+                    f"RETURNING {_DOC_COLUMNS}",
+                    kb_id, self.user_id, filename, title, markdown,
+                    [], json.dumps({"source_url": url}),
+                )
+                if markdown:
+                    chunks = chunk_text(markdown)
+                    await store_chunks(conn, str(row["id"]), self.user_id, str(kb_id), chunks)
+        finally:
+            await self.pool.release(conn)
+
+        if self.s3:
+            await self._store_tagged_html(str(row["id"]), parser)
+
+        return dict(row)
+
+    async def _validate_kb(self, kb_id: str) -> None:
+        kb = await self.pool.fetchval(
+            "SELECT id FROM knowledge_bases WHERE id = $1 AND user_id = $2",
+            kb_id, self.user_id,
+        )
+        if not kb:
+            raise HTTPException(status_code=404, detail="Knowledge base not found")
+
+    @staticmethod
+    def _slugify_filename(title: str, ext: str) -> str:
+        slug = re.sub(r"[^\w\s\-.]", "", title.lower().replace(" ", "-"))[:80]
+        return f"{slug}.{ext}"
+
+    async def _dedupe_filename(self, kb_id: str, path: str, filename: str, ext: str) -> str:
+        exists = await self.pool.fetchval(
+            "SELECT id FROM documents WHERE knowledge_base_id = $1 AND user_id = $2 "
+            "AND filename = $3 AND path = $4 AND NOT archived",
+            kb_id, self.user_id, filename, path,
+        )
+        if not exists:
+            return filename
+        base = filename.rsplit(".", 1)[0]
+        for i in range(2, 100):
+            candidate = f"{base}-{i}.{ext}"
+            dup = await self.pool.fetchval(
+                "SELECT id FROM documents WHERE knowledge_base_id = $1 AND user_id = $2 "
+                "AND filename = $3 AND path = $4 AND NOT archived",
+                kb_id, self.user_id, candidate, path,
+            )
+            if not dup:
+                return candidate
+        return filename
+
+    async def _store_tagged_html(self, doc_id: str, parser) -> None:
+        try:
+            await parser.embed_images()
+            tagged = parser.html()
+            await self.s3.upload_bytes(
+                f"{self.user_id}/{doc_id}/tagged.html",
+                tagged.encode("utf-8"),
+                "text/html",
+            )
+        except Exception:
+            pass
 
     async def update_content(self, doc_id: str, content: str) -> dict | None:
         row = await self.pool.fetchrow(

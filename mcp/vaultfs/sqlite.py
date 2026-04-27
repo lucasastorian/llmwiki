@@ -240,7 +240,7 @@ class SqliteVaultFS(VaultFS):
         return self._load_local_bytes(relative)
 
     async def load_image_bytes(self, doc_id: str, image_id: str) -> bytes | None:
-        return None
+        return self._load_local_bytes(f"local/{doc_id}/images/{image_id}")
 
     def _load_local_bytes(self, key: str) -> bytes | None:
         if _workspace_root is None:
