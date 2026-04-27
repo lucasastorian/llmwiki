@@ -182,9 +182,10 @@ export default function WikisPage() {
                   initial={{ opacity: 0, y: 12 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ duration: 0.3, delay: index * 0.05, ease: [0.25, 0.1, 0.25, 1] }}
-                >
-                <button
+                  role="button"
+                  tabIndex={0}
                   onClick={() => router.push(`/wikis/${kb.slug}`)}
+                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') router.push(`/wikis/${kb.slug}`) }}
                   className="flex flex-col items-start gap-3 p-5 rounded-xl border border-border bg-card hover:bg-accent/50 transition-colors cursor-pointer text-left group overflow-hidden"
                 >
                   <div className="flex items-center gap-3 min-w-0 w-full">
@@ -208,7 +209,6 @@ export default function WikisPage() {
                       {relativeTime(kb.updated_at)}
                     </span>
                   </div>
-                </button>
                 </motion.div>
               )
             })}

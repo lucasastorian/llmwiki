@@ -28,14 +28,14 @@ function buildSrcdoc(content: string, type: 'svg' | 'img', alt?: string): string
 }
 
 export function DiagramViewer({ content, type, alt, onClose }: DiagramViewerProps) {
-  const [scale, setScale] = React.useState(1.5)
+  const [scale, setScale] = React.useState(1.25)
   const [translate, setTranslate] = React.useState({ x: 0, y: 0 })
   const dragging = React.useRef(false)
   const lastPos = React.useRef({ x: 0, y: 0 })
 
   const zoomIn = () => setScale((s) => Math.min(s + ZOOM_STEP, MAX_SCALE))
   const zoomOut = () => setScale((s) => Math.max(s - ZOOM_STEP, MIN_SCALE))
-  const zoomReset = () => { setScale(1.5); setTranslate({ x: 0, y: 0 }) }
+  const zoomReset = () => { setScale(1.25); setTranslate({ x: 0, y: 0 }) }
 
   const handleWheel = React.useCallback((e: React.WheelEvent) => {
     e.preventDefault()
