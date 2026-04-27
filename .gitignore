@@ -32,7 +32,9 @@ Thumbs.db
 
 # LLM Wiki local workspace artifacts
 .llmwiki/
-wiki/
+/wiki/
+/mcp/wiki/
+/emails/
 
 # Deploy
 deploy.sh
