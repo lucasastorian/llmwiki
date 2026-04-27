@@ -29,6 +29,7 @@ S3_HOST_SUFFIX = ".amazonaws.com"
 class ExtractRequest(BaseModel):
     source_url: str
     source_ext: str
+    request_id: str | None = None
 
 
 def _validate_s3_url(url: str) -> None:
@@ -171,5 +172,8 @@ async def extract(
         pages = await asyncio.to_thread(_extract_pages, str(pdf_path), str(extract_dir))
 
     page_count = len(pages)
-    logger.info("Extracted %s: %d pages", ext, page_count)
-    return {"pages": pages, "page_count": page_count}
+    logger.info("Extracted %s: %d pages (request_id=%s)", ext, page_count, req.request_id or "none")
+    response = {"pages": pages, "page_count": page_count}
+    if req.request_id:
+        response["request_id"] = req.request_id
+    return response

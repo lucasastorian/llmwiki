@@ -1,4 +1,5 @@
 import json
+import re
 import time
 import asyncio
 import logging
@@ -58,6 +59,7 @@ class TusUpload:
     filename: str
     knowledge_base_id: str
     temp_path: Path
+    path: str = "/"
     last_activity: float = field(default_factory=time.time)
 
 
@@ -122,7 +124,7 @@ async def _finalize(upload: TusUpload, app_state) -> str:
         await pool.execute(
             "INSERT INTO documents (id, knowledge_base_id, user_id, filename, path, title, "
             "file_type, file_size, status) "
-            "VALUES ($1::uuid, $2::uuid, $3, $4, '/', $5, $6, $7, 'pending')",
+            "VALUES ($1::uuid, $2::uuid, $3, $4, $8, $5, $6, $7, 'pending')",
             document_id,
             upload.knowledge_base_id,
             user_id,
@@ -130,6 +132,7 @@ async def _finalize(upload: TusUpload, app_state) -> str:
             title,
             file_type,
             file_size,
+            upload.path,
         )
     finally:
         upload.temp_path.unlink(missing_ok=True)
@@ -242,6 +245,14 @@ async def tus_create(request: Request):
     temp_path = UPLOAD_DIR / upload_id
     temp_path.touch()
 
+    # Sanitize path: must start with /, no traversal, no double slashes
+    raw_path = metadata.get("path", "/").strip() or "/"
+    upload_path = "/" + raw_path.replace("\\", "/").strip("/") + "/"
+    upload_path = re.sub(r"/\.\.(/|$)", "/", upload_path)  # strip traversal
+    upload_path = re.sub(r"/+", "/", upload_path)  # collapse double slashes
+    if upload_path == "//":
+        upload_path = "/"
+
     upload = TusUpload(
         upload_id=upload_id,
         user_id=user_id,
@@ -250,6 +261,7 @@ async def tus_create(request: Request):
         filename=filename,
         knowledge_base_id=kb_id,
         temp_path=temp_path,
+        path=upload_path,
     )
     _uploads[upload_id] = upload
 

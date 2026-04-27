@@ -107,18 +107,40 @@ async def _store_chunks(db: aiosqlite.Connection, doc_id: str, chunks: list) -> 
 
 # ── PDF extraction ────────────────────────────────────────────────────────
 
+def _save_local_images(
+    doc_id: str, workspace: Path,
+    pages_with_images: list[tuple[int, str, list[dict]]],
+) -> dict[int, dict]:
+    """Save extracted images to the local cache and return per-page elements metadata."""
+    page_elements: dict[int, dict] = {}
+    for page_num, _, images in pages_with_images:
+        if not images:
+            continue
+        img_dir = workspace / ".llmwiki" / "cache" / "local" / doc_id / "images"
+        img_dir.mkdir(parents=True, exist_ok=True)
+        page_imgs = []
+        for img in images:
+            (img_dir / img["id"]).write_bytes(img["bytes"])
+            page_imgs.append({"id": img["id"]})
+        page_elements[page_num] = {"images": page_imgs}
+    return page_elements
+
+
 async def _store_page_contents(
     db: aiosqlite.Connection, doc_id: str,
     page_contents: list[tuple[int, str]], parser: str,
+    page_elements: dict[int, dict] | None = None,
 ) -> None:
     """Store extracted pages, chunks, and update document status."""
     num_pages = len(page_contents)
 
     await db.execute("DELETE FROM document_pages WHERE document_id = ?", (doc_id,))
     for page_num, content in page_contents:
+        elements = (page_elements or {}).get(page_num)
         await db.execute(
-            "INSERT INTO document_pages (id, document_id, page, content) VALUES (?, ?, ?, ?)",
-            (str(uuid.uuid4()), doc_id, page_num, content),
+            "INSERT INTO document_pages (id, document_id, page, content, elements) VALUES (?, ?, ?, ?, ?)",
+            (str(uuid.uuid4()), doc_id, page_num, content,
+             json.dumps(elements) if elements else None),
         )
 
     full_content = "\n\n---\n\n".join(md for _, md in page_contents)
@@ -140,8 +162,10 @@ async def _process_pdf(db: aiosqlite.Connection, doc_id: str, file_path: Path, w
     if settings.PDF_BACKEND == "mistral" and settings.MISTRAL_API_KEY:
         await _process_pdf_mistral(db, doc_id, file_path, workspace)
     else:
-        page_contents = await asyncio.to_thread(extract_pdf, str(file_path))
-        await _store_page_contents(db, doc_id, page_contents, "opendataloader")
+        pages_with_images = await asyncio.to_thread(extract_pdf, str(file_path))
+        page_elements = _save_local_images(doc_id, workspace, pages_with_images)
+        page_contents = [(num, md) for num, md, _ in pages_with_images]
+        await _store_page_contents(db, doc_id, page_contents, "opendataloader", page_elements)
 
 
 # ── Office processing ─────────────────────────────────────────────────────
@@ -179,8 +203,10 @@ async def _process_office(db: aiosqlite.Connection, doc_id: str, file_path: Path
         cache_dir.mkdir(parents=True, exist_ok=True)
         shutil.copy2(converted_pdf, cache_dir / "converted.pdf")
 
-        page_contents = await asyncio.to_thread(extract_pdf, str(converted_pdf))
-        await _store_page_contents(db, doc_id, page_contents, "libreoffice+opendataloader")
+        pages_with_images = await asyncio.to_thread(extract_pdf, str(converted_pdf))
+        page_elements = _save_local_images(doc_id, workspace, pages_with_images)
+        page_contents = [(num, md) for num, md, _ in pages_with_images]
+        await _store_page_contents(db, doc_id, page_contents, "libreoffice+opendataloader", page_elements)
 
 
 # ── Mistral OCR ───────────────────────────────────────────────────────────

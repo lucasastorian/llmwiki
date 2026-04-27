@@ -403,6 +403,13 @@ function WikiTreeNode({
 }
 
 
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1048576) return `${(bytes / 1024).toFixed(1)} KB`
+  if (bytes < 1073741824) return `${(bytes / 1048576).toFixed(1)} MB`
+  return `${(bytes / 1073741824).toFixed(1)} GB`
+}
+
 function PageUsageBar() {
   const token = useUserStore((s) => s.accessToken)
   const [usage, setUsage] = React.useState<Usage | null>(null)
@@ -417,7 +424,7 @@ function PageUsageBar() {
 
   if (!usage) return null
 
-  const pct = Math.min(100, (usage.total_pages / usage.max_pages) * 100)
+  const pct = Math.min(100, (usage.total_storage_bytes / usage.max_storage_bytes) * 100)
   const color =
     pct > 90 ? 'bg-destructive' : pct > 70 ? 'bg-yellow-500' : 'bg-primary'
 
@@ -430,10 +437,10 @@ function PageUsageBar() {
         <div className="flex-1 min-w-0">
           <div className="flex items-center justify-between mb-0.5">
             <span className="text-[10px] text-muted-foreground/60 group-hover:text-muted-foreground transition-colors">
-              Pages
+              Storage
             </span>
             <span className="text-[10px] font-mono text-muted-foreground/40 group-hover:text-muted-foreground/60 transition-colors">
-              {usage.total_pages} / {usage.max_pages}
+              {formatBytes(usage.total_storage_bytes)} / {formatBytes(usage.max_storage_bytes)}
             </span>
           </div>
           <div className="h-1 rounded-full bg-muted overflow-hidden">
@@ -448,12 +455,12 @@ function PageUsageBar() {
       <Dialog open={modalOpen} onOpenChange={setModalOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Page Usage</DialogTitle>
+            <DialogTitle>Storage Usage</DialogTitle>
           </DialogHeader>
           <div className="space-y-3 text-sm text-muted-foreground">
             <p>
-              You've used <span className="font-medium text-foreground">{usage.total_pages.toLocaleString()}</span> of
-              your <span className="font-medium text-foreground">{usage.max_pages.toLocaleString()}</span> page limit.
+              You've used <span className="font-medium text-foreground">{formatBytes(usage.total_storage_bytes)}</span> of
+              your <span className="font-medium text-foreground">{formatBytes(usage.max_storage_bytes)}</span> storage limit.
             </p>
             <div className="h-2 rounded-full bg-muted overflow-hidden">
               <div
@@ -462,10 +469,7 @@ function PageUsageBar() {
               />
             </div>
             <p>
-              Each PDF or office document consumes pages based on its length. Notes and wiki pages are free and unlimited.
-            </p>
-            <p className="text-xs text-muted-foreground/60">
-              Individual documents are limited to 300 pages. Need more capacity? Contact us.
+              Storage is consumed by uploaded files (PDFs, images, office documents). Notes and wiki pages are free and unlimited.
             </p>
           </div>
         </DialogContent>

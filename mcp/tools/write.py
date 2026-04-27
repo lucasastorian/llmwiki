@@ -1,9 +1,8 @@
-"""Write tool — create, edit, and append wiki pages and notes."""
+"""Write tools — create, edit, and append wiki pages and notes."""
 
 import re
 import yaml
 from datetime import date
-from typing import Literal
 
 from mcp.server.fastmcp import FastMCP, Context
 
@@ -71,7 +70,7 @@ class WriteHandler:
         if existing and not overwrite:
             return (
                 f"Error: `{dir_path}{filename}` already exists. "
-                f"Use `command=\"str_replace\"` to edit it, or pass `overwrite=true` to replace it entirely."
+                f"Use the `edit` tool to modify it, or pass `overwrite=true` to replace it entirely."
             )
 
         if not self.fs.write_to_disk(dir_path, filename, content):
@@ -261,48 +260,79 @@ class WriteHandler:
 
 def register(mcp: FastMCP, get_user_id, fs_factory) -> None:
 
-    @mcp.tool(
-        name="write",
-        description=(
-            "Create or edit notes and wiki pages in the knowledge vault.\n\n"
-            "Wiki pages should be created under `/wiki/` and should cite their sources using "
-            "markdown footnotes (e.g. `[^1]: paper.pdf, p.3`).\n\n"
-            "You can also create SVG diagrams and CSV data files as wiki assets:\n"
-            "- `write(command=\"create\", path=\"/wiki/\", title=\"architecture-diagram.svg\", content=\"<svg>...</svg>\", tags=[\"diagram\"])`\n"
-            "- `write(command=\"create\", path=\"/wiki/\", title=\"data-table.csv\", content=\"col1,col2\\nval1,val2\", tags=[\"data\"])`\n"
-            "SVGs and other assets can be embedded in wiki pages via `![Architecture](architecture-diagram.svg)`\n\n"
-            "Commands:\n"
-            "- create: create a new page (title and tags are REQUIRED). Rejects if page already exists — use overwrite=true to replace.\n"
-            "- str_replace: replace exact text in an existing page (read first)\n"
-            "- append: add content to the end of an existing page"
-        ),
-    )
-    async def write(
-        ctx: Context,
-        knowledge_base: str,
-        command: Literal["create", "str_replace", "append"],
-        path: str = "/",
-        title: str = "",
-        content: str = "",
-        tags: list[str] | None = None,
-        date_str: str = "",
-        old_text: str = "",
-        new_text: str = "",
-        overwrite: bool = False,
-    ) -> str:
+    async def _resolve(ctx: Context, knowledge_base: str):
         user_id = get_user_id(ctx)
         fs = fs_factory(user_id)
         kb = await fs.resolve_kb(knowledge_base)
-        if not kb:
-            return f"Knowledge base '{knowledge_base}' not found."
+        return (WriteHandler(fs, kb), None) if kb else (None, f"Knowledge base '{knowledge_base}' not found.")
 
-        handler = WriteHandler(fs, kb)
+    @mcp.tool(
+        name="create",
+        description=(
+            "Create a new wiki page, note, or asset in the knowledge vault.\n\n"
+            "Wiki pages should be created under `/wiki/` and should cite their sources using "
+            "markdown footnotes (e.g. `[^1]: paper.pdf, p.3`).\n\n"
+            "You can also create SVG diagrams and CSV data files as wiki assets:\n"
+            "- `create(path=\"/wiki/\", title=\"architecture-diagram.svg\", content=\"<svg>...</svg>\", tags=[\"diagram\"])`\n"
+            "- `create(path=\"/wiki/\", title=\"data-table.csv\", content=\"col1,col2\\nval1,val2\", tags=[\"data\"])`\n"
+            "SVGs and other assets can be embedded in wiki pages via `![Architecture](architecture-diagram.svg)`\n\n"
+            "Rejects if the page already exists — use `overwrite=true` to replace, or use the `edit` tool to modify."
+        ),
+    )
+    async def create(
+        ctx: Context,
+        knowledge_base: str,
+        title: str,
+        content: str,
+        tags: list[str],
+        path: str = "/wiki/",
+        date_str: str = "",
+        overwrite: bool = False,
+    ) -> str:
+        handler, err = await _resolve(ctx, knowledge_base)
+        if err:
+            return err
+        return await handler.create(path, title, content, tags, date_str, overwrite)
 
-        if command == "create":
-            return await handler.create(path, title, content, tags or [], date_str, overwrite)
-        elif command == "str_replace":
-            return await handler.edit(path, old_text, new_text, tags)
-        elif command == "append":
-            return await handler.append(path, content, tags)
+    @mcp.tool(
+        name="edit",
+        description=(
+            "Replace exact text in an existing wiki page or note.\n\n"
+            "Works like find-and-replace: provide the exact text to find (`old_text`) and "
+            "the replacement (`new_text`). The match must be unique — if multiple matches are "
+            "found, provide more surrounding context to disambiguate.\n\n"
+            "Read the page first to see its current content before editing."
+        ),
+    )
+    async def edit(
+        ctx: Context,
+        knowledge_base: str,
+        path: str,
+        old_text: str,
+        new_text: str,
+        tags: list[str] | None = None,
+    ) -> str:
+        handler, err = await _resolve(ctx, knowledge_base)
+        if err:
+            return err
+        return await handler.edit(path, old_text, new_text, tags)
 
-        return f"Unknown command: {command}"
+    @mcp.tool(
+        name="append",
+        description=(
+            "Append content to the end of an existing wiki page or note.\n\n"
+            "Useful for adding new sections, log entries, or additional findings "
+            "to a page without reading and rewriting the entire document."
+        ),
+    )
+    async def append(
+        ctx: Context,
+        knowledge_base: str,
+        path: str,
+        content: str,
+        tags: list[str] | None = None,
+    ) -> str:
+        handler, err = await _resolve(ctx, knowledge_base)
+        if err:
+            return err
+        return await handler.append(path, content, tags)

@@ -4,6 +4,7 @@ Shared module used by both the hosted OCR service and the local processor.
 No server-specific dependencies (no asyncpg, S3, httpx).
 """
 
+import base64
 import json
 import tempfile
 from collections import defaultdict
@@ -34,8 +35,8 @@ def _element_to_markdown(el: dict) -> str:
         return "\n".join(lines)
 
     if t == "image":
-        src = el.get("source", "")
-        return f"![image]({src})" if src else ""
+        # Don't include the data URI in markdown — images are stored separately
+        return ""
 
     if t == "caption":
         return f"*{content}*" if content else ""
@@ -44,11 +45,27 @@ def _element_to_markdown(el: dict) -> str:
     return ""
 
 
-def _elements_to_pages(elements: list[dict], total_pages: int) -> list[tuple[int, str]]:
+def _parse_data_uri(data_uri: str) -> tuple[bytes, str] | None:
+    """Parse a data URI into (bytes, format). Returns None on failure."""
+    if not data_uri.startswith("data:"):
+        return None
+    try:
+        header, b64 = data_uri.split(",", 1)
+        fmt = "png"
+        if "jpeg" in header or "jpg" in header:
+            fmt = "jpeg"
+        return base64.b64decode(b64), fmt
+    except Exception:
+        return None
+
+
+def _elements_to_pages(
+    elements: list[dict], total_pages: int,
+) -> list[tuple[int, str, list[dict]]]:
     """Group JSON elements by page number and reconstruct markdown per page.
 
-    Returns a list of (page_num, markdown) for every page up to total_pages,
-    using empty string for pages with no extractable content.
+    Returns a list of (page_num, markdown, images) for every page up to total_pages.
+    Each image dict has: {"id": str, "bytes": bytes, "format": str}
     """
     page_elements: dict[int, list[dict]] = defaultdict(list)
 
@@ -59,19 +76,33 @@ def _elements_to_pages(elements: list[dict], total_pages: int) -> list[tuple[int
         page_elements[page_num].append(el)
 
     pages = []
+    img_counter = 0
     for page_num in range(1, total_pages + 1):
         parts = []
+        images = []
         for el in page_elements.get(page_num, []):
+            if el.get("type") == "image":
+                src = el.get("source", "")
+                parsed = _parse_data_uri(src) if src else None
+                if parsed:
+                    img_bytes, fmt = parsed
+                    img_id = f"img_{page_num}_{img_counter}.{fmt}"
+                    img_counter += 1
+                    images.append({"id": img_id, "bytes": img_bytes, "format": fmt})
+                continue
             md = _element_to_markdown(el)
             if md:
                 parts.append(md)
-        pages.append((page_num, "\n\n".join(parts)))
+        pages.append((page_num, "\n\n".join(parts), images))
 
     return pages
 
 
-def extract_pdf(pdf_path: str) -> list[tuple[int, str]]:
-    """Run opendataloader-pdf and return per-page markdown from structured JSON output.
+def extract_pdf(pdf_path: str) -> list[tuple[int, str, list[dict]]]:
+    """Run opendataloader-pdf and return per-page markdown with images.
+
+    Returns list of (page_num, markdown, images) where images is a list of
+    {"id": str, "bytes": bytes, "format": str} dicts.
 
     Raises RuntimeError if extraction fails (Java missing, corrupt PDF, etc.).
     """
@@ -81,6 +112,7 @@ def extract_pdf(pdf_path: str) -> list[tuple[int, str]]:
                 input_path=pdf_path,
                 output_dir=extract_dir,
                 format="json",
+                image_output="embedded",
                 quiet=True,
             )
 
