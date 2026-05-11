@@ -28,16 +28,16 @@ jobs:
         uses: google/osv-scanner-action/osv-scanner-action@v2.0.2
         with:
           scan-args: |-
-            scan
-            source
+            --output=results.sarif
+            --format=sarif
             --recursive
             ./
 
       # Upload results to GitHub's Security tab so they show up alongside
       # Dependabot alerts and can be triaged in one place.
       - name: Upload SARIF
-        if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        if: always() && hashFiles('results.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: results.sarif
 
