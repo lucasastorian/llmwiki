@@ -15,8 +15,9 @@ logger = logging.getLogger(__name__)
 CHUNK_SIZE = 512
 CHUNK_OVERLAP = 128
 MIN_CHUNK_TOKENS = 32
+MAX_CHUNK_CHARS = 10_000  # matches DB constraint chk_chunks_content_length
 
-SENTENCE_RE = re.compile(r'(?<=[.!?])\s+')
+SENTENCE_RE = re.compile(r'(?<=[.!?。！？])\s+')
 HEADER_RE = re.compile(r'^(#{1,6})\s+(.+)$', re.MULTILINE)
 
 
@@ -98,7 +99,60 @@ def chunk_text(
                 header_breadcrumb=breadcrumb,
             ))
 
-    return chunks
+    return _enforce_max_chars(chunks)
+
+
+def _enforce_max_chars(chunks: list[Chunk]) -> list[Chunk]:
+    """Split any chunk whose content exceeds MAX_CHUNK_CHARS.
+
+    The paragraph-based chunker emits one chunk per paragraph when a single
+    paragraph is bigger than CHUNK_SIZE — fine for English wiki text, but CJK
+    paragraphs and long code blocks routinely exceed the 10k-char DB limit.
+    Split such chunks on sentence boundaries; fall back to fixed-size slices
+    if no sentence break is available.
+    """
+    if not any(len(c.content) > MAX_CHUNK_CHARS for c in chunks):
+        return chunks
+
+    result: list[Chunk] = []
+    for c in chunks:
+        if len(c.content) <= MAX_CHUNK_CHARS:
+            result.append(Chunk(
+                index=len(result), content=c.content, page=c.page,
+                start_char=c.start_char, token_count=c.token_count,
+                header_breadcrumb=c.header_breadcrumb,
+            ))
+            continue
+        for piece in _split_oversized(c.content):
+            result.append(Chunk(
+                index=len(result), content=piece, page=c.page,
+                start_char=c.start_char, token_count=_estimate_tokens(piece),
+                header_breadcrumb=c.header_breadcrumb,
+            ))
+    return result
+
+
+def _split_oversized(text: str) -> list[str]:
+    parts = SENTENCE_RE.split(text)
+    pieces: list[str] = []
+    current = ""
+    for part in parts:
+        candidate = (current + " " + part).strip() if current else part
+        if len(candidate) <= MAX_CHUNK_CHARS:
+            current = candidate
+        else:
+            if current:
+                pieces.append(current)
+            if len(part) <= MAX_CHUNK_CHARS:
+                current = part
+            else:
+                # Sentence-split didn't help — hard-slice.
+                for i in range(0, len(part), MAX_CHUNK_CHARS):
+                    pieces.append(part[i:i + MAX_CHUNK_CHARS])
+                current = ""
+    if current:
+        pieces.append(current)
+    return pieces
 
 
 def chunk_pages(page_contents: list[tuple[int, str]]) -> list[Chunk]:

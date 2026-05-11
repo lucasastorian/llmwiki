@@ -78,7 +78,8 @@ class TestDocumentCRUD:
         await instance.update_document(str(doc["id"]), "v2")
         fetched = await instance.get_document(kb_id, "notes.md", "/")
         assert fetched["content"] == "v2"
-        assert fetched["version"] == 1
+        # Create starts at version 1; each update bumps by 1.
+        assert fetched["version"] == 2
 
     async def test_update_document_optional_fields(self, fs):
         instance, kb_id = fs
