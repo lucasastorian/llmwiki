@@ -11,6 +11,7 @@ import { cn } from '@/lib/utils'
 import { apiFetch } from '@/lib/api'
 import { MCP_URL } from '@/lib/mcp'
 import { useUserStore, useKBStore } from '@/stores'
+import { UserMenu } from '@/components/layout/UserMenu'
 
 type Step = 'welcome' | 'create' | 'connect' | 'done'
 const STEPS: Step[] = ['welcome', 'create', 'connect', 'done']
@@ -81,6 +82,11 @@ export default function OnboardingPage() {
 
   return (
     <div className="h-full min-h-0 flex flex-col bg-background">
+      {/* Account indicator + sign-out, always visible during onboarding */}
+      <div className="shrink-0 absolute top-4 right-4 flex items-center gap-2 text-xs text-muted-foreground z-10">
+        {user?.email && <span className="hidden sm:inline">{user.email}</span>}
+        <UserMenu />
+      </div>
       {/* Progress bar */}
       <div className="shrink-0 px-8 pt-8 pb-0">
         <div className="max-w-lg mx-auto flex gap-1.5">

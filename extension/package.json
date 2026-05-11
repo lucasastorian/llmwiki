@@ -10,20 +10,44 @@
     "check": "tsc --noEmit"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.49.0",
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "@supabase/supabase-js": "2.95.3",
+    "react": "19.2.4",
+    "react-dom": "19.2.4"
   },
   "devDependencies": {
-    "@types/chrome": "^0.0.287",
-    "@types/react": "^19.0.0",
-    "@types/react-dom": "^19.0.0",
-    "@wxt-dev/module-react": "^1.1.0",
-    "autoprefixer": "^10.4.20",
-    "postcss": "^8.5.0",
-    "tailwindcss": "^4.0.0",
-    "@tailwindcss/postcss": "^4.0.0",
-    "typescript": "^5.7.0",
-    "wxt": "^0.19.0"
+    "@types/chrome": "0.0.287",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "@wxt-dev/module-react": "1.1.5",
+    "autoprefixer": "10.4.24",
+    "postcss": "8.5.10",
+    "tailwindcss": "4.1.18",
+    "@tailwindcss/postcss": "4.1.18",
+    "typescript": "5.9.3",
+    "wxt": "0.19.29"
+  },
+  "overrides": {
+    "vite": "7.3.2",
+    "wxt": {
+      "vite": "6.4.2"
+    },
+    "rollup": "4.59.0",
+    "tar": "7.5.11",
+    "node-forge": "1.4.0",
+    "defu": "6.1.5",
+    "postcss": "8.5.10",
+    "minimatch": "10.2.3",
+    "multimatch": {
+      "minimatch": "3.1.4",
+      "brace-expansion": "1.1.13"
+    },
+    "brace-expansion": "5.0.6",
+    "picomatch": "4.0.4",
+    "@aklinker1/rollup-plugin-visualizer": {
+      "picomatch": "2.3.2"
+    },
+    "micromatch": {
+      "picomatch": "2.3.2"
+    }
   }
 }
