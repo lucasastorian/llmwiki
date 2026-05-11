@@ -20,7 +20,7 @@
     "@types/react-dom": "^19.0.0",
     "@wxt-dev/module-react": "^1.1.0",
     "autoprefixer": "^10.4.20",
-    "postcss": "^8.5.0",
+    "postcss": "^8.5.14",
     "tailwindcss": "^4.0.0",
     "@tailwindcss/postcss": "^4.0.0",
     "typescript": "^5.7.0",
