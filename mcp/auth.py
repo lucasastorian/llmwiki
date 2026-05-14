@@ -20,6 +20,9 @@ def _get_jwks_client() -> PyJWKClient:
     return _jwks_client
 
 
+_EXPECTED_ISSUER = f"{settings.SUPABASE_URL.rstrip('/')}/auth/v1"
+
+
 class SupabaseTokenVerifier(TokenVerifier):
 
     async def verify_token(self, token: str) -> AccessToken | None:
@@ -32,6 +35,14 @@ class SupabaseTokenVerifier(TokenVerifier):
                 signing_key.key,
                 algorithms=["RS256", "ES256"],
                 audience="authenticated",
+                issuer=_EXPECTED_ISSUER,
+                leeway=30,
+                options={
+                    "require": ["exp", "iat", "sub", "aud", "iss"],
+                    "verify_exp": True,
+                    "verify_iat": True,
+                    "verify_nbf": True,
+                },
             )
         except Exception as e:
             logger.debug("JWT verification failed: %s", e)

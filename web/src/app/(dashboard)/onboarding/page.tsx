@@ -2,6 +2,7 @@
 
 import * as React from 'react'
 import { useRouter } from 'next/navigation'
+import { motion, AnimatePresence } from 'framer-motion'
 import {
   Copy, Check, Loader2, ArrowRight, ArrowLeft,
   FileText, BookOpen, PenTool, ExternalLink,
@@ -10,6 +11,7 @@ import { cn } from '@/lib/utils'
 import { apiFetch } from '@/lib/api'
 import { MCP_URL } from '@/lib/mcp'
 import { useUserStore, useKBStore } from '@/stores'
+import { UserMenu } from '@/components/layout/UserMenu'
 
 type Step = 'welcome' | 'create' | 'connect' | 'done'
 const STEPS: Step[] = ['welcome', 'create', 'connect', 'done']
@@ -22,12 +24,21 @@ export default function OnboardingPage() {
   const createKB = useKBStore((s) => s.createKB)
 
   const [step, setStep] = React.useState<Step>('welcome')
+  const [direction, setDirection] = React.useState(1)
   const [wikiName, setWikiName] = React.useState('')
   const [creating, setCreating] = React.useState(false)
   const [createdSlug, setCreatedSlug] = React.useState<string | null>(null)
+  const [error, setError] = React.useState<string | null>(null)
   const [urlCopied, setUrlCopied] = React.useState(false)
 
   const stepIndex = STEPS.indexOf(step)
+
+  const goToStep = React.useCallback((target: Step) => {
+    const from = STEPS.indexOf(step)
+    const to = STEPS.indexOf(target)
+    setDirection(to >= from ? 1 : -1)
+    setStep(target)
+  }, [step])
 
   React.useEffect(() => {
     if (user) {
@@ -39,12 +50,14 @@ export default function OnboardingPage() {
   const handleCreateWiki = async () => {
     if (!token || !wikiName.trim()) return
     setCreating(true)
+    setError(null)
     try {
       const kb = await createKB(wikiName.trim())
       setCreatedSlug(kb.slug)
-      setStep('connect')
+      goToStep('connect')
     } catch (err) {
-      console.error('Failed to create wiki:', err)
+      const msg = err instanceof Error ? err.message : 'Failed to create wiki'
+      setError(msg)
     } finally {
       setCreating(false)
     }
@@ -69,6 +82,11 @@ export default function OnboardingPage() {
 
   return (
     <div className="h-full min-h-0 flex flex-col bg-background">
+      {/* Account indicator + sign-out, always visible during onboarding */}
+      <div className="shrink-0 absolute top-4 right-4 flex items-center gap-2 text-xs text-muted-foreground z-10">
+        {user?.email && <span className="hidden sm:inline">{user.email}</span>}
+        <UserMenu />
+      </div>
       {/* Progress bar */}
       <div className="shrink-0 px-8 pt-8 pb-0">
         <div className="max-w-lg mx-auto flex gap-1.5">
@@ -87,9 +105,18 @@ export default function OnboardingPage() {
       {/* Step content */}
       <div className="flex-1 min-h-0 flex items-center justify-center p-8">
         <div className="w-full max-w-lg">
+          <AnimatePresence mode="wait" custom={direction}>
 
           {step === 'welcome' && (
-            <div className="text-center">
+            <motion.div
+              key="welcome"
+              custom={direction}
+              initial={{ opacity: 0, x: direction * 40 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: direction * -40 }}
+              transition={{ duration: 0.25, ease: [0.25, 0.1, 0.25, 1] }}
+              className="text-center"
+            >
               <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-foreground mb-8">
                 <BookOpen size={28} className="text-background" />
               </div>
@@ -115,19 +142,26 @@ export default function OnboardingPage() {
               </div>
 
               <button
-                onClick={() => setStep('create')}
+                onClick={() => goToStep('create')}
                 className="mt-10 inline-flex items-center gap-2 rounded-full bg-foreground text-background px-8 py-3 text-sm font-medium hover:opacity-90 transition-opacity cursor-pointer"
               >
                 Get started
                 <ArrowRight className="size-3.5" />
               </button>
-            </div>
+            </motion.div>
           )}
 
           {step === 'create' && (
-            <div>
+            <motion.div
+              key="create"
+              custom={direction}
+              initial={{ opacity: 0, x: direction * 40 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: direction * -40 }}
+              transition={{ duration: 0.25, ease: [0.25, 0.1, 0.25, 1] }}
+            >
               <button
-                onClick={() => setStep('welcome')}
+                onClick={() => goToStep('welcome')}
                 className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors cursor-pointer mb-8"
               >
                 <ArrowLeft className="size-3" />
@@ -153,9 +187,13 @@ export default function OnboardingPage() {
                 />
               </div>
 
+              {error && (
+                <p className="mt-3 text-sm text-red-500">{error}</p>
+              )}
+
               <button
                 onClick={handleCreateWiki}
-                disabled={creating || !wikiName.trim()}
+                disabled={creating || !wikiName.trim() || !token}
                 className="mt-6 w-full inline-flex items-center justify-center gap-2 rounded-full bg-foreground text-background px-8 py-3 text-sm font-medium hover:opacity-90 transition-opacity cursor-pointer disabled:opacity-40"
               >
                 {creating ? (
@@ -164,13 +202,20 @@ export default function OnboardingPage() {
                   <>Create wiki <ArrowRight className="size-3.5" /></>
                 )}
               </button>
-            </div>
+            </motion.div>
           )}
 
           {step === 'connect' && (
-            <div>
+            <motion.div
+              key="connect"
+              custom={direction}
+              initial={{ opacity: 0, x: direction * 40 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: direction * -40 }}
+              transition={{ duration: 0.25, ease: [0.25, 0.1, 0.25, 1] }}
+            >
               <button
-                onClick={() => setStep('create')}
+                onClick={() => goToStep('create')}
                 className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors cursor-pointer mb-8"
               >
                 <ArrowLeft className="size-3" />
@@ -229,7 +274,7 @@ export default function OnboardingPage() {
 
               <div className="flex gap-3 mt-8">
                 <button
-                  onClick={() => setStep('done')}
+                  onClick={() => goToStep('done')}
                   className="flex-1 inline-flex items-center justify-center gap-2 rounded-full bg-foreground text-background px-8 py-3 text-sm font-medium hover:opacity-90 transition-opacity cursor-pointer"
                 >
                   Continue
@@ -238,16 +283,24 @@ export default function OnboardingPage() {
               </div>
 
               <button
-                onClick={() => setStep('done')}
+                onClick={() => goToStep('done')}
                 className="mt-3 w-full text-center text-xs text-muted-foreground/50 hover:text-muted-foreground transition-colors cursor-pointer"
               >
                 Skip — I&apos;ll set this up later
               </button>
-            </div>
+            </motion.div>
           )}
 
           {step === 'done' && (
-            <div className="text-center">
+            <motion.div
+              key="done"
+              custom={direction}
+              initial={{ opacity: 0, x: direction * 40 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: direction * -40 }}
+              transition={{ duration: 0.25, ease: [0.25, 0.1, 0.25, 1] }}
+              className="text-center"
+            >
               <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-green-500/10 mb-8">
                 <Check size={28} className="text-green-600 dark:text-green-400" />
               </div>
@@ -277,8 +330,10 @@ export default function OnboardingPage() {
                   Open Claude
                 </a>
               </div>
-            </div>
+            </motion.div>
           )}
+
+          </AnimatePresence>
         </div>
       </div>
     </div>

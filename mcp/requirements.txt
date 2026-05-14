@@ -1,10 +1,15 @@
 mcp[cli]==1.27.0
-asyncpg==0.30.0
+asyncpg==0.31.0
 pyjwt[crypto]==2.12.1
-pydantic==2.11.3
-pydantic-settings==2.9.1
-uvicorn[standard]==0.34.2
-logfire[asyncpg]==4.25.0
-aioboto3==14.3.0
-python-dotenv==1.1.0
-sentry-sdk==2.29.1
+pydantic==2.13.4
+pydantic-settings==2.14.0
+uvicorn[standard]==0.46.0
+logfire[asyncpg]==4.32.1
+aioboto3==15.5.0
+sentry-sdk==2.59.0
+aiosqlite==0.22.1
+# Pinned to override vulnerable transitive resolutions.
+aiohttp==3.13.5
+python-multipart==0.0.28
+requests==2.33.1
+urllib3==2.7.0

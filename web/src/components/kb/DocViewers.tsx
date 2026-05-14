@@ -8,6 +8,10 @@ import dynamic from 'next/dynamic'
 
 const PdfViewer = dynamic(() => import('@/components/viewer/PdfViewer'), { ssr: false })
 const HtmlViewer = dynamic(() => import('@/components/viewer/HtmlViewer'), { ssr: false })
+const MarkdownClipViewer = dynamic(
+  () => import('@/components/viewer/MarkdownClipViewer'),
+  { ssr: false },
+)
 
 function useDocumentUrl(documentId: string) {
   const token = useUserStore((s) => s.accessToken)
@@ -42,11 +46,11 @@ function ErrorMessage({ message }: { message: string }) {
   )
 }
 
-export function PdfDocViewer({ documentId, title }: { documentId: string; title: string }) {
+export function PdfDocViewer({ documentId, title, initialPage, hideToolbar }: { documentId: string; title: string; initialPage?: number; hideToolbar?: boolean }) {
   const { url, error } = useDocumentUrl(documentId)
   if (error) return <ErrorMessage message="Failed to load PDF" />
   if (!url) return <LoadingSpinner />
-  return <PdfViewer fileUrl={url} title={title} />
+  return <PdfViewer fileUrl={url} title={title} initialPage={initialPage} hideToolbar={hideToolbar} />
 }
 
 export function ImageViewer({ documentId, title }: { documentId: string; title: string }) {
@@ -55,31 +59,27 @@ export function ImageViewer({ documentId, title }: { documentId: string; title: 
   if (!url) return <LoadingSpinner />
 
   return (
-    <div className="h-full flex flex-col">
-      <div className="flex items-center px-4 py-1.5 border-b border-border text-xs text-muted-foreground shrink-0">
-        <span className="truncate text-foreground">{title}</span>
-      </div>
-      <div className="flex-1 overflow-auto flex items-center justify-center p-4 bg-muted/30">
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src={url} alt={title} className="max-w-full max-h-full object-contain rounded-md" />
-      </div>
+    <div className="h-full overflow-auto flex items-center justify-center p-4 bg-muted/30">
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img src={url} alt={title} className="max-w-full max-h-full object-contain rounded-md" />
     </div>
   )
 }
 
-export function HtmlDocViewer({ documentId, title }: { documentId: string; title: string }) {
+export function HtmlDocViewer({ documentId, title: _title }: { documentId: string; title: string }) {
+  // Renders the parsed markdown of an HTML clip via TipTap, with stored
+  // highlights applied as ProseMirror decorations. The original tagged HTML
+  // remains in S3 for a future "View original" fallback.
+  return <MarkdownClipViewer documentId={documentId} className="h-full" />
+}
+
+/** Legacy iframe-based viewer for the original tagged HTML. Kept for the
+ *  future "View original" toggle; not the default surface for clips. */
+export function HtmlOriginalViewer({ documentId, title: _title }: { documentId: string; title: string }) {
   const { url, error } = useDocumentUrl(documentId)
   if (error) return <ErrorMessage message="Failed to load HTML" />
   if (!url) return <LoadingSpinner />
-
-  return (
-    <div className="h-full flex flex-col">
-      <div className="flex items-center px-4 py-1.5 border-b border-border text-xs text-muted-foreground shrink-0">
-        <span className="truncate text-foreground">{title}</span>
-      </div>
-      <HtmlViewer fileUrl={url} className="flex-1" />
-    </div>
-  )
+  return <HtmlViewer fileUrl={url} className="h-full" />
 }
 
 export function ContentViewer({ documentId, title, fileType }: { documentId: string; title: string; fileType: string }) {
@@ -103,9 +103,6 @@ export function ContentViewer({ documentId, title, fileType }: { documentId: str
 
   return (
     <div className="h-full flex flex-col">
-      <div className="flex items-center px-4 py-1.5 border-b border-border text-xs text-muted-foreground shrink-0">
-        <span className="truncate text-foreground">{title}</span>
-      </div>
       {isHtml ? (
         <iframe
           srcDoc={content}

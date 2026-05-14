@@ -1,0 +1,109 @@
+name: Security
+
+on:
+  push:
+    branches: [master, dev]
+  pull_request:
+    branches: [master, dev]
+  schedule:
+    # Daily at 06:00 UTC — catches advisories published after we last pushed.
+    - cron: "0 6 * * *"
+
+permissions:
+  contents: read
+  security-events: write   # required for uploading SARIF to GitHub Security tab
+  pull-requests: write     # required for dependency-review-action PR comments
+
+jobs:
+  osv-scan:
+    name: OSV Scanner (all lockfiles)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Scans every lockfile in the repo. Single command covers npm + pip +
+      # cargo + go etc. — uses Google's OSV.dev advisory DB which aggregates
+      # GitHub Advisories, PyPA, RustSec, etc.
+      - name: Run OSV-Scanner
+        uses: google/osv-scanner-action/osv-scanner-action@v2.0.2
+        with:
+          scan-args: |-
+            --output=results.sarif
+            --format=sarif
+            --recursive
+            ./
+
+      # Upload results to GitHub's Security tab so they show up alongside
+      # Dependabot alerts and can be triaged in one place.
+      - name: Upload SARIF
+        if: always() && hashFiles('results.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: results.sarif
+
+  dependency-review:
+    name: Dependency Review (PR diff)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+
+      # Fails the PR if it introduces a new dependency with a known
+      # vulnerability. Complements osv-scan (which scans the whole repo)
+      # by giving fast, diff-based feedback on PRs specifically.
+      - name: Dependency Review
+        uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: moderate
+          comment-summary-in-pr: always
+
+  npm-audit:
+    name: npm audit (web + extension)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package_dir: [web, extension]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # `npm ci` enforces the committed lockfile's SHA-512 integrity hashes;
+      # it refuses to install if package.json drifted from package-lock.json.
+      # This is the supply-chain hardening boundary we want in CI.
+      - name: Install (strict, hash-verified)
+        working-directory: ${{ matrix.package_dir }}
+        run: npm ci --ignore-scripts
+
+      - name: Audit (fail on moderate+)
+        working-directory: ${{ matrix.package_dir }}
+        run: npm audit --audit-level=moderate
+
+  pip-audit:
+    name: pip-audit (api + mcp + converter + tests)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        path: [api, mcp, converter, tests]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install pip-audit
+        run: pip install pip-audit
+
+      # api/ ships a hash-locked requirements.lock; others ship requirements.txt.
+      - name: Audit
+        run: |
+          if [ -f "${{ matrix.path }}/requirements.lock" ]; then
+            pip-audit -r "${{ matrix.path }}/requirements.lock" --strict --desc
+          else
+            pip-audit -r "${{ matrix.path }}/requirements.txt" --strict --desc
+          fi

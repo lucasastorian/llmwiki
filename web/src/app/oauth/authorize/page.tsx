@@ -28,8 +28,8 @@ function OAuthConsentContent() {
 
     const supabase = createClient()
 
-    supabase.auth.getSession().then(async ({ data: { session } }) => {
-      if (!session) {
+    supabase.auth.getUser().then(async ({ data: { user } }) => {
+      if (!user) {
         const returnUrl = `/oauth/authorize?authorization_id=${authorizationId}`
         window.location.href = `/login?returnTo=${encodeURIComponent(returnUrl)}`
         return

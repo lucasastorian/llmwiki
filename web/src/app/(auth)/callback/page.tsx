@@ -19,14 +19,12 @@ function CallbackContent() {
           router.push("/login");
         } else {
           router.push("/wikis");
-          router.refresh();
         }
       });
     } else {
       const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
         if (event === "SIGNED_IN") {
           router.push("/wikis");
-          router.refresh();
         }
       });
       return () => subscription.unsubscribe();

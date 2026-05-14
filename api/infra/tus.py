@@ -1,4 +1,5 @@
 import json
+import re
 import time
 import asyncio
 import logging
@@ -18,6 +19,54 @@ logger = logging.getLogger(__name__)
 def _append_file(path: Path, data: bytes):
     with open(path, "ab") as f:
         f.write(data)
+
+
+# Magic-byte signatures we check at finalize time. We don't try to handle
+# every file type — just the major ones that downstream code routes by
+# extension. Office/OOXML files are ZIP containers, so they share a magic.
+_FILE_SIGNATURES: dict[str, tuple[tuple[bytes, ...], ...]] = {
+    "pdf":  ((b"%PDF-",),),
+    "png":  ((b"\x89PNG\r\n\x1a\n",),),
+    "jpg":  ((b"\xff\xd8\xff",),),
+    "jpeg": ((b"\xff\xd8\xff",),),
+    "webp": ((b"RIFF",),),    # also check "WEBP" further in but RIFF is enough
+    "gif":  ((b"GIF87a", b"GIF89a"),),
+    # OOXML — pptx/docx/xlsx are ZIP containers (PK\x03\x04). Legacy
+    # ppt/doc/xls are CFB (Compound File Binary) starting with D0CF11E0.
+    "pptx": ((b"PK\x03\x04",),),
+    "docx": ((b"PK\x03\x04",),),
+    "xlsx": ((b"PK\x03\x04",),),
+    "ppt":  ((b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1",),),
+    "doc":  ((b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1",),),
+    "xls":  ((b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1",),),
+    # CSV and HTML are text — no reliable magic bytes. Skip the strict check
+    # for these; the parser layer is more forgiving and they're low-risk.
+}
+
+
+def _validate_file_signature(temp_path: Path, ext: str) -> None:
+    """Refuse files whose first bytes don't match their declared extension."""
+    signatures = _FILE_SIGNATURES.get(ext)
+    if not signatures:
+        return
+    try:
+        with open(temp_path, "rb") as f:
+            head = f.read(16)
+    except OSError as e:
+        raise HTTPException(status_code=400, detail=f"Could not read upload: {e}")
+    # WebP is a RIFF container; check both the RIFF magic and the WEBP fourcc.
+    if ext == "webp":
+        if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+            return
+        raise HTTPException(status_code=400, detail="File content does not match declared type .webp")
+    for group in signatures:
+        for prefix in group:
+            if head.startswith(prefix):
+                return
+    raise HTTPException(
+        status_code=400,
+        detail=f"File content does not match declared type .{ext}",
+    )
 
 TUS_VERSION = "1.0.0"
 MAX_SIZE = 104_857_600  # 100 MB
@@ -58,6 +107,7 @@ class TusUpload:
     filename: str
     knowledge_base_id: str
     temp_path: Path
+    path: str = "/"
     last_activity: float = field(default_factory=time.time)
 
 
@@ -112,6 +162,21 @@ async def _finalize(upload: TusUpload, app_state) -> str:
     title = upload.filename.rsplit(".", 1)[0] if "." in upload.filename else upload.filename
     file_size = upload.upload_length
 
+    # Magic-byte + size checks. On mismatch we discard the temp file and pop
+    # the upload entry before raising so a rejected upload doesn't linger.
+    try:
+        _validate_file_signature(upload.temp_path, ext)
+        actual_size = upload.temp_path.stat().st_size
+        if actual_size != upload.upload_length:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Upload size mismatch: declared {upload.upload_length}, actual {actual_size}",
+            )
+    except HTTPException:
+        upload.temp_path.unlink(missing_ok=True)
+        _uploads.pop(upload.upload_id, None)
+        raise
+
     s3_service = app_state.s3_service
     if not s3_service:
         raise ValueError("File storage not configured")
@@ -122,7 +187,7 @@ async def _finalize(upload: TusUpload, app_state) -> str:
         await pool.execute(
             "INSERT INTO documents (id, knowledge_base_id, user_id, filename, path, title, "
             "file_type, file_size, status) "
-            "VALUES ($1::uuid, $2::uuid, $3, $4, '/', $5, $6, $7, 'pending')",
+            "VALUES ($1::uuid, $2::uuid, $3, $4, $8, $5, $6, $7, 'pending')",
             document_id,
             upload.knowledge_base_id,
             user_id,
@@ -130,6 +195,7 @@ async def _finalize(upload: TusUpload, app_state) -> str:
             title,
             file_type,
             file_size,
+            upload.path,
         )
     finally:
         upload.temp_path.unlink(missing_ok=True)
@@ -183,6 +249,8 @@ async def tus_create(request: Request):
         upload_length = int(upload_length_str)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid Upload-Length")
+    if upload_length < 1:
+        raise HTTPException(status_code=400, detail="Upload-Length must be positive")
     if upload_length > MAX_SIZE:
         raise HTTPException(status_code=413, detail=f"Upload-Length exceeds maximum of {MAX_SIZE} bytes")
 
@@ -242,6 +310,14 @@ async def tus_create(request: Request):
     temp_path = UPLOAD_DIR / upload_id
     temp_path.touch()
 
+    # Sanitize path: must start with /, no traversal, no double slashes
+    raw_path = metadata.get("path", "/").strip() or "/"
+    upload_path = "/" + raw_path.replace("\\", "/").strip("/") + "/"
+    upload_path = re.sub(r"/\.\.(/|$)", "/", upload_path)  # strip traversal
+    upload_path = re.sub(r"/+", "/", upload_path)  # collapse double slashes
+    if upload_path == "//":
+        upload_path = "/"
+
     upload = TusUpload(
         upload_id=upload_id,
         user_id=user_id,
@@ -250,6 +326,7 @@ async def tus_create(request: Request):
         filename=filename,
         knowledge_base_id=kb_id,
         temp_path=temp_path,
+        path=upload_path,
     )
     _uploads[upload_id] = upload
 
@@ -294,18 +371,36 @@ async def tus_patch(upload_id: str, request: Request):
         raise HTTPException(status_code=409, detail="Offset mismatch")
 
     FLUSH_SIZE = 1_048_576
+    # Hard ceiling on how many bytes this PATCH can write — never let the
+    # client exceed Upload-Length, regardless of streamed body size.
+    remaining = upload.upload_length - upload.upload_offset
     buf = bytearray()
     bytes_written = 0
+    overflow = False
     async for chunk in request.stream():
+        if bytes_written + len(buf) + len(chunk) > remaining:
+            overflow = True
+            break
         buf.extend(chunk)
         if len(buf) >= FLUSH_SIZE:
             await asyncio.to_thread(_append_file, upload.temp_path, bytes(buf))
             bytes_written += len(buf)
             buf.clear()
 
-    if buf:
+    if buf and not overflow:
         await asyncio.to_thread(_append_file, upload.temp_path, bytes(buf))
         bytes_written += len(buf)
+
+    if overflow:
+        # Client tried to write past Upload-Length. Discard partial body
+        # already flushed and reject. The next PATCH still resumes from the
+        # current upload_offset.
+        upload.upload_offset += bytes_written
+        raise HTTPException(
+            status_code=413,
+            detail="Body exceeds declared Upload-Length",
+        )
+
     upload.upload_offset += bytes_written
 
     upload.last_activity = time.time()

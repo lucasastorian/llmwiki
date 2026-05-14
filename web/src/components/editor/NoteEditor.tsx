@@ -11,8 +11,8 @@ import { Table, TableRow, TableHeader, TableCell } from '@tiptap/extension-table
 import { Markdown } from 'tiptap-markdown'
 import { format, parse, isValid } from 'date-fns'
 import { X, CalendarIcon, Plus, ChevronUp } from 'lucide-react'
-import { createClient } from '@/lib/supabase/client'
 import { apiFetch } from '@/lib/api'
+import { useUserStore } from '@/stores'
 import { cn, sanitizeTitle } from '@/lib/utils'
 import { NoteToolbar } from './NoteToolbar'
 import {
@@ -64,12 +64,16 @@ interface NoteEditorProps {
   backLabel?: string
   onBack?: () => void
   embedded?: boolean
+  /** Hide the built-in toolbar (when the parent provides its own) */
+  hideToolbar?: boolean
+  /** Called when the tiptap editor is ready — lets the parent render formatting buttons externally */
+  onEditorReady?: (editor: import('@tiptap/react').Editor) => void
+  /** Register a callback ref that the parent can call to update the title from outside (e.g. breadcrumb input) */
+  titleChangeRef?: React.MutableRefObject<((title: string) => void) | null>
 }
 
-async function getAccessToken(): Promise<string | null> {
-  const supabase = createClient()
-  const { data } = await supabase.auth.getSession()
-  return data.session?.access_token ?? null
+function getAccessToken(): string | null {
+  return useUserStore.getState().accessToken
 }
 
 export function NoteEditor({
@@ -83,6 +87,9 @@ export function NoteEditor({
   backLabel,
   onBack,
   embedded,
+  hideToolbar,
+  onEditorReady,
+  titleChangeRef,
 }: NoteEditorProps) {
   const [title, setTitle] = React.useState(initialTitle ?? '')
   const [date, setDate] = React.useState<string>(initialDate ?? '')
@@ -153,6 +160,11 @@ export function NoteEditor({
       setWordCount(text.trim() ? text.trim().split(/\s+/).length : 0)
     },
   })
+
+  // Expose editor to parent for external toolbar rendering
+  React.useEffect(() => {
+    if (editor && onEditorReady) onEditorReady(editor)
+  }, [editor, onEditorReady])
 
   const dateValue = React.useMemo(() => {
     if (!date) return undefined
@@ -256,6 +268,22 @@ export function NoteEditor({
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
     saveTimerRef.current = setTimeout(save, AUTOSAVE_DELAY)
   }, [save])
+
+  // Expose title change handler so parent toolbar can update the title
+  React.useEffect(() => {
+    if (!titleChangeRef) return
+    titleChangeRef.current = (val: string) => {
+      const sanitized = sanitizeTitle(val)
+      setTitle(sanitized)
+      latestTitleRef.current = sanitized
+      dirtyRef.current = true
+      metaDirtyRef.current = true
+      setSaveStatus('idle')
+      scheduleSave()
+      onTitleChange?.(sanitized)
+    }
+    return () => { titleChangeRef.current = null }
+  }, [titleChangeRef, scheduleSave, onTitleChange])
 
   React.useEffect(() => {
     return () => {
@@ -433,23 +461,25 @@ export function NoteEditor({
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
-      <NoteToolbar
-        editor={editor}
-        backLabel={backLabel ?? 'Back'}
-        noteTitle={title}
-        onTitleChange={embedded ? (val: string) => {
-          const sanitized = sanitizeTitle(val)
-          setTitle(sanitized)
-          latestTitleRef.current = sanitized
-          dirtyRef.current = true
-          metaDirtyRef.current = true
-          setSaveStatus('idle')
-          scheduleSave()
-          onTitleChange?.(sanitized)
-        } : undefined}
-        onBack={onBack ?? (() => {})}
-        embedded={embedded}
-      />
+      {!hideToolbar && (
+        <NoteToolbar
+          editor={editor}
+          backLabel={backLabel ?? 'Back'}
+          noteTitle={title}
+          onTitleChange={embedded ? (val: string) => {
+            const sanitized = sanitizeTitle(val)
+            setTitle(sanitized)
+            latestTitleRef.current = sanitized
+            dirtyRef.current = true
+            metaDirtyRef.current = true
+            setSaveStatus('idle')
+            scheduleSave()
+            onTitleChange?.(sanitized)
+          } : undefined}
+          onBack={onBack ?? (() => {})}
+          embedded={embedded}
+        />
+      )}
 
       <div className={cn(
         'flex-1 overflow-y-auto',

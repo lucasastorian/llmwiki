@@ -2,7 +2,10 @@ FROM python:3.11-slim-bookworm
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libreoffice-writer libreoffice-impress libreoffice-calc \
+    openjdk-17-jre-headless \
     && rm -rf /var/lib/apt/lists/*
+
+ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
 
 RUN useradd -m -s /bin/bash converter
 WORKDIR /app

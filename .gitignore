@@ -5,10 +5,11 @@ venv/
 
 # MCP config (contains user IDs)
 .mcp.json
-mcp/local_server.py
 
 # Build
 .next/
+.wxt/
+.output/
 dist/
 *.egg-info/
 
@@ -31,9 +32,22 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
-# Misc
-package-lock.json
+# LLM Wiki local workspace artifacts
+.llmwiki/
+/wiki/
+/mcp/wiki/
+/emails/
+
+# Deploy
+deploy.sh
 
 # Local Netlify folder
 .netlify
 nvidia-10k-first20.md
+
+.claude
+.playwright-mcp
+.pytest_cache
+
+# Supabase CLI cache
+supabase/.temp/

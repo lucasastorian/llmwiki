@@ -12,7 +12,7 @@ import httpx
 from bs4 import BeautifulSoup, Comment
 from bs4.element import NavigableString, Tag
 
-from .models import Element, Image, ParseResult
+from .models import Element, Image, MappedHighlight, ParseResult, TextAnchor
 from .forms import FormExtractor, FormElement
 
 logger = logging.getLogger(__name__)
@@ -667,7 +667,296 @@ class Parser:
         text = re.sub(r'\n{3,}', '\n\n', text)
         return text.strip()
 
-    def parse(self) -> ParseResult:
+    # ── Plaintext extraction ───────────────────────────────
+    #
+    # Produces a canonical plaintext used to locate highlights at save time so
+    # each highlight gets a stable plaintext-relative anchor (text_start,
+    # text_end). The wiki viewer must implement an EQUIVALENT walker over its
+    # ProseMirror doc — `editor.state.doc.textBetween(...)` won't match.
+    #
+    # Rules (applied identically on server and client):
+    #   - blocks (h1-h6, p, blockquote, pre, form, div, section, …): wrapped in
+    #     `\n\n` separators; trim inner content
+    #   - lists: each item on its own line joined by `\n`, list wrapped in `\n\n`
+    #   - tables: each row is cells joined by ` `, rows joined by `\n`
+    #   - images: empty string (the ProseMirror Image node is a leaf with no
+    #     text content; alt text is metadata, not visible plaintext)
+    #   - inline (a, span, b, strong, i, em, u, s, code, …): just children text
+    #   - br: `\n`; hr: `\n\n`
+    #   - script/style/iframe/video/audio: dropped
+
+    _PLAIN_BLOCK_TAGS = {
+        "h1", "h2", "h3", "h4", "h5", "h6",
+        "p", "blockquote", "pre", "form", "fieldset",
+        "div", "section", "article", "main",
+        "figure", "figcaption", "address",
+    }
+
+    def _to_plaintext(self) -> str:
+        root = self.soup.body if self.soup.body else self.soup
+        raw = self._plaintext_node(root)
+        return self._normalize_plaintext(raw)
+
+    def _plaintext_node(self, node) -> str:
+        if isinstance(node, NavigableString):
+            return self._clean_text(str(node))
+        if not isinstance(node, Tag):
+            return ""
+        if self._is_hidden(node):
+            return ""
+        if self.content_only and self._is_noise(node):
+            return ""
+
+        tag = node.name
+
+        if tag in REMOVE_TAGS:
+            return ""
+
+        if tag == "br":
+            return "\n"
+
+        if tag == "hr":
+            return "\n\n"
+
+        if tag == "img":
+            # Images are leaf nodes in ProseMirror; their alt text is not
+            # rendered in the visible plaintext flow. Drop here so the client
+            # walker (which sees the Image node, not the alt) matches.
+            return ""
+
+        if tag in {"a", "span", "b", "strong", "i", "em", "u", "s", "code", "small", "sub", "sup", "mark", "label"}:
+            return self._plaintext_children(node)
+
+        if tag in {"input", "button", "select", "textarea"}:
+            return ""
+
+        if tag in {"ul", "ol"}:
+            items: List[str] = []
+            for li in node.find_all("li", recursive=False):
+                text = self._plaintext_children(li).strip()
+                if text:
+                    items.append(text)
+            if items:
+                return "\n\n" + "\n".join(items) + "\n\n"
+            return ""
+
+        if tag == "li":
+            return self._plaintext_children(node)
+
+        if tag == "table":
+            if self._is_layout_table(node):
+                return self._plaintext_children(node)
+            rows: List[str] = []
+            for tr in node.find_all("tr"):
+                cells: List[str] = []
+                for cell in tr.find_all(["td", "th"]):
+                    txt = self._plaintext_children(cell).strip()
+                    if txt:
+                        cells.append(txt)
+                if cells:
+                    rows.append(" ".join(cells))
+            if rows:
+                return "\n\n" + "\n".join(rows) + "\n\n"
+            return ""
+
+        if tag in self._PLAIN_BLOCK_TAGS:
+            children = self._plaintext_children(node).strip()
+            if children:
+                return f"\n\n{children}\n\n"
+            return ""
+
+        return self._plaintext_children(node)
+
+    def _plaintext_children(self, node: Tag) -> str:
+        return "".join(self._plaintext_node(child) for child in node.children)
+
+    @staticmethod
+    def _normalize_plaintext(text: str) -> str:
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        text = _ws.sub(" ", text)
+        # Collapse 3+ newlines to 2 (paragraph break)
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        # Strip per-line trailing/leading whitespace introduced by collapsing
+        text = "\n".join(line.strip() for line in text.split("\n"))
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        return text.strip()
+
+    # ── Highlight locator ──────────────────────────────────
+    #
+    # Given canonical plaintext and a highlight payload (textContent +
+    # optional prefix/suffix from the extension's DOM capture), find the best
+    # (text_start, text_end) in plaintext.
+    #
+    # Cross-block highlights are tricky: the extension's `range.toString()`
+    # may collapse newlines into spaces, but plaintext keeps `\n\n` between
+    # blocks. We work around this by building a normalized search string
+    # (whitespace collapsed) plus an index map back to original plaintext
+    # offsets. The locator searches in the normalized string; persisted
+    # offsets are in the original plaintext.
+
+    _MIN_AUTO_LOCATE_LEN = 4       # below this, require prefix/suffix match
+    _MAX_OCCURRENCES = 500          # cap to bound pathological searches
+
+    @staticmethod
+    def _normalize_anchor_text(text: str) -> str:
+        text = text.replace("​", "").replace("﻿", "").replace("\xa0", " ")
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        text = _ws.sub(" ", text)
+        text = " ".join(text.split())
+        return text
+
+    @staticmethod
+    def _normalize_with_index_map(plaintext: str) -> Tuple[str, List[int]]:
+        """Build a whitespace-collapsed version of plaintext alongside a list
+        mapping each character in the normalized string back to its original
+        position in plaintext. Trailing position appended so callers can map
+        an end-exclusive offset.
+        """
+        out: List[str] = []
+        index_map: List[int] = []
+        prev_was_ws = True  # treat start as preceded by whitespace (skip leading)
+        i = 0
+        n = len(plaintext)
+        while i < n:
+            ch = plaintext[i]
+            if ch in (" ", "\t", "\n", "\r"):
+                if not prev_was_ws and out:
+                    out.append(" ")
+                    index_map.append(i)
+                prev_was_ws = True
+                i += 1
+                continue
+            if ch == "\xa0":
+                # Non-breaking space behaves like a space in normalization
+                if not prev_was_ws and out:
+                    out.append(" ")
+                    index_map.append(i)
+                prev_was_ws = True
+                i += 1
+                continue
+            out.append(ch)
+            index_map.append(i)
+            prev_was_ws = False
+            i += 1
+        # Append trailing index so an end-exclusive offset has a mapping
+        index_map.append(n)
+        normalized = "".join(out)
+        # Trim trailing space (and its index entry) if present
+        if normalized.endswith(" "):
+            normalized = normalized[:-1]
+            # remove the trailing-space's index entry, keep the trailing-end
+            index_map = index_map[:-2] + index_map[-1:]
+        return normalized, index_map
+
+    @staticmethod
+    def _all_occurrences(haystack: str, needle: str, cap: int) -> List[int]:
+        if not needle:
+            return []
+        occurrences: List[int] = []
+        start = 0
+        while len(occurrences) < cap:
+            idx = haystack.find(needle, start)
+            if idx == -1:
+                break
+            occurrences.append(idx)
+            start = idx + 1
+        return occurrences
+
+    @classmethod
+    def _score_context(
+        cls, normalized_plaintext: str, idx: int, length: int,
+        prefix: Optional[str], suffix: Optional[str],
+    ) -> int:
+        score = 0
+        if prefix:
+            normalized_prefix = cls._normalize_anchor_text(prefix)
+            if normalized_prefix:
+                window = max(len(normalized_prefix), 32)
+                before = normalized_plaintext[max(0, idx - window):idx]
+                if before.endswith(normalized_prefix):
+                    score += 4
+                elif normalized_prefix in before:
+                    score += 1
+        if suffix:
+            normalized_suffix = cls._normalize_anchor_text(suffix)
+            if normalized_suffix:
+                window = max(len(normalized_suffix), 32)
+                after = normalized_plaintext[idx + length:idx + length + window]
+                if after.startswith(normalized_suffix):
+                    score += 4
+                elif normalized_suffix in after:
+                    score += 1
+        return score
+
+    @classmethod
+    def _locate_highlight(
+        cls, plaintext: str, anchor_payload: Dict,
+    ) -> Optional[TextAnchor]:
+        text_content = anchor_payload.get("textContent") or ""
+        prefix = anchor_payload.get("prefix")
+        suffix = anchor_payload.get("suffix")
+
+        normalized_needle = cls._normalize_anchor_text(text_content)
+        if not normalized_needle:
+            return None
+
+        normalized_haystack, index_map = cls._normalize_with_index_map(plaintext)
+
+        occurrences = cls._all_occurrences(
+            normalized_haystack, normalized_needle, cap=cls._MAX_OCCURRENCES,
+        )
+        if not occurrences:
+            return None
+
+        if len(occurrences) == 1:
+            chosen = occurrences[0]
+        else:
+            scored = [
+                (cls._score_context(
+                    normalized_haystack, occ, len(normalized_needle), prefix, suffix,
+                ), occ)
+                for occ in occurrences
+            ]
+            best_score, chosen = max(scored, key=lambda t: t[0])
+
+            # For short matches without strong context, leave unlocated rather
+            # than guess. False positives on common phrases are worse than
+            # falling back to runtime text search at render time.
+            if (
+                len(normalized_needle) < cls._MIN_AUTO_LOCATE_LEN
+                and best_score == 0
+            ):
+                return None
+
+        # Map back from normalized offsets to original plaintext offsets.
+        text_start = index_map[chosen] if chosen < len(index_map) else chosen
+        end_norm_idx = chosen + len(normalized_needle)
+        text_end = index_map[end_norm_idx] if end_norm_idx < len(index_map) else len(plaintext)
+
+        return TextAnchor(
+            text_start=text_start,
+            text_end=text_end,
+            text_content=plaintext[text_start:text_end],
+            prefix=prefix,
+            suffix=suffix,
+        )
+
+    @classmethod
+    def map_highlights(
+        cls, plaintext: str, highlights: List[Dict],
+    ) -> List[MappedHighlight]:
+        """Map each highlight payload to a plaintext-relative anchor.
+        Highlights that fail to locate are returned with `text_anchor=None`."""
+        results: List[MappedHighlight] = []
+        for h in highlights or []:
+            if not isinstance(h, dict):
+                continue
+            anchor_data = h.get("anchor") or {}
+            text_anchor = cls._locate_highlight(plaintext, anchor_data) if anchor_data else None
+            results.append(MappedHighlight(payload=h, text_anchor=text_anchor))
+        return results
+
+    def parse(self, highlights: Optional[List[Dict]] = None) -> ParseResult:
         self.images = []
         self.forms = FormExtractor()
         self._segments = []
@@ -679,12 +968,18 @@ class Parser:
         elements = self._build_elements(content)
         self._stamp_dom(elements)
         self._rewrite_dom_urls()
+
+        plaintext = self._to_plaintext()
+        mapped = self.map_highlights(plaintext, highlights or [])
+
         return ParseResult(
             content=content,
             images=self.images,
             form_elements=self.forms.elements,
             url=self.url,
             elements=elements,
+            plaintext=plaintext,
+            highlights=mapped,
         )
 
     def markdown(self) -> str:

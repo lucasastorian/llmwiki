@@ -18,7 +18,6 @@ class GlobalStatsResponse(BaseModel):
     global_max_users: int
     global_max_pages: int
     global_ocr_enabled: bool
-    quota_max_pages_per_user: int
     quota_max_storage_per_user: int
 
 
@@ -39,6 +38,5 @@ async def global_stats(db: Annotated[ScopedDB, Depends(get_scoped_db)]):
         global_max_users=settings.GLOBAL_MAX_USERS,
         global_max_pages=settings.GLOBAL_MAX_PAGES,
         global_ocr_enabled=settings.GLOBAL_OCR_ENABLED,
-        quota_max_pages_per_user=settings.QUOTA_MAX_PAGES,
         quota_max_storage_per_user=settings.QUOTA_MAX_STORAGE_BYTES,
     )

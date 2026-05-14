@@ -9,9 +9,11 @@ import pytest
 
 from tests.helpers.jwt import auth_headers
 from tests.integration.isolation.conftest import (
-    USER_A_ID, USER_B_ID,
+    USER_A_ID, USER_A_EMAIL, USER_B_ID,
     KB_A_ID, KB_B_ID,
-    DOC_A_ID, DOC_B_ID,
+    DOC_A_ID, DOC_A2_ID, DOC_B_ID,
+    KEY_A_ID, KEY_B_ID,
+    REF_A_ID, REF_B_ID,
 )
 
 
@@ -141,6 +143,143 @@ class TestWriteIsolation:
         assert row is not None
 
 
+class TestHighlightIsolation:
+    """Granular highlight + move isolation. New endpoints added in V2:
+    POST /v1/documents/{id}/highlights, DELETE /v1/documents/{id}/highlights/{hid},
+    PATCH /v1/documents/{id} body knowledge_base_id."""
+
+    async def _seed_highlight(self, pool, doc_id, hid="seed-1"):
+        import json
+        payload = json.dumps([{
+            "id": hid,
+            "type": "text",
+            "anchor": None,
+            "textAnchor": {
+                "textStart": 0,
+                "textEnd": 5,
+                "textContent": "hello",
+                "prefix": None,
+                "suffix": None,
+            },
+            "comment": None,
+            "color": "yellow",
+            "createdAt": "2026-05-10T00:00:00Z",
+        }])
+        await pool.execute(
+            "UPDATE documents SET highlights = $1::jsonb WHERE id = $2",
+            payload, doc_id,
+        )
+
+    def _new_highlight(self, hid="alice-injected"):
+        return {
+            "id": hid,
+            "type": "text",
+            "anchor": None,
+            "textAnchor": {
+                "textStart": 0,
+                "textEnd": 5,
+                "textContent": "alice",
+                "prefix": None,
+                "suffix": None,
+            },
+            "comment": None,
+            "color": "yellow",
+            "createdAt": "2026-05-10T00:00:00Z",
+        }
+
+    async def test_get_highlights_cross_tenant_returns_404(self, client):
+        resp = await client.get(
+            f"/v1/documents/{DOC_B_ID}/highlights",
+            headers=auth_headers(USER_A_ID),
+        )
+        assert resp.status_code == 404
+
+    async def test_upsert_highlight_cross_tenant_returns_404(self, client):
+        resp = await client.post(
+            f"/v1/documents/{DOC_B_ID}/highlights",
+            headers=auth_headers(USER_A_ID),
+            json={"highlight": self._new_highlight()},
+        )
+        assert resp.status_code == 404
+
+    async def test_upsert_highlight_cross_tenant_does_not_modify(self, client, pool):
+        await client.post(
+            f"/v1/documents/{DOC_B_ID}/highlights",
+            headers=auth_headers(USER_A_ID),
+            json={"highlight": self._new_highlight()},
+        )
+        row = await pool.fetchrow(
+            "SELECT highlights FROM documents WHERE id = $1", DOC_B_ID,
+        )
+        # Bob's highlights array is empty (default) — must remain so.
+        import json
+        highlights = row["highlights"]
+        if isinstance(highlights, str):
+            highlights = json.loads(highlights)
+        assert highlights == []
+
+    async def test_delete_highlight_cross_tenant_returns_404(self, client, pool):
+        await self._seed_highlight(pool, DOC_B_ID, hid="bob-keep")
+        resp = await client.delete(
+            f"/v1/documents/{DOC_B_ID}/highlights/bob-keep",
+            headers=auth_headers(USER_A_ID),
+        )
+        assert resp.status_code == 404
+
+    async def test_delete_highlight_cross_tenant_does_not_modify(self, client, pool):
+        await self._seed_highlight(pool, DOC_B_ID, hid="bob-keep")
+        await client.delete(
+            f"/v1/documents/{DOC_B_ID}/highlights/bob-keep",
+            headers=auth_headers(USER_A_ID),
+        )
+        row = await pool.fetchrow(
+            "SELECT highlights FROM documents WHERE id = $1", DOC_B_ID,
+        )
+        import json
+        highlights = row["highlights"]
+        if isinstance(highlights, str):
+            highlights = json.loads(highlights)
+        assert any(h.get("id") == "bob-keep" for h in highlights)
+
+    async def test_move_bob_doc_as_alice_returns_404(self, client):
+        resp = await client.patch(
+            f"/v1/documents/{DOC_B_ID}",
+            headers=auth_headers(USER_A_ID),
+            json={"knowledge_base_id": KB_A_ID},
+        )
+        assert resp.status_code == 404
+
+    async def test_move_bob_doc_as_alice_does_not_change_kb(self, client, pool):
+        await client.patch(
+            f"/v1/documents/{DOC_B_ID}",
+            headers=auth_headers(USER_A_ID),
+            json={"knowledge_base_id": KB_A_ID},
+        )
+        row = await pool.fetchrow(
+            "SELECT knowledge_base_id::text FROM documents WHERE id = $1", DOC_B_ID,
+        )
+        assert row["knowledge_base_id"] == KB_B_ID
+
+    async def test_move_alice_doc_to_bob_kb_returns_404(self, client):
+        resp = await client.patch(
+            f"/v1/documents/{DOC_A_ID}",
+            headers=auth_headers(USER_A_ID),
+            json={"knowledge_base_id": KB_B_ID},
+        )
+        assert resp.status_code == 404
+
+    async def test_move_alice_doc_to_bob_kb_does_not_change_kb(self, client, pool):
+        await client.patch(
+            f"/v1/documents/{DOC_A_ID}",
+            headers=auth_headers(USER_A_ID),
+            json={"knowledge_base_id": KB_B_ID},
+        )
+        row = await pool.fetchrow(
+            "SELECT knowledge_base_id::text FROM documents WHERE id = $1", DOC_A_ID,
+        )
+        assert row["knowledge_base_id"] == KB_A_ID
+
+
 class TestBidirectionalIsolation:
     """Verify isolation works in both directions."""
 
@@ -172,6 +311,231 @@ class TestBidirectionalIsolation:
         resp = await client.delete(
             f"/v1/knowledge-bases/{KB_A_ID}",
             headers=auth_headers(USER_B_ID),
+        )
+        assert resp.status_code == 404
+
+
+class TestUserRouteIsolation:
+    """User profile and onboarding routes."""
+
+    async def test_get_me_returns_own_profile(self, client):
+        resp = await client.get("/v1/me", headers=auth_headers(USER_A_ID))
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["id"] == USER_A_ID
+        assert data["email"] == USER_A_EMAIL
+        assert data["display_name"] == "Alice"
+
+    async def test_get_me_does_not_leak_other_user(self, client):
+        resp = await client.get("/v1/me", headers=auth_headers(USER_A_ID))
+        data = resp.json()
+        assert data["email"] != "bob@test.com"
+        assert data["display_name"] != "Bob"
+
+    async def test_complete_onboarding_only_affects_own_user(self, client, pool):
+        await client.post("/v1/onboarding/complete", headers=auth_headers(USER_A_ID))
+        alice = await pool.fetchrow("SELECT onboarded FROM users WHERE id = $1", USER_A_ID)
+        bob = await pool.fetchrow("SELECT onboarded FROM users WHERE id = $1", USER_B_ID)
+        assert alice["onboarded"] is True
+        assert bob["onboarded"] is False
+
+
+class TestUsageIsolation:
+    """Usage stats only reflect the authenticated user's documents."""
+
+    async def test_usage_returns_own_totals_only(self, client):
+        resp = await client.get("/v1/usage", headers=auth_headers(USER_A_ID))
+        assert resp.status_code == 200
+        data = resp.json()
+        # Alice has 2 docs: notes.md (3 pages, 1024 bytes) + source.pdf (0 pages, 0 bytes)
+        assert data["document_count"] == 2
+        assert data["total_pages"] == 3
+        assert data["total_storage_bytes"] == 1024
+
+    async def test_usage_does_not_include_other_tenant(self, client):
+        resp = await client.get("/v1/usage", headers=auth_headers(USER_A_ID))
+        data = resp.json()
+        # Bob has 10 pages, 5000 bytes — should not appear in Alice's usage
+        assert data["total_pages"] != 13  # 3 + 10
+        assert data["total_storage_bytes"] != 6024  # 1024 + 5000
+
+
+class TestAPIKeyIsolation:
+    """API key CRUD routes."""
+
+    async def test_list_api_keys_only_returns_own(self, client):
+        resp = await client.get("/v1/api-keys", headers=auth_headers(USER_A_ID))
+        assert resp.status_code == 200
+        names = [k["name"] for k in resp.json()]
+        assert "Alice Key" in names
+        assert "Bob Key" not in names
+
+    async def test_create_api_key_belongs_to_authenticated_user(self, client, pool):
+        resp = await client.post(
+            "/v1/api-keys",
+            headers=auth_headers(USER_A_ID),
+            json={"name": "New Key"},
+        )
+        assert resp.status_code == 201
+        key_id = resp.json()["id"]
+        row = await pool.fetchrow("SELECT user_id::text FROM api_keys WHERE id = $1", key_id)
+        assert row["user_id"] == USER_A_ID
+
+    async def test_revoke_api_key_cross_tenant_returns_404(self, client):
+        resp = await client.delete(
+            f"/v1/api-keys/{KEY_B_ID}",
+            headers=auth_headers(USER_A_ID),
+        )
+        assert resp.status_code == 404
+
+    async def test_revoke_api_key_cross_tenant_does_not_revoke(self, client, pool):
+        await client.delete(f"/v1/api-keys/{KEY_B_ID}", headers=auth_headers(USER_A_ID))
+        row = await pool.fetchrow("SELECT revoked_at FROM api_keys WHERE id = $1", KEY_B_ID)
+        assert row["revoked_at"] is None
+
+
+class TestGraphIsolation:
+    """Knowledge graph routes use ScopedDB (RLS-enforced)."""
+
+    async def test_get_graph_returns_own_nodes(self, client):
+        resp = await client.get(
+            f"/v1/knowledge-bases/{KB_A_ID}/graph",
+            headers=auth_headers(USER_A_ID),
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        node_ids = {n["id"] for n in data["nodes"]}
+        assert str(DOC_A_ID) in node_ids
+        assert str(DOC_A2_ID) in node_ids
+        assert str(DOC_B_ID) not in node_ids
+
+    async def test_get_graph_cross_tenant_returns_empty(self, client):
+        resp = await client.get(
+            f"/v1/knowledge-bases/{KB_B_ID}/graph",
+            headers=auth_headers(USER_A_ID),
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["nodes"] == []
+        assert data["edges"] == []
+
+    async def test_rebuild_graph_cross_tenant_does_not_delete_refs(self, client, pool):
+        """Alice rebuilding Bob's KB should not delete Bob's references."""
+        before = await pool.fetchval(
+            "SELECT COUNT(*) FROM document_references WHERE knowledge_base_id = $1", KB_B_ID,
+        )
+        await client.post(
+            f"/v1/knowledge-bases/{KB_B_ID}/graph/rebuild",
+            headers=auth_headers(USER_A_ID),
+        )
+        after = await pool.fetchval(
+            "SELECT COUNT(*) FROM document_references WHERE knowledge_base_id = $1", KB_B_ID,
+        )
+        assert after == before
+
+
+class TestAdminStatsIsolation:
+    """Admin stats route uses ScopedDB — RLS scopes aggregates to authenticated user."""
+
+    async def test_admin_stats_does_not_leak_cross_tenant_counts(self, client):
+        """RLS on users/documents means 'global' counts only reflect the caller."""
+        resp = await client.get("/v1/admin/stats", headers=auth_headers(USER_A_ID))
+        assert resp.status_code == 200
+        data = resp.json()
+        # RLS on users table: COUNT(DISTINCT id) FROM users → 1 (only Alice)
+        assert data["total_users"] == 1
+        # RLS on documents: Alice has 2 docs (notes.md + source.pdf)
+        assert data["total_documents"] == 2
+        # Alice's notes.md has 3 pages, source.pdf has 0
+        assert data["total_pages"] == 3
+        assert data["total_storage_bytes"] == 1024
+
+    async def test_admin_stats_bob_sees_own_counts(self, client):
+        resp = await client.get("/v1/admin/stats", headers=auth_headers(USER_B_ID))
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total_users"] == 1
+        assert data["total_documents"] == 2
+        assert data["total_pages"] == 10
+        assert data["total_storage_bytes"] == 5000
+
+
+class TestTUSUploadIsolation:
+    """TUS upload routes enforce KB ownership on create and user_id on HEAD/PATCH."""
+
+    def _tus_headers(self, user_id, extra=None):
+        headers = {
+            **auth_headers(user_id),
+            "Tus-Resumable": "1.0.0",
+        }
+        if extra:
+            headers.update(extra)
+        return headers
+
+    def _metadata(self, filename, kb_id):
+        import base64
+        fn = base64.b64encode(filename.encode()).decode()
+        kb = base64.b64encode(kb_id.encode()).decode()
+        return f"filename {fn},knowledge_base_id {kb}"
+
+    async def test_create_upload_in_other_tenant_kb_returns_403(self, client):
+        resp = await client.post(
+            "/v1/uploads",
+            headers=self._tus_headers(USER_A_ID, {
+                "Upload-Length": "1024",
+                "Upload-Metadata": self._metadata("test.pdf", str(KB_B_ID)),
+            }),
+        )
+        assert resp.status_code == 403
+
+    async def test_create_upload_in_own_kb_returns_201(self, client):
+        resp = await client.post(
+            "/v1/uploads",
+            headers=self._tus_headers(USER_A_ID, {
+                "Upload-Length": "1024",
+                "Upload-Metadata": self._metadata("test.pdf", str(KB_A_ID)),
+            }),
+        )
+        assert resp.status_code == 201
+        assert "Location" in resp.headers
+
+    async def test_head_other_users_upload_returns_404(self, client):
+        """Alice creates an upload, Bob tries to HEAD it."""
+        # Alice creates an upload
+        resp = await client.post(
+            "/v1/uploads",
+            headers=self._tus_headers(USER_A_ID, {
+                "Upload-Length": "1024",
+                "Upload-Metadata": self._metadata("test.pdf", str(KB_A_ID)),
+            }),
+        )
+        assert resp.status_code == 201
+        location = resp.headers["Location"]
+
+        # Bob tries to check Alice's upload
+        resp = await client.head(location, headers=self._tus_headers(USER_B_ID))
+        assert resp.status_code == 404
+
+    async def test_patch_other_users_upload_returns_404(self, client):
+        """Alice creates an upload, Bob tries to PATCH it."""
+        resp = await client.post(
+            "/v1/uploads",
+            headers=self._tus_headers(USER_A_ID, {
+                "Upload-Length": "1024",
+                "Upload-Metadata": self._metadata("test.pdf", str(KB_A_ID)),
+            }),
+        )
+        assert resp.status_code == 201
+        location = resp.headers["Location"]
+
+        # Bob tries to write to Alice's upload
+        resp = await client.patch(
+            location,
+            headers=self._tus_headers(USER_B_ID, {
+                "Upload-Offset": "0",
+                "Content-Type": "application/offset+octet-stream",
+            }),
+            content=b"pwned",
         )
         assert resp.status_code == 404
 

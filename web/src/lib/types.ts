@@ -50,6 +50,7 @@ export type PropertyMap = Record<string, TypedProperty>
 export interface WikiNode {
   title: string
   path?: string
+  docNumber?: number | null
   children?: WikiNode[]
 }
 

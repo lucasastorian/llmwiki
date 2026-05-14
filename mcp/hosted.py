@@ -17,6 +17,7 @@ from starlette.routing import Route
 from auth import SupabaseTokenVerifier
 from config import settings
 from tools import register
+from vaultfs import PostgresVaultFS
 
 if settings.SENTRY_DSN:
     sentry_sdk.init(
@@ -52,7 +53,17 @@ mcp = FastMCP(
     ),
 )
 
-register(mcp)
+def _get_user_id(ctx):
+    from mcp.server.auth.middleware.auth_context import get_access_token
+    access_token = get_access_token()
+    if not access_token:
+        raise RuntimeError("Not authenticated")
+    if access_token.client_id:
+        return access_token.client_id
+    raise RuntimeError("No user identifier in token")
+
+
+register(mcp, _get_user_id, lambda user_id: PostgresVaultFS(user_id))
 
 
 async def health(request):
