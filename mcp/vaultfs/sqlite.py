@@ -13,7 +13,7 @@ from .base import VaultFS, DuplicateDocumentError
 
 logger = logging.getLogger(__name__)
 
-_SCHEMA_PATH = Path(__file__).parent.parent.parent / "shared" / "sqlite_schema.sql"
+_SCHEMA_PATH = Path(__file__).parent / "sqlite_schema.sql"
 
 _db: aiosqlite.Connection | None = None
 _workspace_root: Path | None = None
