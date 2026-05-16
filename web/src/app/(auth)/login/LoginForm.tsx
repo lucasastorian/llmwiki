@@ -3,6 +3,7 @@
 import { Suspense, useEffect, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { useRouter, useSearchParams } from 'next/navigation'
+import { getAuthErrorMessage, withAuthTimeout } from '@/lib/auth-errors'
 
 function LoginFormInner() {
   const [email, setEmail] = useState('')
@@ -25,23 +26,45 @@ function LoginFormInner() {
     setLoading(true)
     setError('')
 
-    const supabase = createClient()
-    const { error } = await supabase.auth.signInWithPassword({ email, password })
-    if (error) {
-      setError(error.message)
-      setLoading(false)
-    } else {
+    try {
+      const supabase = createClient()
+      const { error } = await withAuthTimeout(
+        supabase.auth.signInWithPassword({ email, password }),
+      )
+      if (error) {
+        setError(error.message)
+        return
+      }
+
       const dest = returnTo && returnTo.startsWith('/') && !returnTo.startsWith('//') ? returnTo : '/wikis'
       router.push(dest)
+    } catch (err) {
+      setError(getAuthErrorMessage(err))
+    } finally {
+      setLoading(false)
     }
   }
 
   async function handleGoogle() {
-    const supabase = createClient()
-    await supabase.auth.signInWithOAuth({
-      provider: 'google',
-      options: { redirectTo: `${window.location.origin}/callback` },
-    })
+    setLoading(true)
+    setError('')
+
+    try {
+      const supabase = createClient()
+      const { error } = await withAuthTimeout(
+        supabase.auth.signInWithOAuth({
+          provider: 'google',
+          options: { redirectTo: `${window.location.origin}/callback` },
+        }),
+      )
+      if (error) {
+        setError(error.message)
+      }
+    } catch (err) {
+      setError(getAuthErrorMessage(err))
+    } finally {
+      setLoading(false)
+    }
   }
 
   return (
@@ -52,8 +75,10 @@ function LoginFormInner() {
         </div>
 
         <button
+          type="button"
           onClick={handleGoogle}
-          className="flex w-full items-center justify-center gap-3 rounded-lg border border-input bg-background px-4 py-2.5 text-sm font-medium hover:bg-accent transition-colors"
+          disabled={loading}
+          className="flex w-full items-center justify-center gap-3 rounded-lg border border-input bg-background px-4 py-2.5 text-sm font-medium transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60"
         >
           <svg width="18" height="18" viewBox="0 0 24 24">
             <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z" fill="#4285F4" />
