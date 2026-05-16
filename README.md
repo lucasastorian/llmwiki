@@ -104,7 +104,9 @@ Once connected, Claude has these tools:
 | `guide` | Explains how the wiki works, lists what's in the workspace |
 | `search` | Browse files (`list`) or full-text search (`search`) |
 | `read` | Read documents — PDFs with page ranges, glob batch reads |
-| `write` | Create wiki pages, edit with `str_replace`, append. SVG/CSV assets |
+| `create` | Create a new wiki page or asset (markdown, SVG, CSV, JSON, XML, HTML) |
+| `edit` | Edit an existing page via `str_replace` |
+| `append` | Append content to the end of an existing page |
 | `delete` | Delete documents by path or glob pattern |
 
 All writes go to disk first, then update the search index. If Claude creates `/wiki/concepts/attention.md`, that file appears on disk immediately.
