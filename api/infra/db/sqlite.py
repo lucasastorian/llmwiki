@@ -103,7 +103,7 @@ class SQLiteDocumentRepository:
     ) -> dict | None:
         cursor = await self._db.execute(
             "SELECT * FROM documents WHERE knowledge_base_id = ? AND user_id = ? "
-            "AND filename = ? AND path = ? AND NOT archived",
+            "AND filename = ? AND path = ?", # AND NOT archived
             (kb_id, user_id, filename, path),
         )
         row = await cursor.fetchone()
@@ -124,12 +124,13 @@ class SQLiteDocumentRepository:
         doc_number = row[0]
 
         await self._db.execute(
-            "INSERT INTO documents (id, user_id, filename, title, path, relative_path, source_kind, "
+            "INSERT INTO documents (id, knowledge_base_id, user_id, filename, title, path, relative_path, source_kind, "
             "file_type, status, content, tags, version, document_number) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, 'md', 'ready', ?, ?, 0, ?)",
-            (doc_id, user_id, filename, title, path, relative_path, source_kind,
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'md', 'ready', ?, ?, 0, ?)",
+            (doc_id, kb_id, user_id, filename, title, path, relative_path, source_kind,
              content, json.dumps(tags), doc_number),
         )
+        print("SAAAAAAAAAAAAAAAA")
         await self._db.commit()
         return await self.get(doc_id)
 

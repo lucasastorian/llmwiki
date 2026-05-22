@@ -69,21 +69,21 @@ def cmd_init(workspace: str) -> None:
     # Scaffold wiki pages
     doc1_id = str(uuid.uuid4())
     conn.execute(
-        "INSERT INTO documents (id, user_id, filename, title, path, relative_path, source_kind, "
+        "INSERT INTO documents (id, knowledge_base_id, user_id, filename, title, path, relative_path, source_kind, "
         "file_type, status, content, tags, version, document_number) "
-        "VALUES (?, ?, 'overview.md', 'Overview', '/wiki/', 'wiki/overview.md', 'wiki', "
+        "VALUES (?, ?, ?, 'overview.md', 'Overview', '/wiki/', 'wiki/overview.md', 'wiki', "
         "'md', 'ready', ?, '[]', 0, 1)",
-        (doc1_id, user_id,
+        (doc1_id, ws_id, user_id,
          f"This wiki tracks research on {ws_name}.\n\n## Key Findings\n\nNo sources ingested yet.\n\n## Recent Updates\n\nNo activity yet."),
     )
 
     doc2_id = str(uuid.uuid4())
     conn.execute(
-        "INSERT INTO documents (id, user_id, filename, title, path, relative_path, source_kind, "
+        "INSERT INTO documents (id, knowledge_base_id, user_id, filename, title, path, relative_path, source_kind, "
         "file_type, status, content, tags, version, document_number) "
-        "VALUES (?, ?, 'log.md', 'Log', '/wiki/', 'wiki/log.md', 'wiki', "
+        "VALUES (?, ?, ?, 'log.md', 'Log', '/wiki/', 'wiki/log.md', 'wiki', "
         "'md', 'ready', ?, '[]', 0, 2)",
-        (doc2_id, user_id, "Chronological record of ingests, queries, and maintenance passes."),
+        (doc2_id, ws_id, user_id, "Chronological record of ingests, queries, and maintenance passes."),
     )
 
     conn.commit()
@@ -169,12 +169,12 @@ def _index_existing_files(ws: Path, db_path: Path, user_id: str, ws_id: str) -> 
 
             try:
                 conn.execute(
-                    "INSERT INTO documents (id, user_id, filename, title, path, relative_path, "
+                    "INSERT INTO documents (id, knowledge_base_id, user_id, filename, title, path, relative_path, "
                     "source_kind, file_type, file_size, status, content, tags, version, "
                     "content_hash, mtime_ns, last_indexed_at, document_number) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready', ?, '[]', 0, ?, ?, datetime('now'), "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready', ?, '[]', 0, ?, ?, datetime('now'), "
                     "(SELECT COALESCE(MAX(document_number), 0) + 1 FROM documents))",
-                    (doc_id, user_id, filename, title, dir_path, relative,
+                    (doc_id, ws_id, user_id, filename, title, dir_path, relative,
                      source_kind, ext or "bin", stat.st_size, content,
                      content_hash, int(stat.st_mtime_ns)),
                 )
@@ -210,7 +210,7 @@ def cmd_serve(workspace: str, open_browser: bool = True) -> None:
 
     # Start API server
     api_proc = subprocess.Popen(
-        [sys.executable, "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"],
+        [sys.executable, "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"],
         cwd=str(API_DIR),
         env=env,
     )

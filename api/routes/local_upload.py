@@ -67,7 +67,7 @@ async def upload_file(
             text_content = content_bytes.decode("utf-8", errors="replace")
         except Exception:
             pass
-
+    
     # Index into SQLite
     from infra.db.sqlite import SQLiteDocumentRepository, SQLiteChunkRepository
     db = request.app.state.sqlite_db
@@ -81,13 +81,16 @@ async def upload_file(
     row = await cursor.fetchone()
     doc_number = row[0]
 
+    ws_row = await db.execute("SELECT id FROM workspace LIMIT 1")
+    ws = await ws_row.fetchone()
+    kb_id = ws[0] if ws else ""
     import json
     await db.execute(
-        "INSERT INTO documents (id, user_id, filename, title, path, relative_path, "
+        "INSERT INTO documents (id, knowledge_base_id, user_id, filename, title, path, relative_path, "
         "source_kind, file_type, file_size, status, content, tags, version, "
         "content_hash, mtime_ns, last_indexed_at, document_number) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', 0, ?, ?, datetime('now'), ?)",
-        (doc_id, user_id, filename, title, dir_path, relative, source_kind,
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', 0, ?, ?, datetime('now'), ?)",
+        (doc_id, kb_id, user_id, filename, title, dir_path, relative, source_kind,
          ext or "bin", len(content_bytes),
          "ready" if text_content is not None else "pending",
          text_content, content_hash,
