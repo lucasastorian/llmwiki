@@ -229,6 +229,14 @@ Personal wikis usually fail on maintenance, not intent. Someone has to update li
 
 LLM Wiki offloads that editing work. You choose the source material and direct the analysis. Claude handles the repetitive bookkeeping — updating cross-references, keeping summaries current, flagging contradictions, touching the 15 pages that a single new source affects.
 
+## Related
+
+Other open-source implementations of Karpathy's wiki pattern, with different shapes:
+
+- [Astro-Han/karpathy-llm-wiki](https://github.com/Astro-Han/karpathy-llm-wiki) — agent-skill for Claude Code / Cursor.
+- [dimknaf/braindb](https://github.com/dimknaf/braindb) — persistent memory database + REST API for LLM agents: typed entities with explicit relations, fuzzy + semantic retrieval over a keyword graph, temporal decay, plus a watcher that auto-ingests dropped files into a self-healing wiki.
+- [nashsu/llm_wiki](https://github.com/nashsu/llm_wiki) — desktop app, builds wikis from documents.
+
 ## License
 
 Apache 2.0
