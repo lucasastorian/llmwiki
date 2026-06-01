@@ -222,7 +222,7 @@ class WriteHandler:
             saved_date,
         ) + impact
 
-    async def edit(self, path: str, old_text: str, new_text: str, tags: list[str] | None) -> str:
+    async def edit(self, path: str, old_text: str, new_text: str) -> str:
         """Replace exact text in an existing document."""
         if not old_text:
             return "Error: old_text is required for str_replace."
@@ -246,7 +246,7 @@ class WriteHandler:
         await self.fs.update_document(
             str(doc["id"]),
             new_content,
-            _effective_tags(new_content, tags),
+            _effective_tags(new_content, None),
             date=fm_date,
             metadata=fm_metadata,
         )
@@ -258,7 +258,7 @@ class WriteHandler:
         impact = await self._get_wiki_impact(doc_id, dir_path)
         return self._format_edit_response(path, dir_path, filename, snippet) + impact
 
-    async def append(self, path: str, content: str, tags: list[str] | None) -> str:
+    async def append(self, path: str, content: str) -> str:
         """Append content to the end of an existing document."""
         dir_path, filename = resolve_path(path)
         doc = await self.fs.get_document(self.kb_id, filename, dir_path)
@@ -273,7 +273,7 @@ class WriteHandler:
         await self.fs.update_document(
             str(doc["id"]),
             new_content,
-            _effective_tags(new_content, tags),
+            _effective_tags(new_content, None),
             date=fm_date,
             metadata=fm_metadata,
         )
@@ -452,12 +452,11 @@ def register(mcp: FastMCP, get_user_id, fs_factory) -> None:
         path: str,
         old_text: str,
         new_text: str,
-        tags: list[str] | None = None,
     ) -> str:
         handler, err = await _resolve(ctx, knowledge_base)
         if err:
             return err
-        return await handler.edit(path, old_text, new_text, tags)
+        return await handler.edit(path, old_text, new_text)
 
     @mcp.tool(
         name="append",
@@ -472,9 +471,8 @@ def register(mcp: FastMCP, get_user_id, fs_factory) -> None:
         knowledge_base: str,
         path: str,
         content: str,
-        tags: list[str] | None = None,
     ) -> str:
         handler, err = await _resolve(ctx, knowledge_base)
         if err:
             return err
-        return await handler.append(path, content, tags)
+        return await handler.append(path, content)

@@ -22,6 +22,8 @@ _FOOTNOTE_DEF_RE = re.compile(r"^\[\^([^\]]+)\]:\s*(.+)$", re.MULTILINE)
 _FOOTNOTE_USE_RE = re.compile(r"\[\^([^\]]+)\](?!:)")
 _SOURCE_EXT_RE = re.compile(r"\.(pdf|docx?|pptx?|xlsx?|csv|html?|md|txt)$", re.IGNORECASE)
 _ROOT_PAGES = frozenset({"/wiki/overview.md", "/wiki/index.md", "/wiki/readme.md", "/wiki/log.md"})
+# Append-only chronological ledgers — frontmatter/footnote conventions don't apply.
+_LEDGER_PAGES = frozenset({"/wiki/log.md"})
 _MATCH_ALL_PATHS = frozenset({"*", "**", "**/*"})
 _MAX_ISSUES_PER_GROUP = 40
 
@@ -104,8 +106,9 @@ class LintHandler:
         meta = _parse_frontmatter(content)
 
         issues: list[LintIssue] = []
-        issues.extend(self._lint_frontmatter(doc, meta))
-        issues.extend(self._lint_footnotes(path, content))
+        if not self._is_ledger_page(doc):
+            issues.extend(self._lint_frontmatter(doc, meta))
+            issues.extend(self._lint_footnotes(path, content))
         issues.extend(self._lint_citations(doc, content, ctx.source_lookup))
         issues.extend(self._lint_wiki_links(doc, content, ctx.wiki_lookup))
 
@@ -381,6 +384,9 @@ class LintHandler:
 
     def _is_root_page(self, doc: dict) -> bool:
         return self._doc_path(doc) in _ROOT_PAGES
+
+    def _is_ledger_page(self, doc: dict) -> bool:
+        return self._doc_path(doc) in _LEDGER_PAGES
 
     def _footnote_sort_key(self, value: str) -> tuple[int, str]:
         return (0, f"{int(value):08d}") if value.isdigit() else (1, value)

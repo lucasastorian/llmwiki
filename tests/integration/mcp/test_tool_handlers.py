@@ -110,7 +110,7 @@ class TestWriteReadFlow:
         reader = ReadHandler(instance, kb)
 
         await writer.create("/", "Editable", "Hello world, this is a test.", ["tag"], "", False)
-        result = await writer.edit("editable.md", "Hello world", "Goodbye world", None)
+        result = await writer.edit("editable.md", "Hello world", "Goodbye world")
         assert "Replaced 1 occurrence" in result
 
         content = await reader.read("editable.md", "", None, False)
@@ -123,7 +123,7 @@ class TestWriteReadFlow:
 
         writer = WriteHandler(instance, _make_kb(kb_id))
         await writer.create("/", "Doc", "actual content", ["tag"], "", False)
-        result = await writer.edit("doc.md", "nonexistent text", "replacement", None)
+        result = await writer.edit("doc.md", "nonexistent text", "replacement")
         assert "no match" in result.lower()
 
     async def test_edit_rejects_multiple_matches(self, fs):
@@ -132,10 +132,10 @@ class TestWriteReadFlow:
 
         writer = WriteHandler(instance, _make_kb(kb_id))
         await writer.create("/", "Repeat", "foo bar foo bar", ["tag"], "", False)
-        result = await writer.edit("repeat.md", "foo", "baz", None)
+        result = await writer.edit("repeat.md", "foo", "baz")
         assert "2 matches" in result
 
-    async def test_edit_tags_arg_does_not_clobber_frontmatter_tags(self, fs):
+    async def test_edit_keeps_index_synced_to_frontmatter_tags(self, fs):
         instance, kb_id = fs
         from tools.write import WriteHandler
         from tools.search import SearchHandler
@@ -152,10 +152,10 @@ class TestWriteReadFlow:
             "",
             False,
         )
-        await writer.edit("wiki/metadata-tags.md", "old body", "new body", ["edit-tag"])
+        await writer.edit("wiki/metadata-tags.md", "old body", "new body")
 
         assert "metadata-tags.md" in await searcher.list_documents("*", ["frontmatter-tag"])
-        assert "metadata-tags.md" not in await searcher.list_documents("*", ["edit-tag"])
+        assert "metadata-tags.md" not in await searcher.list_documents("*", ["arg-tag"])
 
     async def test_append_adds_content(self, fs):
         instance, kb_id = fs
@@ -167,7 +167,7 @@ class TestWriteReadFlow:
         reader = ReadHandler(instance, kb)
 
         await writer.create("/", "Log", "Entry 1", ["log"], "", False)
-        result = await writer.append("log.md", "Entry 2", None)
+        result = await writer.append("log.md", "Entry 2")
         assert "Appended" in result
 
         content = await reader.read("log.md", "", None, False)
@@ -191,7 +191,7 @@ class TestWriteReadFlow:
             "",
             False,
         )
-        result = await writer.append("wiki/footnoted.md", "## New Section\n\nMore body.", None)
+        result = await writer.append("wiki/footnoted.md", "## New Section\n\nMore body.")
         assert "Appended" in result
 
         content = await reader.read("wiki/footnoted.md", "", None, False)
@@ -217,7 +217,6 @@ class TestWriteReadFlow:
         await writer.append(
             "wiki/footnote-collision.md",
             "New claim.[^1]\n\n[^1]: second.pdf, p.2",
-            None,
         )
 
         content = await reader.read("wiki/footnote-collision.md", "", None, False)
@@ -226,7 +225,7 @@ class TestWriteReadFlow:
         assert "[^1]: first.pdf, p.1" in content
         assert "[^2]: second.pdf, p.2" in content
 
-    async def test_append_tags_arg_does_not_clobber_frontmatter_tags(self, fs):
+    async def test_append_keeps_index_synced_to_frontmatter_tags(self, fs):
         instance, kb_id = fs
         from tools.write import WriteHandler
         from tools.search import SearchHandler
@@ -243,17 +242,17 @@ class TestWriteReadFlow:
             "",
             False,
         )
-        await writer.append("wiki/append-metadata.md", "More body", ["append-tag"])
+        await writer.append("wiki/append-metadata.md", "More body")
 
         assert "append-metadata.md" in await searcher.list_documents("*", ["frontmatter-tag"])
-        assert "append-metadata.md" not in await searcher.list_documents("*", ["append-tag"])
+        assert "append-metadata.md" not in await searcher.list_documents("*", ["arg-tag"])
 
     async def test_append_missing_document(self, fs):
         instance, kb_id = fs
         from tools.write import WriteHandler
 
         writer = WriteHandler(instance, _make_kb(kb_id))
-        result = await writer.append("nonexistent.md", "content", None)
+        result = await writer.append("nonexistent.md", "content")
         assert "not found" in result.lower()
 
 
@@ -520,6 +519,23 @@ class TestLintTool:
         result = await linter.run(path="/wiki/orphan.md")
         assert "orphan-page" in result
 
+    async def test_lint_exempts_log_ledger_from_frontmatter(self, fs):
+        instance, kb_id = fs
+        from tools.lint import LintHandler
+
+        kb = _make_kb(kb_id)
+        linter = LintHandler(instance, kb)
+
+        # The append-only ledger carries no frontmatter by design.
+        await instance.create_document(
+            kb_id, "log.md", "Log", "/wiki/", "md",
+            "## [2026-05-31] ingest | Source\n\nRecorded an ingest.", ["log"],
+        )
+
+        result = await linter.run(path="/wiki/log.md", include_graph=False)
+        assert "missing-frontmatter" not in result
+        assert "Lint passed" in result
+
 
 class TestReadModes:
 
@@ -723,7 +739,7 @@ class TestSearchDeleteLifecycle:
         read_result = await reader.read("lifecycle.md", "", None, False)
         assert "initial content" in read_result
 
-        edit_result = await writer.edit("lifecycle.md", "initial content", "updated content", None)
+        edit_result = await writer.edit("lifecycle.md", "initial content", "updated content")
         assert "Replaced 1" in edit_result
 
         read_result = await reader.read("lifecycle.md", "", None, False)
