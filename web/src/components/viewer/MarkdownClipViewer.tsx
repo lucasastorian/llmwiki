@@ -51,6 +51,7 @@ interface EditorSelection {
 }
 
 const isLocal = process.env.NEXT_PUBLIC_MODE === 'local'
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 const HIGHLIGHT_POLL_INTERVAL = 2000
 
 export default function MarkdownClipViewer({ documentId, className }: Props) {
@@ -68,14 +69,15 @@ export default function MarkdownClipViewer({ documentId, className }: Props) {
   const [savingComment, setSavingComment] = React.useState(false)
   const [savingEdit, setSavingEdit] = React.useState(false)
   const [notice, setNotice] = React.useState<string | null>(null)
+  const docRef = React.useRef<Document | null>(null)
   const imageUrlsRef = React.useRef<Record<string, string>>({})
   const imageAttrsRef = React.useRef<Record<string, Record<string, unknown>>>({})
 
   const loadHighlights = React.useCallback(async () => {
-    if (!token) return
+    if (!isLocal && !token) return
     const res = await apiFetch<HighlightsResponse>(
       `/v1/documents/${documentId}/highlights`,
-      token,
+      token ?? '',
     )
     setHighlights(res.highlights ?? [])
     setHighlightVersion(res.version ?? 0)
@@ -85,7 +87,11 @@ export default function MarkdownClipViewer({ documentId, className }: Props) {
     immediatelyRender: false,
     editable: false,
     extensions: createMarkdownExtensions({
-      imageSrcResolver: (src) => imageUrlsRef.current[normalizeImageSrc(src)] ?? src,
+      imageSrcResolver: (src) => {
+        const resolved = imageUrlsRef.current[normalizeImageSrc(src)]
+        if (resolved) return resolved
+        return localWebclipFileUrl(docRef.current, src) ?? src
+      },
       imageAttrsResolver: (src) => imageAttrsRef.current[normalizeImageSrc(src)] ?? {},
     }),
     editorProps: {
@@ -116,8 +122,9 @@ export default function MarkdownClipViewer({ documentId, className }: Props) {
   }, [notice])
 
   React.useEffect(() => {
-    if (!token) return
+    if (!isLocal && !token) return
     let cancelled = false
+    const apiToken = token ?? ''
     setError(null)
     setMarkdown(null)
     setHighlights(null)
@@ -129,19 +136,21 @@ export default function MarkdownClipViewer({ documentId, className }: Props) {
     setCommentDraft('')
     setCommentError(null)
     setNotice(null)
+    docRef.current = null
     imageUrlsRef.current = {}
     imageAttrsRef.current = {}
 
     Promise.all([
-      apiFetch<Document>(`/v1/documents/${documentId}`, token),
-      apiFetch<ContentResponse>(`/v1/documents/${documentId}/content`, token),
-      apiFetch<HighlightsResponse>(`/v1/documents/${documentId}/highlights`, token).catch(
+      apiFetch<Document>(`/v1/documents/${documentId}`, apiToken),
+      apiFetch<ContentResponse>(`/v1/documents/${documentId}/content`, apiToken),
+      apiFetch<HighlightsResponse>(`/v1/documents/${documentId}/highlights`, apiToken).catch(
         () => ({ id: documentId, version: 0, highlights: [] }),
       ),
     ])
       .then(async ([doc, content, highlightResponse]) => {
-        const imageUrls = await resolveWebclipAssetUrls(doc, token)
+        const imageUrls = await resolveWebclipAssetUrls(doc, apiToken)
         if (cancelled) return
+        docRef.current = doc
         imageUrlsRef.current = imageUrls
         imageAttrsRef.current = resolveWebclipImageAttrs(doc)
         setKnowledgeBaseId(doc.knowledge_base_id)
@@ -187,7 +196,7 @@ export default function MarkdownClipViewer({ documentId, className }: Props) {
   }, [editor, isEditing])
 
   React.useEffect(() => {
-    if (!token || !knowledgeBaseId) return
+    if ((!isLocal && !token) || !knowledgeBaseId) return
 
     if (isLocal) {
       const interval = setInterval(() => {
@@ -197,10 +206,12 @@ export default function MarkdownClipViewer({ documentId, className }: Props) {
     }
 
     let cancelled = false
+    const wsToken = token
+    if (!wsToken) return
     const ws = new WebSocket(getDocumentsWsUrl(knowledgeBaseId))
 
     ws.onopen = () => {
-      ws.send(token)
+      ws.send(wsToken)
     }
 
     ws.onmessage = (message) => {
@@ -228,7 +239,7 @@ export default function MarkdownClipViewer({ documentId, className }: Props) {
   }, [documentId, knowledgeBaseId, loadHighlights, token])
 
   React.useEffect(() => {
-    if (!token) return
+    if (!isLocal && !token) return
 
     const refresh = () => {
       if (document.visibilityState === 'hidden') return
@@ -275,14 +286,14 @@ export default function MarkdownClipViewer({ documentId, className }: Props) {
   }, [editor])
 
   const saveEdit = React.useCallback(async () => {
-    if (!editor || !token || savingEdit) return
+    if (!editor || (!isLocal && !token) || savingEdit) return
     setSavingEdit(true)
     setError(null)
     try {
       const content = String((editor.storage as { markdown?: { getMarkdown?: () => string } }).markdown?.getMarkdown?.() ?? '')
       const res = await apiFetch<ContentResponse>(
         `/v1/documents/${documentId}/content`,
-        token,
+        token ?? '',
         {
           method: 'PUT',
           body: JSON.stringify({ content }),
@@ -307,7 +318,7 @@ export default function MarkdownClipViewer({ documentId, className }: Props) {
   }, [isEditing, selection])
 
   const saveComment = React.useCallback(async () => {
-    if (!editor || !token || !selection || savingComment) return
+    if (!editor || (!isLocal && !token) || !selection || savingComment) return
     const textAnchor = textAnchorFromSelection(
       canonicalPlaintextFromTipTapDoc(editor.state.doc),
       selection.from,
@@ -332,7 +343,7 @@ export default function MarkdownClipViewer({ documentId, className }: Props) {
       }
       const res = await apiFetch<HighlightsResponse>(
         `/v1/documents/${documentId}/highlights`,
-        token,
+        token ?? '',
         {
           method: 'POST',
           body: JSON.stringify({ highlight }),
@@ -472,12 +483,39 @@ function normalizeImageSrc(src: string): string {
   return src.trim().replace(/^\.?\//, '')
 }
 
+function localWebclipFileUrl(doc: Document | null, src: string): string | null {
+  if (!isLocal || !doc) return null
+  const trimmed = src.trim()
+  if (!trimmed || /^[a-z][a-z0-9+.-]*:/i.test(trimmed)) return null
+
+  const normalizedSrc = normalizeImageSrc(trimmed)
+  const docDir = String(doc.path ?? '').trim().replace(/^\/+|\/+$/g, '')
+  const key = docDir && !normalizedSrc.startsWith(`${docDir}/`)
+    ? `${docDir}/${normalizedSrc}`
+    : normalizedSrc
+  if (!key) return null
+
+  const encodedKey = key.split('/').map(encodeURIComponent).join('/')
+  return `${API_URL.replace(/\/+$/, '')}/v1/files/${encodedKey}`
+}
+
 async function resolveWebclipAssetUrls(doc: Document, token: string): Promise<Record<string, string>> {
   const metadata = doc.metadata ?? {}
   const assets = Array.isArray(metadata.assets)
     ? (metadata.assets as WebclipAssetMetadata[])
     : []
   if (!assets.length) return {}
+
+  const urls: Record<string, string> = {}
+  if (isLocal) {
+    for (const asset of assets) {
+      const keys = [asset.src, asset.path, asset.filename].filter(Boolean) as string[]
+      for (const key of keys) {
+        const localUrl = localWebclipFileUrl(doc, key)
+        if (localUrl) urls[normalizeImageSrc(key)] = localUrl
+      }
+    }
+  }
 
   const pairs = await Promise.all(
     assets.map(async (asset) => {
@@ -492,7 +530,6 @@ async function resolveWebclipAssetUrls(doc: Document, token: string): Promise<Re
     }),
   )
 
-  const urls: Record<string, string> = {}
   for (const pair of pairs) {
     if (!pair) continue
     for (const key of pair.keys) {

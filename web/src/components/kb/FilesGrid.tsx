@@ -100,8 +100,20 @@ function isWebClipDoc(doc: DocumentListItem): boolean {
   return (
     metadata.clip_kind === 'web'
     || metadata.source_url !== undefined
+    || ((doc.path || '').startsWith('/webclipper/') && doc.file_type === 'md')
     || ['html', 'htm'].includes(doc.file_type)
   )
+}
+
+function getSourceUrl(doc: DocumentListItem | null): string | null {
+  const value = doc?.metadata?.source_url
+  if (typeof value !== 'string') return null
+  try {
+    const parsed = new URL(value)
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.toString() : null
+  } catch {
+    return null
+  }
 }
 
 function docIcon(ft: string) {
@@ -297,6 +309,7 @@ export function FilesGrid({
 
   const isActiveWebClip = activeDoc ? isWebClipDoc(activeDoc) : false
   const isActiveNote = activeDoc ? isNoteFile(activeDoc) && !isActiveWebClip : false
+  const activeSourceUrl = getSourceUrl(activeDoc)
 
   // Breadcrumbs — adapt to browsing vs viewing
   const breadcrumbs = React.useMemo(() => {
@@ -544,12 +557,30 @@ export function FilesGrid({
         ) : activeDoc && isActiveNote ? (
           <>
             <NoteFormattingButtons editor={noteEditor} />
+            {activeSourceUrl && (
+              <button
+                onClick={() => window.open(activeSourceUrl, '_blank', 'noopener,noreferrer')}
+                className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition-colors cursor-pointer"
+                title="Open source URL"
+              >
+                <ExternalLink className="size-3.5" />
+              </button>
+            )}
             <button onClick={closeDoc} className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition-colors cursor-pointer" title="Close">
               <X className="size-3.5" />
             </button>
           </>
         ) : activeDoc && isActiveWebClip ? (
           <>
+            {activeSourceUrl && (
+              <button
+                onClick={() => window.open(activeSourceUrl, '_blank', 'noopener,noreferrer')}
+                className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition-colors cursor-pointer"
+                title="Open source URL"
+              >
+                <ExternalLink className="size-3.5" />
+              </button>
+            )}
             <button onClick={closeDoc} className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition-colors cursor-pointer" title="Close">
               <X className="size-3.5" />
             </button>
