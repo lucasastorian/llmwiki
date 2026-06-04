@@ -9,7 +9,7 @@ aioboto3==15.5.0
 sentry-sdk==2.59.0
 aiosqlite==0.22.1
 # Pinned to override vulnerable transitive resolutions.
-aiohttp==3.13.5
+aiohttp==3.14.0
 python-multipart==0.0.28
 requests==2.33.1
 urllib3==2.7.0
