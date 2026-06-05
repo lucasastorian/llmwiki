@@ -118,6 +118,27 @@ def _get_source_kind(relative_path: str) -> str:
     return "source"
 
 
+async def _chunk_text_file(db: aiosqlite.Connection, doc_id: str, content: str) -> None:
+    """Chunk a text document's content and (re)populate document_chunks.
+
+    Replaces any existing chunks for the document so re-indexes stay in sync.
+    The chunks_fts triggers on document_chunks keep the FTS5 index current
+    automatically — no extra work needed here.
+    """
+    if not content or not content.strip():
+        return
+    from services.chunker import chunk_text
+    chunks = chunk_text(content)
+    await db.execute("DELETE FROM document_chunks WHERE document_id = ?", (doc_id,))
+    for c in chunks:
+        await db.execute(
+            "INSERT INTO document_chunks (id, document_id, chunk_index, content, page, "
+            "start_char, token_count, header_breadcrumb) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (str(uuid.uuid4()), doc_id, c.index, c.content, c.page,
+             c.start_char, c.token_count, c.header_breadcrumb),
+        )
+
+
 async def _index_file(db: aiosqlite.Connection, workspace: Path, file_path: Path) -> None:
     """Index or re-index a single file."""
     relative = str(file_path.relative_to(workspace))
@@ -173,6 +194,10 @@ async def _index_file(db: aiosqlite.Connection, workspace: Path, file_path: Path
         )
         await db.commit()
         logger.info("Re-indexed (modified): %s", relative)
+        # Re-chunk text files so FTS reflects the new content
+        if content is not None and ext in TEXT_EXTENSIONS:
+            await _chunk_text_file(db, doc_id, content)
+            await db.commit()
         # Re-process non-text files
         if ext not in TEXT_EXTENSIONS and ext:
             from domain.local_processor import process_document as _process
@@ -207,6 +232,12 @@ async def _index_file(db: aiosqlite.Connection, workspace: Path, file_path: Path
             asyncio.create_task(_process(db, doc_id, workspace))
 
     await db.commit()
+
+    # Chunk text files immediately so they're searchable via FTS.
+    # (Non-text files chunk asynchronously via process_document above.)
+    if content is not None and ext in TEXT_EXTENSIONS:
+        await _chunk_text_file(db, doc_id, content)
+        await db.commit()
 
 
 async def _remove_file(db: aiosqlite.Connection, workspace: Path, file_path: Path) -> None:
