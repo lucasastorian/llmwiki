@@ -237,7 +237,7 @@ class LocalDocumentService(DocumentService):
         file_path.write_text(content or "", encoding="utf-8")
 
         row = await self.doc_repo.create_note(kb_id, self.user_id, filename, path, title, content, tags)
-
+        
         if content:
             chunks = chunk_text(content)
             await self.chunk_repo.store(str(row["id"]), self.user_id, kb_id, chunks)
