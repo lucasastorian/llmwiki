@@ -13,7 +13,7 @@ import { KBSidenav } from '@/components/kb/KBSidenav'
 import { SelectionActionBar } from '@/components/kb/SelectionActionBar'
 import { WikiContent } from '@/components/wiki/WikiContent'
 import type { DocumentListItem, WikiNode } from '@/lib/types'
-import type { ViewMode } from '@/app/(dashboard)/wikis/[slug]/[[...path]]/page'
+import type { ViewMode } from '@/components/kb/viewMode'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
@@ -803,7 +803,7 @@ export function KBDetail({ kbId, kbSlug, kbName, viewMode, routeFilesPath }: Pro
       </AnimatePresence>
 
       <div className="flex-1 overflow-hidden flex">
-        <div className="w-64 shrink-0">
+        <div className="w-[272px] shrink-0">
           <KBSidenav
             kbId={kbId}
             kbName={kbName}
@@ -899,6 +899,7 @@ export function KBDetail({ kbId, kbSlug, kbName, viewMode, routeFilesPath }: Pro
                 <WikiContent
                   content={pageContent}
                   title={pageTitle}
+                  path={wikiActivePath ?? undefined}
                   onNavigate={handleWikiNavigate}
                   onSourceClick={handleCitationSourceClick}
                   onGraphClick={handlePageGraphClick}

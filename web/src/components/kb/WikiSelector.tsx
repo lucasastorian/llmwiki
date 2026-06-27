@@ -2,7 +2,7 @@
 
 import * as React from 'react'
 import { useRouter } from 'next/navigation'
-import { ChevronsUpDown, Plus, Pencil, Trash2, Library } from 'lucide-react'
+import { ChevronDown, Plus, Pencil, Trash2, Library } from 'lucide-react'
 import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover'
 import { Command, CommandInput, CommandList, CommandItem, CommandEmpty, CommandGroup, CommandSeparator } from '@/components/ui/command'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
@@ -76,16 +76,16 @@ export function WikiSelector({ kbName, kbId }: { kbName: string; kbId: string })
             role="combobox"
             aria-expanded={open}
             aria-label="Switch wiki"
-            className="flex items-center gap-1.5 w-full px-2 py-1.5 text-sm font-medium text-foreground hover:bg-accent rounded-md transition-colors cursor-pointer"
+            className="flex items-center gap-1.5 w-full px-2 py-1.5 text-sm font-semibold text-foreground hover:bg-accent rounded-md transition-colors cursor-pointer"
           >
             <span className="truncate flex-1 text-left">{kbName}</span>
-            <ChevronsUpDown className="size-3 text-muted-foreground/50 shrink-0" />
+            <ChevronDown className="size-3.5 text-muted-foreground/40 shrink-0" />
           </button>
         </PopoverTrigger>
-        <PopoverContent className="w-52 p-0" align="start">
+        <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0" align="start">
           <Command>
             <CommandInput placeholder="Search wikis..." aria-label="Search wikis" value={search} onValueChange={setSearch} />
-            <CommandList>
+            <CommandList className="max-h-[min(60vh,26rem)]">
               <CommandEmpty>No wikis found.</CommandEmpty>
               <CommandGroup heading="Wikis">
                 {knowledgeBases.map((kb) => (

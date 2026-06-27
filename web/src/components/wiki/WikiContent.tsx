@@ -54,6 +54,44 @@ function stripFrontmatter(content: string): string {
   return content.replace(FRONTMATTER_RE, '')
 }
 
+function parseFrontmatterField(content: string, field: string): string | null {
+  const fm = content.match(FRONTMATTER_RE)
+  if (!fm) return null
+  const line = fm[0].match(new RegExp(`^${field}:[ \\t]*(.+)$`, 'm'))
+  if (!line) return null
+  return line[1].trim().replace(/^["']|["']$/g, '') || null
+}
+
+// The page title is the body's leading H1; lift it into the chrome header so the eyebrow
+// can sit above it and the description below it, then drop it from the rendered body.
+function extractLeadingH1(body: string): { heading: string | null; rest: string } {
+  const trimmed = body.replace(/^\s+/, '')
+  const match = trimmed.match(/^#\s+(.+)\n?/)
+  if (!match) return { heading: null, rest: body }
+  return { heading: match[1].replace(/\*\*/g, '').trim(), rest: trimmed.slice(match[0].length) }
+}
+
+function humanizeSegment(segment: string): string {
+  const text = segment.replace(/\.(md|txt|json)$/i, '').replace(/[-_]/g, ' ').trim()
+  return text === text.toLowerCase() ? text.replace(/\b\w/g, (c) => c.toUpperCase()) : text
+}
+
+// Folder breadcrumb above the title, e.g. "concepts/policy.md" -> "Concepts".
+function pathEyebrow(path: string | undefined): string | null {
+  if (!path) return null
+  const parts = path.replace(/^\/+/, '').split('/').filter(Boolean)
+  parts.pop()
+  if (parts.length === 0) return null
+  return parts.map(humanizeSegment).join(' · ')
+}
+
+// Title-case an all-lowercase page name ("transformer" -> "Transformer"); leave
+// intentional casing alone ("GRPO", "MAI-Base-1").
+function toDisplayTitle(title: string): string {
+  if (title !== title.toLowerCase()) return title
+  return title.replace(/\b\w/g, (c) => c.toUpperCase())
+}
+
 interface MdastLike {
   type: string
   value?: string
@@ -74,66 +112,76 @@ function remarkFixOverescapedMath() {
 }
 
 function TableOfContents({ items }: { items: TocItem[] }) {
-  const [activeId, setActiveId] = React.useState<string | null>(null)
+  const [activeIndex, setActiveIndex] = React.useState(0)
 
+  // Scroll-position spy on the real scroll container (the viewport-based
+  // IntersectionObserver never fired because content scrolls in a nested div).
   React.useEffect(() => {
     if (items.length === 0) return
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        // Find the first visible heading
-        const visible = entries.filter((e) => e.isIntersecting)
-        if (visible.length > 0) {
-          setActiveId(visible[0].target.id)
-        }
-      },
-      { rootMargin: '-80px 0px -70% 0px', threshold: 0 },
-    )
-
-    // Small delay to ensure headings are rendered
-    const timeout = setTimeout(() => {
-      for (const item of items) {
+    const container = document.getElementById('wiki-scroll-container')
+    if (!container) return
+    const update = () => {
+      const top = container.getBoundingClientRect().top
+      let current = 0
+      items.forEach((item, i) => {
         const el = document.getElementById(item.id)
-        if (el) observer.observe(el)
-      }
-    }, 100)
-
+        if (el && el.getBoundingClientRect().top - top < 120) current = i
+      })
+      setActiveIndex(current)
+    }
+    const raf = requestAnimationFrame(update)
+    container.addEventListener('scroll', update, { passive: true })
     return () => {
-      clearTimeout(timeout)
-      observer.disconnect()
+      cancelAnimationFrame(raf)
+      container.removeEventListener('scroll', update)
     }
   }, [items])
 
   if (items.length === 0) return null
 
   return (
-    <nav className="space-y-0.5">
-      <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/50 mb-2 px-1">
+    <nav>
+      <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/50 mb-3 px-1">
         On this page
       </p>
-      {items.map((item) => (
-        <a
-          key={item.id}
-          href={`#${item.id}`}
-          onClick={(e) => {
-            e.preventDefault()
-            const el = document.getElementById(item.id)
-            if (el) {
-              el.scrollIntoView({ behavior: 'smooth', block: 'start' })
-              setActiveId(item.id)
-            }
-          }}
-          className={cn(
-            'block text-xs leading-snug py-1 px-1 rounded transition-colors',
-            item.level === 3 && 'pl-4',
-            activeId === item.id
-              ? 'text-foreground font-medium'
-              : 'text-muted-foreground/60 hover:text-muted-foreground',
-          )}
-        >
-          {item.text}
-        </a>
-      ))}
+      <div className="relative">
+        <div className="absolute left-[3px] top-1.5 bottom-1.5 w-px bg-border" aria-hidden />
+        {items.map((item, i) => {
+          const state = i < activeIndex ? 'read' : i === activeIndex ? 'current' : 'upcoming'
+          return (
+            <a
+              key={item.id}
+              href={`#${item.id}`}
+              onClick={(e) => {
+                e.preventDefault()
+                document.getElementById(item.id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+              }}
+              className={cn(
+                'relative flex items-start py-1 text-xs leading-snug transition-colors',
+                item.level === 3 ? 'pl-6' : 'pl-4',
+                state === 'current'
+                  ? 'text-foreground font-medium'
+                  : state === 'read'
+                    ? 'text-muted-foreground hover:text-foreground'
+                    : 'text-muted-foreground/50 hover:text-muted-foreground',
+              )}
+            >
+              <span
+                aria-hidden
+                className={cn(
+                  'absolute left-0 top-[7px] size-[7px] rounded-full ring-2 ring-background transition-colors',
+                  state === 'current'
+                    ? 'bg-foreground'
+                    : state === 'read'
+                      ? 'bg-muted-foreground/50'
+                      : 'bg-border',
+                )}
+              />
+              <span className="min-w-0">{item.text}</span>
+            </a>
+          )
+        })}
+      </div>
     </nav>
   )
 }
@@ -353,17 +401,19 @@ function WikiImage({
 interface WikiContentProps {
   content: string
   title: string
+  path?: string
   onNavigate: (path: string) => void
   onSourceClick?: (filename: string, page?: number) => void
   onGraphClick?: () => void
   documents?: DocumentListItem[]
 }
 
-export function WikiContent({ content, title, onNavigate, onSourceClick, onGraphClick, documents }: WikiContentProps) {
-  const processedContent = React.useMemo(() => stripFrontmatter(content), [content])
-  // The body's own opening heading is the page title; only fall back to the chrome title when there is none.
-  const startsWithHeading = React.useMemo(() => /^\s*#{1,6}\s+\S/.test(processedContent), [processedContent])
-  const showTitle = Boolean(title) && !startsWithHeading
+export function WikiContent({ content, title, path, onNavigate, onSourceClick, onGraphClick, documents }: WikiContentProps) {
+  const body = React.useMemo(() => stripFrontmatter(content), [content])
+  const description = React.useMemo(() => parseFrontmatterField(content, 'description'), [content])
+  const { heading, rest: processedContent } = React.useMemo(() => extractLeadingH1(body), [body])
+  const pageTitle = toDisplayTitle(heading ?? title)
+  const eyebrow = React.useMemo(() => pathEyebrow(path), [path])
   const tocItems = React.useMemo(() => extractTocFromMarkdown(processedContent), [processedContent])
   const footnoteSources = React.useMemo(() => parseFootnoteSources(processedContent), [processedContent])
   const [copied, setCopied] = React.useState(false)
@@ -696,30 +746,38 @@ export function WikiContent({ content, title, onNavigate, onSourceClick, onGraph
             'min-w-0',
             hasToc ? 'flex-1 max-w-[720px]' : 'w-full',
           )}>
-            <div className="flex items-start justify-between gap-4 mb-2">
-              {showTitle ? (
-                <h1 className="text-3xl font-bold tracking-tight">{title}</h1>
-              ) : (
-                <div className="min-w-0" />
-              )}
-              <div className="flex items-center gap-1 shrink-0 mt-1.5">
-                <button
-                  onClick={handleCopy}
-                  className="p-1.5 rounded-md text-muted-foreground/40 hover:text-muted-foreground hover:bg-accent transition-colors cursor-pointer"
-                  title="Copy markdown"
-                >
-                  {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
-                </button>
-                {onGraphClick && (
+            <div className="mb-6">
+              <div className="flex items-start justify-between gap-4">
+                <div className="min-w-0">
+                  {eyebrow && (
+                    <div className="text-[11px] font-medium uppercase tracking-[0.06em] text-muted-foreground/60 mb-2">
+                      {eyebrow}
+                    </div>
+                  )}
+                  {pageTitle && <h1 className="text-3xl font-bold tracking-tight">{pageTitle}</h1>}
+                </div>
+                <div className="flex items-center gap-1 shrink-0 mt-1.5">
                   <button
-                    onClick={onGraphClick}
+                    onClick={handleCopy}
                     className="p-1.5 rounded-md text-muted-foreground/40 hover:text-muted-foreground hover:bg-accent transition-colors cursor-pointer"
-                    title="Show in graph"
+                    title="Copy markdown"
                   >
-                    <Network className="size-3.5" />
+                    {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
                   </button>
-                )}
+                  {onGraphClick && (
+                    <button
+                      onClick={onGraphClick}
+                      className="p-1.5 rounded-md text-muted-foreground/40 hover:text-muted-foreground hover:bg-accent transition-colors cursor-pointer"
+                      title="Show in graph"
+                    >
+                      <Network className="size-3.5" />
+                    </button>
+                  )}
+                </div>
               </div>
+              {description && (
+                <p className="text-[15px] text-muted-foreground mt-2.5 leading-relaxed">{description}</p>
+              )}
             </div>
             <div className="wiki-content text-[15px] leading-relaxed">
               <ReactMarkdown

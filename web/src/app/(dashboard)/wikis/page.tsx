@@ -46,24 +46,15 @@ export default function WikisPage() {
   const [creating, setCreating] = React.useState(false)
   const [dialogOpen, setDialogOpen] = React.useState(false)
   const [name, setName] = React.useState('')
-
-  const prefetchWiki = React.useCallback((slug: string) => {
-    router.prefetch(wikiHref(slug))
-  }, [router])
+  const [openingSlug, setOpeningSlug] = React.useState<string | null>(null)
+  const [, startNavigation] = React.useTransition()
 
   const openWiki = React.useCallback((slug: string) => {
-    router.push(wikiHref(slug))
+    setOpeningSlug(slug)
+    startNavigation(() => {
+      router.push(wikiHref(slug))
+    })
   }, [router])
-
-  React.useEffect(() => {
-    if (loading || error || knowledgeBases.length === 0) return
-    const timer = window.setTimeout(() => {
-      for (const kb of knowledgeBases.slice(0, 12)) {
-        router.prefetch(wikiHref(kb.slug))
-      }
-    }, 250)
-    return () => window.clearTimeout(timer)
-  }, [error, knowledgeBases, loading, router])
 
   const handleQuickCreate = async () => {
     setCreating(true)
@@ -230,6 +221,7 @@ export default function WikisPage() {
               if (kb.source_count > 0) stats.push(`${kb.source_count} source${kb.source_count !== 1 ? 's' : ''}`)
               if (kb.wiki_page_count > 0) stats.push(`${kb.wiki_page_count} page${kb.wiki_page_count !== 1 ? 's' : ''}`)
               const handleOpen = () => openWiki(kb.slug)
+              const isOpening = openingSlug === kb.slug
 
               return (
                 <motion.div
@@ -239,9 +231,6 @@ export default function WikisPage() {
                   transition={{ duration: 0.3, delay: index * 0.05, ease: [0.25, 0.1, 0.25, 1] }}
                   role="button"
                   tabIndex={0}
-                  onMouseEnter={() => prefetchWiki(kb.slug)}
-                  onFocus={() => prefetchWiki(kb.slug)}
-                  onPointerDown={() => prefetchWiki(kb.slug)}
                   onClick={handleOpen}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' || e.key === ' ') {
@@ -253,7 +242,11 @@ export default function WikisPage() {
                 >
                   <div className="flex items-center gap-3 min-w-0 w-full">
                     <div className="flex items-center justify-center w-9 h-9 rounded-lg bg-muted group-hover:bg-accent transition-colors flex-shrink-0">
-                      <BookOpen size={16} className="text-muted-foreground group-hover:text-foreground transition-colors" />
+                      {isOpening ? (
+                        <Loader2 size={16} className="animate-spin text-muted-foreground" />
+                      ) : (
+                        <BookOpen size={16} className="text-muted-foreground group-hover:text-foreground transition-colors" />
+                      )}
                     </div>
                     <div className="min-w-0 flex-1">
                       <h2 className="text-sm font-medium text-foreground truncate">{kb.name}</h2>

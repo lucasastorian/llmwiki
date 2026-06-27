@@ -2,7 +2,8 @@
   "name": "llmwiki-web",
   "private": true,
   "scripts": {
-    "dev": "next dev --turbopack --port 3000",
+    "dev": "next dev --webpack --port 3000",
+    "dev:turbo": "next dev --turbopack --port 3000",
     "build": "next build",
     "start": "next start"
   },

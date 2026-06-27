@@ -56,16 +56,16 @@
 
 :root {
   --sidebar-width: 14rem;
-  --radius: 1rem;
+  --radius: 0.5rem;
   --radius-md: calc(var(--radius) - 2px);
   --radius-sm: calc(var(--radius) - 4px);
 
   /* Light theme — warm paper */
   --background: 30 3% 96%;
   --foreground: 20 14% 4%;
-  --card: 0 0% 100%;
+  --card: 30 30% 99%;
   --card-foreground: 20 14% 10%;
-  --popover: 0 0% 100%;
+  --popover: 30 30% 99%;
   --popover-foreground: 20 14% 10%;
   --primary: 24 10% 10%;
   --primary-foreground: 60 9% 98%;
@@ -76,8 +76,8 @@
   --accent: 30 6% 94%;
   --accent-foreground: 20 14% 10%;
   --destructive: 0 84.2% 60.2%;
-  --border: 24 6% 83%;
-  --input: 24 6% 83%;
+  --border: 30 6% 83%;
+  --input: 30 6% 83%;
   --ring: 25 5% 45%;
   --chart-1: oklch(0.646 0.222 41.116);
   --chart-2: oklch(0.6 0.118 184.704);

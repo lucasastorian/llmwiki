@@ -4,34 +4,8 @@ import * as React from 'react'
 import { useParams, useSearchParams, useRouter } from 'next/navigation'
 import { useKBStore, useUserStore } from '@/stores'
 import { useKBDocuments } from '@/hooks/useKBDocuments'
-import { KBDetail } from '@/components/kb/KBDetail'
+import { WikiOnlyDetail } from '@/components/kb/WikiOnlyDetail'
 import { Loader2 } from 'lucide-react'
-
-export type ViewMode = 'wiki' | 'files' | 'graph'
-
-interface ParsedRoute {
-  view: ViewMode
-  filesPath: string
-}
-
-function parseRoute(pathSegments?: string[]): ParsedRoute {
-  if (!pathSegments || pathSegments.length === 0) {
-    return { view: 'wiki', filesPath: '/' }
-  }
-  switch (pathSegments[0]) {
-    case 'files': {
-      const rest = pathSegments.slice(1)
-      const filesPath = rest.length > 0
-        ? '/' + rest.map(decodeURIComponent).join('/') + '/'
-        : '/'
-      return { view: 'files', filesPath }
-    }
-    case 'graph':
-      return { view: 'graph', filesPath: '/' }
-    default:
-      return { view: 'wiki', filesPath: '/' }
-  }
-}
 
 export default function KBPage() {
   const router = useRouter()
@@ -87,16 +61,12 @@ export default function KBPage() {
     )
   }
 
-  const route = parseRoute(params.path)
-
   return (
-    <KBDetail
+    <WikiOnlyDetail
       key={kb.id}
       kbId={kb.id}
       kbSlug={kb.slug}
       kbName={kb.name}
-      viewMode={route.view}
-      routeFilesPath={route.filesPath}
     />
   )
 }

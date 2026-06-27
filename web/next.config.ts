@@ -7,7 +7,11 @@ const nextConfig: NextConfig = {
   outputFileTracingRoot: path.join(__dirname),
 };
 
-export default withSentryConfig(nextConfig, {
+const sentryOptions = {
   silent: true,
   disableLogger: true,
-});
+};
+
+export default process.env.NODE_ENV === "development"
+  ? nextConfig
+  : withSentryConfig(nextConfig, sentryOptions);
