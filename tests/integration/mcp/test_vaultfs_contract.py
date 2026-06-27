@@ -48,6 +48,23 @@ class TestWorkspace:
         assert kb["already_exists"] is True
         assert kb["local_singleton"] is True
 
+    async def test_scaffold_does_not_overwrite_existing_local_files(self, workspace):
+        """A rebuilt index (no workspace row) must not clobber real local files."""
+        from vaultfs.sqlite import SqliteVaultFS
+
+        await SqliteVaultFS.close()
+        await SqliteVaultFS.init(str(workspace))
+        try:
+            (workspace / "wiki" / "overview.md").write_text("MY REAL NOTES", encoding="utf-8")
+            instance = SqliteVaultFS(TEST_USER_ID)
+            await instance.create_knowledge_base("Rebuilt", None)
+
+            # The existing overview is preserved; the missing log is still scaffolded.
+            assert (workspace / "wiki" / "overview.md").read_text(encoding="utf-8") == "MY REAL NOTES"
+            assert (workspace / "wiki" / "log.md").exists()
+        finally:
+            await SqliteVaultFS.close()
+
     async def test_resolve_kb_returns_workspace(self, fs):
         instance, kb_id = fs
         kb = await instance.resolve_kb("test-workspace")

@@ -1,6 +1,7 @@
 'use client'
 
 import * as React from 'react'
+import dynamic from 'next/dynamic'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
@@ -12,9 +13,17 @@ import { FileText, Copy, Check, Network } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { apiFetch } from '@/lib/api'
 import { useUserStore } from '@/stores'
-import { MermaidBlock } from './MermaidBlock'
 import { ExpandableMedia } from './DiagramViewer'
 import type { DocumentListItem } from '@/lib/types'
+
+const MermaidBlock = dynamic(() => import('./MermaidBlock').then((mod) => mod.MermaidBlock), {
+  ssr: false,
+  loading: () => (
+    <pre className="my-3 overflow-x-auto rounded-lg border border-border bg-muted/60 p-4 text-[13px] leading-relaxed">
+      Rendering diagram...
+    </pre>
+  ),
+})
 
 export interface TocItem {
   id: string

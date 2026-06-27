@@ -414,6 +414,10 @@ class SqliteVaultFS(VaultFS):
             return None
         return resolved
 
+    def _disk_file_exists(self, dir_path: str, filename: str) -> bool:
+        path = self._resolve_path(dir_path.lstrip("/") + filename)
+        return path is not None and path.exists()
+
 
     async def delete_references(self, source_doc_id: str) -> None:
         db = self._db_or_raise()
@@ -514,19 +518,16 @@ class SqliteVaultFS(VaultFS):
         today = date.today().isoformat()
         overview = _OVERVIEW_TEMPLATE.format(name=name, date=today)
         log = _LOG_TEMPLATE.format(name=name, date=today)
-        await self.create_document(
-            kb_id,
-            "overview.md",
-            "Overview",
-            "/wiki/",
-            "md",
-            overview,
-            ["overview", "wiki"],
-            date=today,
-            metadata={"description": f"Research hub for {name}."},
-        )
-        await self.create_document(
-            kb_id, "log.md", "Log", "/wiki/", "md", log, ["log"],
-        )
-        self.write_to_disk("/wiki/", "overview.md", overview)
-        self.write_to_disk("/wiki/", "log.md", log)
+        # Never overwrite existing local content — a rebuilt index could scaffold over real files.
+        if not self._disk_file_exists("/wiki/", "overview.md"):
+            await self.create_document(
+                kb_id, "overview.md", "Overview", "/wiki/", "md", overview,
+                ["overview", "wiki"], date=today,
+                metadata={"description": f"Research hub for {name}."},
+            )
+            self.write_to_disk("/wiki/", "overview.md", overview)
+        if not self._disk_file_exists("/wiki/", "log.md"):
+            await self.create_document(
+                kb_id, "log.md", "Log", "/wiki/", "md", log, ["log"],
+            )
+            self.write_to_disk("/wiki/", "log.md", log)

@@ -117,6 +117,9 @@ export function useKBDocuments(knowledgeBaseId: string) {
       }
 
       ws.onmessage = () => {
+        if (process.env.NODE_ENV === 'development') {
+          console.count(`documents ws message:${knowledgeBaseId}`)
+        }
         // Debounce refetches — OCR updates can fire many events in quick succession
         if (debounceTimer.current) clearTimeout(debounceTimer.current)
         debounceTimer.current = setTimeout(fetchDocs, DEBOUNCE_MS)
