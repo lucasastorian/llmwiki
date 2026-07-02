@@ -88,8 +88,9 @@ class PostgresVaultFS(VaultFS):
         return row
 
     async def set_knowledge_base_kind(self, kb_id: str, kind: str) -> dict | None:
-        return await scoped_queryrow(
-            self.user_id,
+        # knowledge_bases has no RLS write policy; writes go through the
+        # service role with the explicit user_id filter, like every other KB write.
+        return await service_queryrow(
             "UPDATE knowledge_bases SET kind = $1, updated_at = now() "
             "WHERE id = $2::uuid AND user_id = $3 "
             "RETURNING id, name, slug, kind",
