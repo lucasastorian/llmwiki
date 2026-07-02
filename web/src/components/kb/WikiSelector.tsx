@@ -2,7 +2,7 @@
 
 import * as React from 'react'
 import { useRouter } from 'next/navigation'
-import { ChevronDown, Plus, Pencil, Trash2, Library } from 'lucide-react'
+import { ChevronDown, Plus, Pencil, Trash2, Library, GraduationCap, BookOpen } from 'lucide-react'
 import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover'
 import { Command, CommandInput, CommandList, CommandItem, CommandEmpty, CommandGroup, CommandSeparator } from '@/components/ui/command'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
@@ -14,6 +14,8 @@ export function WikiSelector({ kbName, kbId }: { kbName: string; kbId: string })
   const createKB = useKBStore((s) => s.createKB)
   const renameKB = useKBStore((s) => s.renameKB)
   const deleteKB = useKBStore((s) => s.deleteKB)
+  const setKBKind = useKBStore((s) => s.setKBKind)
+  const isCourse = knowledgeBases.find((kb) => kb.id === kbId)?.kind === 'course'
   const [open, setOpen] = React.useState(false)
   const [search, setSearch] = React.useState('')
   const [createDialogOpen, setCreateDialogOpen] = React.useState(false)
@@ -52,6 +54,15 @@ export function WikiSelector({ kbName, kbId }: { kbName: string; kbId: string })
       // error handled by store
     } finally {
       setRenaming(false)
+    }
+  }
+
+  const handleConvert = async () => {
+    setOpen(false)
+    try {
+      await setKBKind(kbId, isCourse ? 'wiki' : 'course')
+    } catch {
+      // error handled by store
     }
   }
 
@@ -123,6 +134,12 @@ export function WikiSelector({ kbName, kbId }: { kbName: string; kbId: string })
                     >
                       <Pencil className="size-3.5 mr-2" />
                       Rename
+                    </CommandItem>
+                    <CommandItem onSelect={handleConvert}>
+                      {isCourse
+                        ? <BookOpen className="size-3.5 mr-2" />
+                        : <GraduationCap className="size-3.5 mr-2" />}
+                      {isCourse ? 'Convert to wiki' : 'Convert to course'}
                     </CommandItem>
                     <CommandItem
                       onSelect={() => {

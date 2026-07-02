@@ -87,6 +87,15 @@ class PostgresVaultFS(VaultFS):
         await self._scaffold_wiki(str(row["id"]), row["name"])
         return row
 
+    async def set_knowledge_base_kind(self, kb_id: str, kind: str) -> dict | None:
+        return await scoped_queryrow(
+            self.user_id,
+            "UPDATE knowledge_bases SET kind = $1, updated_at = now() "
+            "WHERE id = $2::uuid AND user_id = $3 "
+            "RETURNING id, name, slug, kind",
+            kind, kb_id, self.user_id,
+        )
+
 
     async def get_document(self, kb_id: str, filename: str, dir_path: str) -> dict | None:
         return await scoped_queryrow(

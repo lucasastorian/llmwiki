@@ -15,6 +15,7 @@ type KBState = {
   createKB: (name: string, description?: string, kind?: 'wiki' | 'course') => Promise<KnowledgeBase>
   deleteKB: (id: string) => Promise<void>
   renameKB: (id: string, name: string) => Promise<void>
+  setKBKind: (id: string, kind: 'wiki' | 'course') => Promise<void>
 }
 
 function getToken(): string {
@@ -70,6 +71,17 @@ export const useKBStore = create<KBState>((set, get) => ({
     const updated = await apiFetch<KnowledgeBase>(`/v1/knowledge-bases/${id}`, token, {
       method: 'PATCH',
       body: JSON.stringify({ name }),
+    })
+    set({
+      knowledgeBases: get().knowledgeBases.map((kb) => (kb.id === id ? updated : kb)),
+    })
+  },
+
+  setKBKind: async (id: string, kind: 'wiki' | 'course') => {
+    const token = getToken()
+    const updated = await apiFetch<KnowledgeBase>(`/v1/knowledge-bases/${id}`, token, {
+      method: 'PATCH',
+      body: JSON.stringify({ kind }),
     })
     set({
       knowledgeBases: get().knowledgeBases.map((kb) => (kb.id === id ? updated : kb)),

@@ -107,6 +107,13 @@ class TestWorkspace:
         finally:
             await SqliteVaultFS.close()
 
+    async def test_set_knowledge_base_kind_converts_both_ways(self, fs):
+        instance, kb_id = fs
+        to_course = await instance.set_knowledge_base_kind(kb_id, "course")
+        assert to_course["kind"] == "course"
+        back_to_wiki = await instance.set_knowledge_base_kind(kb_id, "wiki")
+        assert back_to_wiki["kind"] == "wiki"
+
     async def test_resolve_kb_returns_workspace(self, fs):
         instance, kb_id = fs
         kb = await instance.resolve_kb("test-workspace")

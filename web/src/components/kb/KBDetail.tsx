@@ -803,7 +803,7 @@ export function KBDetail({ kbId, kbSlug, kbName, viewMode, routeFilesPath }: Pro
       </AnimatePresence>
 
       <div className="flex-1 overflow-hidden flex">
-        <div className="w-[272px] shrink-0">
+        <div className="shrink-0">
           <KBSidenav
             kbId={kbId}
             kbName={kbName}
@@ -900,6 +900,7 @@ export function KBDetail({ kbId, kbSlug, kbName, viewMode, routeFilesPath }: Pro
                   content={pageContent}
                   title={pageTitle}
                   path={wikiActivePath ?? undefined}
+                  documentId={activeWikiDocId}
                   onNavigate={handleWikiNavigate}
                   onSourceClick={handleCitationSourceClick}
                   onGraphClick={handlePageGraphClick}

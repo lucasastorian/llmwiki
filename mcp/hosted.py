@@ -80,6 +80,9 @@ mcp = FastMCP(
         enable_dns_rebinding_protection=True,
         allowed_hosts=_build_allowed_hosts(settings.MCP_URL),
     ),
+    # Stateless: in-memory sessions die on every Railway restart/redeploy, and the
+    # idle SSE stream has no keepalive so the edge proxy cuts it — both drop clients.
+    stateless_http=True,
 )
 
 def _get_user_id(ctx):

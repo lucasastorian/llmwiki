@@ -369,7 +369,7 @@ export function WikiOnlyDetail({
   return (
     <div className="flex h-full flex-col">
       <div className="flex min-h-0 flex-1 overflow-hidden">
-        <div className="w-[272px] shrink-0">
+        <div className="shrink-0">
           <KBSidenav
             kbId={kbId}
             kbName={kbName}
@@ -403,6 +403,7 @@ export function WikiOnlyDetail({
               content={pageContent}
               title={pageTitle}
               path={wikiActivePath}
+              documentId={activeWikiDocId}
               onNavigate={handleWikiNavigate}
               onSourceClick={handleCitationSourceClick}
               onGraphClick={() => router.push(`/wikis/${kbSlug}/graph`)}

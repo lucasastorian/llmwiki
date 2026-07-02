@@ -224,6 +224,16 @@ class TestWriteIsolation:
         )
         assert resp.status_code == 404
 
+    async def test_convert_kb_kind_cross_tenant_does_not_modify(self, client, pool):
+        resp = await client.patch(
+            f"/v1/knowledge-bases/{KB_B_ID}",
+            headers=auth_headers(USER_A_ID),
+            json={"kind": "course"},
+        )
+        assert resp.status_code == 404
+        row = await pool.fetchrow("SELECT kind FROM knowledge_bases WHERE id = $1", KB_B_ID)
+        assert row["kind"] == "wiki"
+
     async def test_delete_kb_cross_tenant_returns_404(self, client):
         resp = await client.delete(
             f"/v1/knowledge-bases/{KB_B_ID}",

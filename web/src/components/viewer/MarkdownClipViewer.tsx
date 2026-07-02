@@ -12,6 +12,7 @@ import { createMarkdownExtensions } from '@/lib/tiptap/extensions'
 import { canonicalPlaintextFromTipTapDoc } from '@/lib/highlights/canonicalPlaintext'
 import { decorationsFromHighlights } from '@/lib/highlights/applyHighlights'
 import { highlightPluginKey } from '@/lib/highlights/decorationPlugin'
+import { createHighlightId } from '@/lib/highlights/ids'
 import { sanitizeUrl } from '@/components/editor/PropertyEditors'
 import type { Highlight, HighlightsResponse, TextAnchor } from '@/lib/highlights/types'
 import type { Document } from '@/lib/types'
@@ -578,13 +579,6 @@ function normalizeDimension(value: unknown): number | null {
   if (typeof value !== 'number' || !Number.isFinite(value)) return null
   const rounded = Math.round(value)
   return rounded > 0 ? rounded : null
-}
-
-function createHighlightId(): string {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID()
-  }
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
 }
 
 function textAnchorFromSelection(

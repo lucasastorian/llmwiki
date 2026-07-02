@@ -59,6 +59,7 @@
   --radius: 0.5rem;
   --radius-md: calc(var(--radius) - 2px);
   --radius-sm: calc(var(--radius) - 4px);
+  --wiki-highlight: 45 90% 55% / 0.35;
 
   /* Light theme — warm paper */
   --background: 30 3% 96%;
@@ -129,6 +130,17 @@
   --sidebar-accent-foreground: 40 10% 90%;
   --sidebar-border: 20 6% 16%;
   --sidebar-ring: 24 5% 55%;
+  --wiki-highlight: 45 80% 50% / 0.25;
+}
+
+/* CSS Custom Highlight API paint for wiki-page highlights (see WikiHighlighter). */
+::highlight(wiki-highlight) {
+  background-color: hsl(var(--wiki-highlight));
+}
+::highlight(wiki-highlight-note) {
+  background-color: hsl(var(--wiki-highlight));
+  text-decoration: underline dotted hsl(45 70% 45%);
+  text-underline-offset: 3px;
 }
 
 @layer base {

@@ -14,6 +14,7 @@ import { cn } from '@/lib/utils'
 import { apiFetch } from '@/lib/api'
 import { useUserStore } from '@/stores'
 import { ExpandableMedia } from './DiagramViewer'
+import { WikiHighlighter } from './WikiHighlighter'
 import type { DocumentListItem } from '@/lib/types'
 
 const MermaidBlock = dynamic(() => import('./MermaidBlock').then((mod) => mod.MermaidBlock), {
@@ -105,6 +106,20 @@ interface MdastLike {
   type: string
   value?: string
   children?: MdastLike[]
+}
+
+// remark-math only parses dollar delimiters; models routinely author \( \) and \[ \],
+// which markdown then eats as paren escapes. Convert to $ / $$ outside code fences and spans.
+function normalizeMathDelimiters(md: string): string {
+  const segments = md.split(/(```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$)|`[^`\n]*`)/)
+  return segments
+    .map((segment, i) => {
+      if (i % 2 === 1) return segment
+      return segment
+        .replace(/\\\[([\s\S]+?)\\\]/g, (_, inner: string) => `$$${inner}$$`)
+        .replace(/\\\((.+?)\\\)/g, (_, inner: string) => `$${inner.trim()}$`)
+    })
+    .join('')
 }
 
 // Models routinely double-escape LaTeX backslashes (\\log instead of \log) when authoring through tools;
@@ -411,6 +426,7 @@ interface WikiContentProps {
   content: string
   title: string
   path?: string
+  documentId?: string | null
   onNavigate: (path: string) => void
   onSourceClick?: (filename: string, page?: number) => void
   onGraphClick?: () => void
@@ -432,10 +448,13 @@ interface LessonLink {
   path: string
 }
 
-export function WikiContent({ content, title, path, onNavigate, onSourceClick, onGraphClick, documents, courseMode = false, courseView = null, isComplete = false, prevLesson = null, forwardLabel = null, onForward, resumeLesson = null, onLessonNavigate, lessonsTotal = 0, lessonsComplete = 0 }: WikiContentProps) {
+export function WikiContent({ content, title, path, documentId = null, onNavigate, onSourceClick, onGraphClick, documents, courseMode = false, courseView = null, isComplete = false, prevLesson = null, forwardLabel = null, onForward, resumeLesson = null, onLessonNavigate, lessonsTotal = 0, lessonsComplete = 0 }: WikiContentProps) {
+  const scrollRef = React.useRef<HTMLDivElement | null>(null)
+  const markdownRef = React.useRef<HTMLDivElement | null>(null)
   const body = React.useMemo(() => stripFrontmatter(content), [content])
   const description = React.useMemo(() => parseFrontmatterField(content, 'description'), [content])
-  const { heading, rest: processedContent } = React.useMemo(() => extractLeadingH1(body), [body])
+  const { heading, rest } = React.useMemo(() => extractLeadingH1(body), [body])
+  const processedContent = React.useMemo(() => normalizeMathDelimiters(rest), [rest])
   const pageTitle = toDisplayTitle(heading ?? title)
   const eyebrow = React.useMemo(() => pathEyebrow(path), [path])
   const tocItems = React.useMemo(() => extractTocFromMarkdown(processedContent), [processedContent])
@@ -757,7 +776,7 @@ export function WikiContent({ content, title, path, onNavigate, onSourceClick, o
   const hasToc = tocItems.length > 0
 
   return (
-    <div className="h-full overflow-y-auto" id="wiki-scroll-container">
+    <div className="relative h-full overflow-y-auto" id="wiki-scroll-container" ref={scrollRef}>
       <div className={cn(
         'mx-auto px-6 py-10',
         hasToc ? 'max-w-5xl' : 'max-w-3xl',
@@ -803,7 +822,7 @@ export function WikiContent({ content, title, path, onNavigate, onSourceClick, o
                 <p className="text-[15px] text-muted-foreground mt-2.5 leading-relaxed">{description}</p>
               )}
             </div>
-            <div className="wiki-content text-[15px] leading-relaxed">
+            <div className="wiki-content text-[15px] leading-relaxed" ref={markdownRef}>
               <ReactMarkdown
                 remarkPlugins={[remarkGfm, remarkMath, remarkFixOverescapedMath]}
                 rehypePlugins={[rehypeKatex]}
@@ -875,6 +894,14 @@ export function WikiContent({ content, title, path, onNavigate, onSourceClick, o
           )}
         </div>
       </div>
+      {documentId && (
+        <WikiHighlighter
+          scrollRef={scrollRef}
+          contentRef={markdownRef}
+          documentId={documentId}
+          contentKey={processedContent}
+        />
+      )}
     </div>
   )
 }

@@ -55,6 +55,32 @@ def register(mcp: FastMCP, get_user_id, fs_factory) -> None:
         )
 
     @mcp.tool(
+        name="set_course_mode",
+        description=(
+            "Convert an existing knowledge base into a course (kind='course') or back "
+            "into a plain wiki (kind='wiki'). A course renders its pages as ordered "
+            "lessons with progress tracking; a wiki is free-form. Reversible — this only "
+            "changes how the app renders the knowledge base, never its content."
+        ),
+    )
+    async def set_course_mode(ctx: Context, knowledge_base: str, kind: str) -> str:
+        if kind not in ("wiki", "course"):
+            return "Error: kind must be 'wiki' or 'course'."
+
+        user_id = get_user_id(ctx)
+        fs = fs_factory(user_id)
+        kb = await fs.resolve_kb(knowledge_base)
+        if not kb:
+            return f"Error: knowledge base '{knowledge_base}' not found."
+
+        updated = await fs.set_knowledge_base_kind(kb["id"], kind)
+        if not updated:
+            return f"Error: could not update '{knowledge_base}'."
+
+        label = "course" if kind == "course" else "wiki"
+        return f"**{updated['name']}** (`{updated['slug']}`) is now a {label}."
+
+    @mcp.tool(
         name="list_knowledge_bases",
         description=(
             "List the user's knowledge bases with their names and slugs.\n\n"

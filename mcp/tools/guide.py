@@ -140,6 +140,10 @@ graph LR
 - Create: `create(path="/wiki/", title="diagram.svg", content="<svg>...</svg>", tags=["diagram"])`
 - Embed in wiki pages: `![Description](diagram.svg)`
 
+**Math** — LaTeX renders via KaTeX, dollar delimiters ONLY:
+- Inline: `$h_t^{(\ell)}$` — Display: `$$L = -\log p(y)$$`
+- Never use `\( \)` or `\[ \]` — markdown eats the backslashes and the formula renders as plain text
+
 ### Citations — REQUIRED
 
 Every factual claim MUST cite its source via markdown footnotes:
@@ -213,7 +217,7 @@ Use the reference graph to maintain consistency. After editing a page, check the
 
 A **course** is a knowledge base with `kind="course"`. Same engine, same tools, same page format as a wiki — the only difference is how the app renders it: the sidebar shows a lesson rail with per-lesson progress (complete / current / locked), and each lesson gets a **Mark complete** action. Progress persists, so the user can leave and resume later. That cross-session resume is the whole point.
 
-Create one with `create_knowledge_base(name="...", kind="course")`.
+Create one with `create_knowledge_base(name="...", kind="course")`, or convert an existing wiki with `set_course_mode(knowledge_base="...", kind="course")` (reversible — pass `kind="wiki"` to convert back).
 
 ### Structure — group lessons into modules (do this by default)
 A course is authored like a wiki under `/wiki/`, but **organize the lessons into modules — do not dump a flat list of lessons at the root.** A module is a folder; a lesson is a markdown file inside it. The sidebar renders each module as a collapsible group with its lessons beneath; a flat pile reads poorly and is almost never what you want.
@@ -240,6 +244,9 @@ Lessons follow every wiki writing standard: required frontmatter (with a clean `
 
 ### Do NOT author progress
 Never write completion state into a page. The app owns progress (the user clicks **Mark complete**); it is derived per-lesson and stored by the app, not by you. Your job is to author the lessons; the app tracks the journey through them.
+
+### Highlights are confusion signals
+Users can highlight passages on any wiki page and attach a note. These surface in the `## Highlights & Annotations` appendix when you `read` the page. On a lesson, treat them as points of confusion: rework the highlighted passage — a clearer explanation, an example, a diagram — rather than just acknowledging the note. Highlights anchor to the exact text, so rewriting a passage clears its marker in the app; an annotation quoting text that no longer exists in the page has already been addressed — don't rework it again.
 
 ## Available Knowledge Bases
 

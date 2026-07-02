@@ -6,6 +6,7 @@ import {
   ChevronRight, FileText, NotepadText, Library,
   Upload, BookOpen, ArrowUpRight, Search as SearchIcon,
   Lightbulb, Box, ScrollText, Network, Folder, Check, Lock,
+  PanelLeftClose, PanelLeftOpen,
 } from 'lucide-react'
 import {
   CommandDialog, CommandInput, CommandList, CommandItem,
@@ -26,6 +27,8 @@ interface Usage {
   max_pages: number
   max_storage_bytes: number
 }
+
+const SIDENAV_COLLAPSED_KEY = 'kb-sidenav-collapsed'
 
 // Only normalize all-lowercase names (file slugs); preserve intentional casing like "GRPO" or "LoRA".
 function toDisplayTitle(title: string): string {
@@ -74,6 +77,17 @@ export function KBSidenav({
   courseProgress,
 }: KBSidenavProps) {
   const [searchOpen, setSearchOpen] = React.useState(false)
+  const [collapsed, setCollapsed] = React.useState(false)
+
+  React.useEffect(() => {
+    setCollapsed(localStorage.getItem(SIDENAV_COLLAPSED_KEY) === '1')
+  }, [])
+
+  const toggleCollapsed = () => {
+    const next = !collapsed
+    setCollapsed(next)
+    localStorage.setItem(SIDENAV_COLLAPSED_KEY, next ? '1' : '0')
+  }
 
   React.useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -126,13 +140,73 @@ export function KBSidenav({
   const sourceCount = sourceDocs.length
 
   return (
-    <div className="h-full flex flex-col border-r border-border">
-      {/* Wiki selector */}
-      <div className="shrink-0 px-2 pt-2 pb-2">
-        <WikiSelector kbId={kbId} kbName={kbName} />
-      </div>
+    <div
+      className={cn(
+        'h-full flex flex-col border-r border-border overflow-hidden transition-[width] duration-200',
+        collapsed ? 'w-12' : 'w-[272px]',
+      )}
+    >
+      {collapsed && (
+        <div className="flex flex-col items-center gap-1.5 pt-2">
+          <button
+            onClick={toggleCollapsed}
+            title="Expand sidebar"
+            className="flex items-center justify-center size-8 rounded-md text-muted-foreground/50 hover:text-muted-foreground hover:bg-accent transition-colors cursor-pointer"
+          >
+            <PanelLeftOpen className="size-3.5" />
+          </button>
+          <button
+            onClick={() => setSearchOpen(true)}
+            title="Search"
+            className="flex items-center justify-center size-8 rounded-md text-muted-foreground/50 hover:text-muted-foreground hover:bg-accent transition-colors cursor-pointer"
+          >
+            <SearchIcon className="size-3.5" />
+          </button>
+          {!courseMode && (
+            <>
+              <button
+                onClick={onGraphToggle}
+                title="Knowledge graph"
+                className={cn(
+                  'flex items-center justify-center size-8 rounded-md transition-colors cursor-pointer',
+                  graphViewActive
+                    ? 'bg-accent text-foreground'
+                    : 'text-muted-foreground/50 hover:text-muted-foreground hover:bg-accent',
+                )}
+              >
+                <Network className="size-3.5" />
+              </button>
+              <button
+                onClick={onUpload}
+                title="Upload files"
+                className="flex items-center justify-center size-8 rounded-md text-muted-foreground/50 hover:text-muted-foreground hover:bg-accent transition-colors cursor-pointer"
+              >
+                <Upload className="size-3.5" />
+              </button>
+            </>
+          )}
+        </div>
+      )}
 
-      {courseMode && courseProgress && courseProgress.total > 0 && (
+      {!collapsed && (
+        <>
+          {/* Wiki selector */}
+          <div className="shrink-0 px-2 pt-2 pb-2 flex items-center gap-1">
+            <div className="flex-1 min-w-0">
+              <WikiSelector kbId={kbId} kbName={kbName} />
+            </div>
+            <button
+              onClick={toggleCollapsed}
+              title="Collapse sidebar"
+              className="flex items-center justify-center size-7 shrink-0 rounded-md text-muted-foreground/50 hover:text-muted-foreground hover:bg-accent transition-colors cursor-pointer"
+            >
+              <PanelLeftClose className="size-3.5" />
+            </button>
+          </div>
+        </>
+      )}
+
+      {!collapsed && courseMode && courseProgress && courseProgress.total > 0 && (
         <div className="shrink-0 px-3 pb-2 -mt-1 flex items-center gap-2">
           <div className="flex-1 h-1 rounded-full bg-muted overflow-hidden">
             <div
@@ -146,7 +220,8 @@ export function KBSidenav({
         </div>
       )}
 
-      {/* Search + Upload + Graph */}
+      {/* Search + Graph */}
+      {!collapsed && (
       <div className="shrink-0 px-2 pb-1 flex items-center gap-1.5">
         <button
           onClick={() => setSearchOpen(true)}
@@ -158,29 +233,21 @@ export function KBSidenav({
           <kbd className="text-[10px] text-muted-foreground/30 bg-muted px-1 rounded">{isMac ? '⌘K' : 'Ctrl+K'}</kbd>
         </button>
         {!courseMode && (
-          <>
-            <button
-              onClick={onGraphToggle}
-              className={cn(
-                'flex items-center justify-center size-8 shrink-0 border rounded-md transition-colors cursor-pointer',
-                graphViewActive
-                  ? 'bg-accent text-foreground border-border'
-                  : 'text-muted-foreground/50 hover:text-muted-foreground border-border hover:bg-accent',
-              )}
-              title="Knowledge graph"
-            >
-              <Network className="size-3" />
-            </button>
-            <button
-              onClick={onUpload}
-              className="flex items-center justify-center size-8 shrink-0 text-muted-foreground/50 hover:text-muted-foreground border border-border hover:bg-accent rounded-md transition-colors cursor-pointer"
-              title="Upload files"
-            >
-              <Upload className="size-3" />
-            </button>
-          </>
+          <button
+            onClick={onGraphToggle}
+            className={cn(
+              'flex items-center justify-center size-8 shrink-0 border rounded-md transition-colors cursor-pointer',
+              graphViewActive
+                ? 'bg-accent text-foreground border-border'
+                : 'text-muted-foreground/50 hover:text-muted-foreground border-border hover:bg-accent',
+            )}
+            title="Knowledge graph"
+          >
+            <Network className="size-3" />
+          </button>
         )}
       </div>
+      )}
 
       {/* Search palette */}
       <CommandDialog open={searchOpen} onOpenChange={setSearchOpen}>
@@ -256,6 +323,8 @@ export function KBSidenav({
       </CommandDialog>
 
       {/* Wiki tree — top-level folders render as sections; pages grouped beneath a guide */}
+      {!collapsed && (
+      <>
       <div className="flex-1 min-h-0 overflow-y-auto no-scrollbar px-2 pt-1.5">
         {loading ? (
           <SidenavSkeleton lines={3} />
@@ -298,29 +367,42 @@ export function KBSidenav({
         )}
       </div>
 
-      {/* Sources button — separated from passive info below */}
+      {/* Sources — Upload rides the row */}
       <div className="shrink-0 px-2 pb-1">
-        <button
-          onClick={onFilesToggle}
-          className={cn(
-            'flex items-center gap-2 w-full px-2.5 py-2 text-[13px] rounded-md transition-colors cursor-pointer',
-            filesViewActive
-              ? 'bg-accent text-foreground font-medium'
-              : 'text-muted-foreground hover:text-foreground hover:bg-accent/50',
+        <div className="flex items-center gap-1">
+          <button
+            onClick={onFilesToggle}
+            className={cn(
+              'flex items-center gap-2 flex-1 min-w-0 px-2.5 py-2 text-[13px] rounded-md transition-colors cursor-pointer',
+              filesViewActive
+                ? 'bg-accent text-foreground font-medium'
+                : 'text-muted-foreground hover:text-foreground hover:bg-accent/50',
+            )}
+          >
+            <Library className="size-3.5" />
+            <span className="flex-1 text-left">Sources</span>
+            {sourceCount > 0 && (
+              <span className="text-[10px] text-muted-foreground/30">{sourceCount}</span>
+            )}
+          </button>
+          {!courseMode && (
+            <button
+              onClick={onUpload}
+              title="Upload files"
+              className="flex items-center justify-center size-7 shrink-0 rounded-md text-muted-foreground/50 hover:text-muted-foreground hover:bg-accent transition-colors cursor-pointer"
+            >
+              <Upload className="size-3.5" />
+            </button>
           )}
-        >
-          <Library className="size-3.5" />
-          <span className="flex-1 text-left">Sources</span>
-          {sourceCount > 0 && (
-            <span className="text-[10px] text-muted-foreground/30">{sourceCount}</span>
-          )}
-        </button>
+        </div>
       </div>
 
       {/* User menu */}
       <div className="shrink-0 border-t border-border p-2">
         <SidenavUserMenu />
       </div>
+      </>
+      )}
     </div>
   )
 }

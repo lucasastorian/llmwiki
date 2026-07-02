@@ -25,6 +25,9 @@ class VaultFS(ABC):
     async def create_knowledge_base(self, name: str, description: str | None = None, kind: str = "wiki") -> dict: ...
 
     @abstractmethod
+    async def set_knowledge_base_kind(self, kb_id: str, kind: str) -> dict | None: ...
+
+    @abstractmethod
     async def get_document(self, kb_id: str, filename: str, dir_path: str) -> dict | None: ...
 
     @abstractmethod

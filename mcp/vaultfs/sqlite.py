@@ -164,6 +164,16 @@ class SqliteVaultFS(VaultFS):
             "local_singleton": True,
         }
 
+    async def set_knowledge_base_kind(self, kb_id: str, kind: str) -> dict | None:
+        db = self._db_or_raise()
+        await db.execute("UPDATE workspace SET kind = ? WHERE id = ?", (kind, kb_id))
+        await db.commit()
+        cursor = await db.execute("SELECT id, name, name as slug, kind FROM workspace WHERE id = ?", (kb_id,))
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        return _rows_to_dicts(cursor, [row])[0]
+
 
     async def get_document(self, kb_id: str, filename: str, dir_path: str) -> dict | None:
         db = self._db_or_raise()

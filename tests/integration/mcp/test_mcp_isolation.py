@@ -266,6 +266,12 @@ class TestWriteIsolation:
         row = await pg_pool.fetchrow("SELECT content FROM documents WHERE id = $1", DOC_B_ID)
         assert row["content"] == "Bob secret"
 
+    async def test_set_knowledge_base_kind_other_tenant_does_not_modify(self, fs_alice, pg_pool):
+        result = await fs_alice.set_knowledge_base_kind(str(KB_B_ID), "course")
+        assert result is None
+        row = await pg_pool.fetchrow("SELECT kind FROM knowledge_bases WHERE id = $1", KB_B_ID)
+        assert row["kind"] == "wiki"
+
     async def test_create_document_into_other_tenant_kb_rejected(self, fs_alice, pg_pool):
         """create_document writes into the caller's own KB but refuses a foreign one."""
         own = await fs_alice.create_document(
