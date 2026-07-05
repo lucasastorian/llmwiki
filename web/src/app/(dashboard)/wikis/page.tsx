@@ -6,7 +6,10 @@ import { motion } from 'framer-motion'
 import { useKBStore, useUserStore } from '@/stores'
 import {
   Plus, Loader2, LogOut, Moon, Sun, BookOpen, AlertCircle, RefreshCcw,
+  EllipsisVertical, Pencil, Trash2,
 } from 'lucide-react'
+import { toast } from 'sonner'
+import type { KnowledgeBase } from '@/lib/types'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from '@/components/ui/dialog'
@@ -230,58 +233,15 @@ export default function WikisPage() {
       <div className="flex-1 overflow-y-auto">
         <div className="max-w-4xl mx-auto px-8 py-6">
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            {knowledgeBases.map((kb, index) => {
-              const stats: string[] = []
-              if (kb.source_count > 0) stats.push(`${kb.source_count} source${kb.source_count !== 1 ? 's' : ''}`)
-              if (kb.wiki_page_count > 0) stats.push(`${kb.wiki_page_count} page${kb.wiki_page_count !== 1 ? 's' : ''}`)
-              const handleOpen = () => openWiki(kb.slug)
-              const isOpening = openingSlug === kb.slug
-
-              return (
-                <motion.div
-                  key={kb.id}
-                  initial={{ opacity: 0, y: 12 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.3, delay: index * 0.05, ease: [0.25, 0.1, 0.25, 1] }}
-                  role="button"
-                  tabIndex={0}
-                  onClick={handleOpen}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      e.preventDefault()
-                      handleOpen()
-                    }
-                  }}
-                  className="flex flex-col items-start gap-3 p-5 rounded-xl border border-border bg-card hover:bg-accent/50 transition-colors cursor-pointer text-left group overflow-hidden"
-                >
-                  <div className="flex items-center gap-3 min-w-0 w-full">
-                    <div className="flex items-center justify-center w-9 h-9 rounded-lg bg-muted group-hover:bg-accent transition-colors flex-shrink-0">
-                      {isOpening ? (
-                        <Loader2 size={16} className="animate-spin text-muted-foreground" />
-                      ) : (
-                        <BookOpen size={16} className="text-muted-foreground group-hover:text-foreground transition-colors" />
-                      )}
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <h2 className="text-sm font-medium text-foreground truncate">{kb.name}</h2>
-                      {kb.description && (
-                        <p className="text-xs text-muted-foreground mt-0.5 truncate">{kb.description}</p>
-                      )}
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2 text-[11px] text-muted-foreground/50 w-full">
-                    {stats.length > 0 ? (
-                      <span>{stats.join(' \u00B7 ')}</span>
-                    ) : (
-                      <span className="text-muted-foreground/30">No sources yet</span>
-                    )}
-                    <span className="ml-auto text-muted-foreground/30 shrink-0">
-                      {relativeTime(kb.updated_at)}
-                    </span>
-                  </div>
-                </motion.div>
-              )
-            })}
+            {knowledgeBases.map((kb, index) => (
+              <WikiCard
+                key={kb.id}
+                kb={kb}
+                index={index}
+                isOpening={openingSlug === kb.slug}
+                onOpen={() => openWiki(kb.slug)}
+              />
+            ))}
 
             <button
               onClick={() => setDialogOpen(true)}
@@ -305,6 +265,172 @@ export default function WikisPage() {
         onCreate={handleCreate}
       />
     </div>
+  )
+}
+
+function WikiCard({
+  kb,
+  index,
+  isOpening,
+  onOpen,
+}: {
+  kb: KnowledgeBase
+  index: number
+  isOpening: boolean
+  onOpen: () => void
+}) {
+  const renameKB = useKBStore((s) => s.renameKB)
+  const deleteKB = useKBStore((s) => s.deleteKB)
+  const [renameOpen, setRenameOpen] = React.useState(false)
+  const [deleteOpen, setDeleteOpen] = React.useState(false)
+  const [renameName, setRenameName] = React.useState(kb.name)
+  const [busy, setBusy] = React.useState(false)
+
+  const stats: string[] = []
+  if (kb.source_count > 0) stats.push(`${kb.source_count} source${kb.source_count !== 1 ? 's' : ''}`)
+  if (kb.wiki_page_count > 0) stats.push(`${kb.wiki_page_count} page${kb.wiki_page_count !== 1 ? 's' : ''}`)
+
+  const handleRename = async () => {
+    const next = renameName.trim()
+    if (!next || next === kb.name || busy) return
+    setBusy(true)
+    try {
+      await renameKB(kb.id, next)
+      setRenameOpen(false)
+    } catch {
+      toast.error('Failed to rename wiki')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const handleDelete = async () => {
+    if (busy) return
+    setBusy(true)
+    try {
+      await deleteKB(kb.id)
+      setDeleteOpen(false)
+    } catch {
+      toast.error('Failed to delete wiki')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <>
+      <motion.div
+        initial={{ opacity: 0, y: 12 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.3, delay: index * 0.05, ease: [0.25, 0.1, 0.25, 1] }}
+        role="button"
+        tabIndex={0}
+        onClick={onOpen}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault()
+            onOpen()
+          }
+        }}
+        className="flex flex-col items-start gap-3 p-5 rounded-xl border border-border bg-card hover:bg-accent/50 transition-colors cursor-pointer text-left group overflow-hidden"
+      >
+        <div className="flex items-center gap-3 min-w-0 w-full">
+          <div className="flex items-center justify-center w-9 h-9 rounded-lg bg-muted group-hover:bg-accent transition-colors flex-shrink-0">
+            {isOpening ? (
+              <Loader2 size={16} className="animate-spin text-muted-foreground" />
+            ) : (
+              <BookOpen size={16} className="text-muted-foreground group-hover:text-foreground transition-colors" />
+            )}
+          </div>
+          <div className="min-w-0 flex-1">
+            <h2 className="text-sm font-medium text-foreground truncate">{kb.name}</h2>
+            {kb.description && (
+              <p className="text-xs text-muted-foreground mt-0.5 truncate">{kb.description}</p>
+            )}
+          </div>
+          {/* Menu events must not reach the card's open handler. */}
+          <span
+            className="shrink-0 -mr-2"
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => e.stopPropagation()}
+          >
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  aria-label="Wiki actions"
+                  className="flex items-center justify-center size-7 rounded-md text-muted-foreground/50 hover:text-foreground hover:bg-accent opacity-0 group-hover:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 transition-opacity cursor-pointer"
+                >
+                  <EllipsisVertical className="size-3.5" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-36">
+                <DropdownMenuItem
+                  onSelect={() => {
+                    setRenameName(kb.name)
+                    setRenameOpen(true)
+                  }}
+                >
+                  <Pencil />
+                  Rename
+                </DropdownMenuItem>
+                <DropdownMenuItem variant="destructive" onSelect={() => setDeleteOpen(true)}>
+                  <Trash2 />
+                  Delete
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </span>
+        </div>
+        <div className="flex items-center gap-2 text-[11px] text-muted-foreground/50 w-full">
+          {stats.length > 0 ? (
+            <span>{stats.join(' · ')}</span>
+          ) : (
+            <span className="text-muted-foreground/30">No sources yet</span>
+          )}
+          <span className="ml-auto text-muted-foreground/30 shrink-0">
+            {relativeTime(kb.updated_at)}
+          </span>
+        </div>
+      </motion.div>
+
+      <Dialog open={renameOpen} onOpenChange={setRenameOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Rename wiki</DialogTitle>
+          </DialogHeader>
+          <Input
+            value={renameName}
+            onChange={(e) => setRenameName(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && handleRename()}
+            autoFocus
+          />
+          <DialogFooter>
+            <Button onClick={handleRename} disabled={busy || !renameName.trim() || renameName.trim() === kb.name}>
+              {busy ? 'Renaming…' : 'Rename'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete wiki</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            This will permanently delete <strong>{kb.name}</strong> and all its documents. This cannot be undone.
+          </p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteOpen(false)}>
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={handleDelete} disabled={busy}>
+              {busy ? 'Deleting…' : 'Delete'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   )
 }
 

@@ -1,9 +1,17 @@
 """Request/response models for the API surface."""
 
 import re
+from dataclasses import dataclass
 from typing import Literal
+from uuid import UUID
 
 from pydantic import BaseModel, Field
+
+
+@dataclass
+class DownloadedPdf:
+    data: bytes
+    filename: str
 
 
 class CreateKB(BaseModel):
@@ -114,6 +122,12 @@ class UpsertHighlight(BaseModel):
 class DeleteHighlight(BaseModel):
     """Optional body for the DELETE granular endpoint. Empty body is fine."""
     expectedVersion: int | None = None
+
+
+class CreateFromUrl(BaseModel):
+    knowledge_base_id: UUID
+    url: str = Field(max_length=2048)
+    path: str = Field(default="/", max_length=256)
 
 
 class CreateWebClip(BaseModel):

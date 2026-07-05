@@ -14,6 +14,7 @@ import {
   setSelectedFolderPath,
   setSelectedKnowledgeBaseId,
 } from "@/lib/settings";
+import { isPdfTab } from "@/lib/pdf";
 import KBPicker from "./KBPicker";
 import StatusFeedback, { type Status } from "./StatusFeedback";
 import { canonicalize } from "@/lib/url";
@@ -116,9 +117,7 @@ export default function SaveForm({ apiUrl, accessToken }: Props) {
     if (!activeTab?.url || !activeTab.id) return;
 
     const url = activeTab.url;
-    const isPdf =
-      url.toLowerCase().endsWith(".pdf") ||
-      (activeTab.title?.toLowerCase().endsWith(".pdf") ?? false);
+    const isPdf = await isPdfTab(activeTab.id, url, activeTab.title);
 
     setTab({ url, title: activeTab.title ?? "", isPdf, tabId: activeTab.id });
     setTitle(activeTab.title ?? "");

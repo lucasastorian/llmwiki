@@ -29,7 +29,6 @@ export default function App() {
   const [apiUrl, setApiUrl] = useState("");
   const [mode, setModeState] = useState<Mode>("cloud");
   const [currentHost, setCurrentHost] = useState<string | null>(null);
-  const [isPdf, setIsPdf] = useState(false);
   const [hostDisabled, setHostDisabled] = useState(false);
   const [showReloadHint, setShowReloadHint] = useState(false);
   const authNoticeTimer = useRef<number | null>(null);
@@ -45,11 +44,7 @@ export default function App() {
       if (!tab?.url) return;
       const host = new URL(tab.url).hostname.replace(/^www\./, "");
       if (!host) return;
-      const looksLikePdf =
-        tab.url.toLowerCase().endsWith(".pdf") ||
-        (tab.title?.toLowerCase().endsWith(".pdf") ?? false);
       setCurrentHost(host);
-      setIsPdf(looksLikePdf);
       setHostDisabled(await isDomainDisabled(host));
     } catch {
       // Restricted page or no permissions; the toggle button stays hidden.

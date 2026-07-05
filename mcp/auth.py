@@ -44,8 +44,14 @@ class SupabaseTokenVerifier(TokenVerifier):
                     "verify_nbf": True,
                 },
             )
+        except pyjwt.ExpiredSignatureError:
+            logger.info("MCP auth rejected: token expired")
+            return None
+        except pyjwt.PyJWTError as e:
+            logger.info("MCP auth rejected: %s: %s", type(e).__name__, e)
+            return None
         except Exception as e:
-            logger.debug("JWT verification failed: %s", e)
+            logger.warning("MCP auth rejected: JWKS fetch failed: %s", e)
             return None
 
         sub = payload.get("sub", "")

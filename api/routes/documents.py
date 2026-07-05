@@ -3,13 +3,15 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
+from auth import get_current_user
 from deps import get_document_service
 from infra.rate_limit import limiter
 from services.base import DocumentService
 from services.types import (
-    BulkDelete, CreateNote, CreateWebClip,
+    BulkDelete, CreateFromUrl, CreateNote, CreateWebClip,
     ReplaceHighlights, UpdateContent, UpdateMetadata, UpsertHighlight,
 )
+from services.url_ingest import UrlIngestService
 
 router = APIRouter(tags=["documents"])
 
@@ -79,6 +81,17 @@ async def create_web_clip(
     return await service.create_web_clip(
         str(kb_id), body.url, body.title, body.html, highlights, body.path,
     )
+
+
+@router.post("/v1/documents/from-url", status_code=201)
+@limiter.limit("10/minute")
+async def create_document_from_url(request: Request, body: CreateFromUrl):
+    user_id = await get_current_user(request)
+    state = request.app.state
+    if not state.s3_service or not state.ocr_service:
+        raise HTTPException(status_code=501, detail="URL ingestion is only available in hosted mode")
+    service = UrlIngestService(state.pool, state.s3_service, state.ocr_service)
+    return await service.ingest_pdf(user_id, str(body.knowledge_base_id), body.url, body.path)
 
 
 @router.get("/v1/documents/{doc_id}/highlights")

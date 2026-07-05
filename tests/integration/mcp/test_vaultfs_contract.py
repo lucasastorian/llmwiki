@@ -107,12 +107,24 @@ class TestWorkspace:
         finally:
             await SqliteVaultFS.close()
 
-    async def test_set_knowledge_base_kind_converts_both_ways(self, fs):
+    async def test_update_knowledge_base_converts_kind_both_ways(self, fs):
         instance, kb_id = fs
-        to_course = await instance.set_knowledge_base_kind(kb_id, "course")
+        to_course = await instance.update_knowledge_base(kb_id, kind="course")
         assert to_course["kind"] == "course"
-        back_to_wiki = await instance.set_knowledge_base_kind(kb_id, "wiki")
+        back_to_wiki = await instance.update_knowledge_base(kb_id, kind="wiki")
         assert back_to_wiki["kind"] == "wiki"
+
+    async def test_update_knowledge_base_renames(self, fs):
+        instance, kb_id = fs
+        updated = await instance.update_knowledge_base(kb_id, name="Renamed Vault")
+        assert updated["name"] == "Renamed Vault"
+        assert updated["slug"] == "Renamed Vault"  # local slug is the name
+
+    async def test_update_knowledge_base_sets_description_only(self, fs):
+        instance, kb_id = fs
+        updated = await instance.update_knowledge_base(kb_id, description="A vault about tests.")
+        assert updated["description"] == "A vault about tests."
+        assert updated["name"] == "test-workspace"
 
     async def test_resolve_kb_returns_workspace(self, fs):
         instance, kb_id = fs

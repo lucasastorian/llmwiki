@@ -55,16 +55,32 @@ def register(mcp: FastMCP, get_user_id, fs_factory) -> None:
         )
 
     @mcp.tool(
-        name="set_course_mode",
+        name="update_knowledge_base",
         description=(
-            "Convert an existing knowledge base into a course (kind='course') or back "
-            "into a plain wiki (kind='wiki'). A course renders its pages as ordered "
-            "lessons with progress tracking; a wiki is free-form. Reversible — this only "
-            "changes how the app renders the knowledge base, never its content."
+            "Update a knowledge base's name, description, or kind. Provide only the "
+            "fields to change.\n\n"
+            "kind='course' renders pages as ordered lessons with progress tracking; "
+            "kind='wiki' is free-form. Switching kind is reversible and never touches "
+            "content.\n\n"
+            "Renaming regenerates the slug — the response includes the new slug; use "
+            "it in all subsequent tool calls."
         ),
     )
-    async def set_course_mode(ctx: Context, knowledge_base: str, kind: str) -> str:
-        if kind not in ("wiki", "course"):
+    async def update_knowledge_base(
+        ctx: Context,
+        knowledge_base: str,
+        name: str = "",
+        description: str = "",
+        kind: str = "",
+    ) -> str:
+        name = name.strip()
+        description = description.strip()
+        kind = kind.strip()
+        if not (name or description or kind):
+            return "Error: provide at least one of name, description, or kind."
+        if len(name) > 120:
+            return "Error: knowledge base name must be 120 characters or fewer."
+        if kind and kind not in ("wiki", "course"):
             return "Error: kind must be 'wiki' or 'course'."
 
         user_id = get_user_id(ctx)
@@ -73,12 +89,23 @@ def register(mcp: FastMCP, get_user_id, fs_factory) -> None:
         if not kb:
             return f"Error: knowledge base '{knowledge_base}' not found."
 
-        updated = await fs.set_knowledge_base_kind(kb["id"], kind)
+        updated = await fs.update_knowledge_base(
+            kb["id"],
+            name=name or None,
+            description=description or None,
+            kind=kind or None,
+        )
         if not updated:
             return f"Error: could not update '{knowledge_base}'."
 
-        label = "course" if kind == "course" else "wiki"
-        return f"**{updated['name']}** (`{updated['slug']}`) is now a {label}."
+        changes = [label for label, value in (("name", name), ("description", description), (f"kind={kind}", kind)) if value]
+        summary = f"Updated {', '.join(changes)} for **{updated['name']}** (`{updated['slug']}`)."
+        if updated["slug"] != kb["slug"]:
+            summary += (
+                f" Slug changed: `{kb['slug']}` → `{updated['slug']}` — "
+                "use the new slug in all subsequent tool calls."
+            )
+        return summary
 
     @mcp.tool(
         name="list_knowledge_bases",

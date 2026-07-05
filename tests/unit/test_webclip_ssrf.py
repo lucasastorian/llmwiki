@@ -1,11 +1,12 @@
 """SSRF guard tests for the web-clip image fetcher.
 
-webclip_assets makes outbound requests to user-controlled URLs, so its guards
-are the highest-stakes code in the API. These tests pin the invariants that
-matter: the address blocklist, the all-resolved-addresses-must-be-public rule
-(which defeats DNS rebinding), connection pinning to the validated IP, redirect
-re-validation, and data-URI content validation. No live network — getaddrinfo
-and the httpx transport are mocked.
+Server-side fetchers hit user-controlled URLs, so these guards (now shared via
+infra.safe_fetch) are the highest-stakes code in the API. These tests pin the
+invariants that matter: the address blocklist, the
+all-resolved-addresses-must-be-public rule (which defeats DNS rebinding),
+connection pinning to the validated IP, redirect re-validation, and data-URI
+content validation. No live network — getaddrinfo and the httpx transport are
+mocked.
 """
 
 import base64
@@ -15,6 +16,7 @@ import socket
 import httpx
 import pytest
 
+import infra.safe_fetch as sf
 import services.webclip_assets as w
 
 _REAL_ASYNC_CLIENT = httpx.AsyncClient
@@ -52,12 +54,14 @@ class TestBlockedAddresses:
         "0.0.0.0",             # unspecified
         "224.0.0.1",           # multicast
         "240.0.0.1",           # reserved
+        "100.64.0.1",          # shared/CGNAT — Railway's internal network
+        "100.127.255.254",     # shared/CGNAT upper bound
         "::1",                 # IPv6 loopback
         "fc00::1",             # IPv6 unique-local
         "fe80::1",             # IPv6 link-local
     ])
     def test_blocks_non_public(self, ip):
-        assert w._is_blocked_address(ipaddress.ip_address(ip)) is True
+        assert sf.is_blocked_address(ipaddress.ip_address(ip)) is True
 
     @pytest.mark.parametrize("ip", [
         "8.8.8.8",
@@ -66,33 +70,33 @@ class TestBlockedAddresses:
         "2606:2800:220:1:248:1893:25c8:1946",
     ])
     def test_allows_public(self, ip):
-        assert w._is_blocked_address(ipaddress.ip_address(ip)) is False
+        assert sf.is_blocked_address(ipaddress.ip_address(ip)) is False
 
 
 class TestResolvePublicIP:
 
     def test_public_host_resolves(self, monkeypatch):
-        monkeypatch.setattr(w.socket, "getaddrinfo", _fake_getaddrinfo({"example.com": ["93.184.216.34"]}))
-        assert w._resolve_public_ip("example.com") == "93.184.216.34"
+        monkeypatch.setattr(sf.socket, "getaddrinfo", _fake_getaddrinfo({"example.com": ["93.184.216.34"]}))
+        assert sf.resolve_public_ip("example.com") == "93.184.216.34"
 
     def test_private_host_blocked(self, monkeypatch):
-        monkeypatch.setattr(w.socket, "getaddrinfo", _fake_getaddrinfo({"internal.test": ["10.0.0.5"]}))
-        assert w._resolve_public_ip("internal.test") is None
+        monkeypatch.setattr(sf.socket, "getaddrinfo", _fake_getaddrinfo({"internal.test": ["10.0.0.5"]}))
+        assert sf.resolve_public_ip("internal.test") is None
 
     def test_mixed_public_and_private_blocked(self, monkeypatch):
         """A host with one public and one private A record must be rejected
         entirely — this is the DNS-rebinding shape."""
         monkeypatch.setattr(
-            w.socket, "getaddrinfo",
+            sf.socket, "getaddrinfo",
             _fake_getaddrinfo({"rebind.test": ["93.184.216.34", "10.0.0.5"]}),
         )
-        assert w._resolve_public_ip("rebind.test") is None
+        assert sf.resolve_public_ip("rebind.test") is None
 
     def test_unresolvable_host_returns_none(self, monkeypatch):
         def boom(*args, **kwargs):
             raise socket.gaierror("name resolution failed")
-        monkeypatch.setattr(w.socket, "getaddrinfo", boom)
-        assert w._resolve_public_ip("nx.test") is None
+        monkeypatch.setattr(sf.socket, "getaddrinfo", boom)
+        assert sf.resolve_public_ip("nx.test") is None
 
 
 class TestFetchRemoteImage:
@@ -106,7 +110,7 @@ class TestFetchRemoteImage:
             captured["host_header"] = request.headers.get("host")
             return httpx.Response(200, headers={"content-type": "image/png"}, content=png)
 
-        monkeypatch.setattr(w.socket, "getaddrinfo", _fake_getaddrinfo({"cdn.test": ["93.184.216.34"]}))
+        monkeypatch.setattr(sf.socket, "getaddrinfo", _fake_getaddrinfo({"cdn.test": ["93.184.216.34"]}))
         monkeypatch.setattr(w.httpx, "AsyncClient", _client_with_transport(handler))
 
         result = await w._fetch_remote_image("http://cdn.test/a.png")
@@ -123,7 +127,7 @@ class TestFetchRemoteImage:
             sent["count"] += 1
             return httpx.Response(200, content=b"x")
 
-        monkeypatch.setattr(w.socket, "getaddrinfo", _fake_getaddrinfo({"evil.test": ["169.254.169.254"]}))
+        monkeypatch.setattr(sf.socket, "getaddrinfo", _fake_getaddrinfo({"evil.test": ["169.254.169.254"]}))
         monkeypatch.setattr(w.httpx, "AsyncClient", _client_with_transport(handler))
 
         result = await w._fetch_remote_image("http://evil.test/latest/meta-data")
@@ -136,7 +140,7 @@ class TestFetchRemoteImage:
             return httpx.Response(302, headers={"location": "http://meta.test/latest"})
 
         monkeypatch.setattr(
-            w.socket, "getaddrinfo",
+            sf.socket, "getaddrinfo",
             _fake_getaddrinfo({
                 "cdn.test": ["93.184.216.34"],
                 "meta.test": ["169.254.169.254"],
@@ -153,7 +157,7 @@ class TestFetchRemoteImage:
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, headers={"content-type": "image/png"}, content=b"not really a png")
 
-        monkeypatch.setattr(w.socket, "getaddrinfo", _fake_getaddrinfo({"cdn.test": ["93.184.216.34"]}))
+        monkeypatch.setattr(sf.socket, "getaddrinfo", _fake_getaddrinfo({"cdn.test": ["93.184.216.34"]}))
         monkeypatch.setattr(w.httpx, "AsyncClient", _client_with_transport(handler))
 
         assert await w._fetch_remote_image("http://cdn.test/a.png") is None
@@ -165,7 +169,7 @@ class TestFetchRemoteImage:
             return httpx.Response(200, headers={"content-type": "image/png"}, content=png)
 
         monkeypatch.setattr(w, "MAX_IMAGE_BYTES", 16)
-        monkeypatch.setattr(w.socket, "getaddrinfo", _fake_getaddrinfo({"cdn.test": ["93.184.216.34"]}))
+        monkeypatch.setattr(sf.socket, "getaddrinfo", _fake_getaddrinfo({"cdn.test": ["93.184.216.34"]}))
         monkeypatch.setattr(w.httpx, "AsyncClient", _client_with_transport(handler))
 
         assert await w._fetch_remote_image("http://cdn.test/a.png") is None

@@ -164,11 +164,26 @@ class SqliteVaultFS(VaultFS):
             "local_singleton": True,
         }
 
-    async def set_knowledge_base_kind(self, kb_id: str, kind: str) -> dict | None:
+    async def update_knowledge_base(self, kb_id: str, name: str | None = None, description: str | None = None, kind: str | None = None) -> dict | None:
         db = self._db_or_raise()
-        await db.execute("UPDATE workspace SET kind = ? WHERE id = ?", (kind, kb_id))
-        await db.commit()
-        cursor = await db.execute("SELECT id, name, name as slug, kind FROM workspace WHERE id = ?", (kb_id,))
+        sets: list[str] = []
+        args: list = []
+        if name is not None:
+            sets.append("name = ?")
+            args.append(name)
+        if description is not None:
+            sets.append("description = ?")
+            args.append(description)
+        if kind is not None:
+            sets.append("kind = ?")
+            args.append(kind)
+        if sets:
+            args.append(kb_id)
+            await db.execute(f"UPDATE workspace SET {', '.join(sets)} WHERE id = ?", tuple(args))
+            await db.commit()
+        cursor = await db.execute(
+            "SELECT id, name, name as slug, description, kind FROM workspace WHERE id = ?", (kb_id,),
+        )
         row = await cursor.fetchone()
         if not row:
             return None

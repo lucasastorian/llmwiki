@@ -282,28 +282,28 @@ async def test_webclip_asset_materialization_drops_remote_images_when_fetch_fail
 
 @pytest.mark.parametrize("ip", ["127.0.0.1", "169.254.169.254", "10.0.0.5", "192.168.1.1", "::1"])
 def test_resolve_public_ip_rejects_internal_addresses(monkeypatch, ip):
-    from services import webclip_assets
+    from infra import safe_fetch
 
     def fake_getaddrinfo(host, *args, **kwargs):
         family = socket.AF_INET6 if ":" in ip else socket.AF_INET
         return [(family, socket.SOCK_STREAM, 6, "", (ip, 0))]
 
-    monkeypatch.setattr(webclip_assets.socket, "getaddrinfo", fake_getaddrinfo)
-    assert webclip_assets._resolve_public_ip("evil.example") is None
+    monkeypatch.setattr(safe_fetch.socket, "getaddrinfo", fake_getaddrinfo)
+    assert safe_fetch.resolve_public_ip("evil.example") is None
 
 
 def test_resolve_public_ip_allows_public_address(monkeypatch):
-    from services import webclip_assets
+    from infra import safe_fetch
 
     def fake_getaddrinfo(host, *args, **kwargs):
         return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
 
-    monkeypatch.setattr(webclip_assets.socket, "getaddrinfo", fake_getaddrinfo)
-    assert webclip_assets._resolve_public_ip("example.com") == "93.184.216.34"
+    monkeypatch.setattr(safe_fetch.socket, "getaddrinfo", fake_getaddrinfo)
+    assert safe_fetch.resolve_public_ip("example.com") == "93.184.216.34"
 
 
 def test_resolve_public_ip_rejects_when_any_resolved_address_is_internal(monkeypatch):
-    from services import webclip_assets
+    from infra import safe_fetch
 
     def fake_getaddrinfo(host, *args, **kwargs):
         return [
@@ -311,19 +311,19 @@ def test_resolve_public_ip_rejects_when_any_resolved_address_is_internal(monkeyp
             (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("169.254.169.254", 0)),
         ]
 
-    monkeypatch.setattr(webclip_assets.socket, "getaddrinfo", fake_getaddrinfo)
-    assert webclip_assets._resolve_public_ip("rebind.example") is None
+    monkeypatch.setattr(safe_fetch.socket, "getaddrinfo", fake_getaddrinfo)
+    assert safe_fetch.resolve_public_ip("rebind.example") is None
 
 
 @pytest.mark.asyncio
 async def test_build_pinned_request_targets_ip_but_keeps_host_and_sni():
     from urllib.parse import urlparse
 
-    from services import webclip_assets
+    from infra import safe_fetch
 
-    async with webclip_assets.httpx.AsyncClient() as client:
+    async with safe_fetch.httpx.AsyncClient() as client:
         parsed = urlparse("https://cdn.example/hero.png")
-        request = webclip_assets._build_pinned_request(client, parsed, "93.184.216.34")
+        request = safe_fetch.build_pinned_request(client, parsed, "93.184.216.34", {"Accept": "image/*"})
 
     assert request.url.host == "93.184.216.34"
     assert request.headers["host"] == "cdn.example"
@@ -332,12 +332,13 @@ async def test_build_pinned_request_targets_ip_but_keeps_host_and_sni():
 
 @pytest.mark.asyncio
 async def test_fetch_remote_image_blocks_metadata_endpoint(monkeypatch):
+    from infra import safe_fetch
     from services import webclip_assets
 
     def fake_getaddrinfo(host, *args, **kwargs):
         return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("169.254.169.254", 0))]
 
-    monkeypatch.setattr(webclip_assets.socket, "getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setattr(safe_fetch.socket, "getaddrinfo", fake_getaddrinfo)
 
     async def fail_send(*args, **kwargs):
         raise AssertionError("must not issue HTTP to a blocked host")

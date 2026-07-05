@@ -254,8 +254,8 @@ export default defineBackground(() => {
         }
       } else {
         const lastSegment = new URL(url).pathname.split("/").pop();
-        if (lastSegment?.endsWith(".pdf")) {
-          filename = lastSegment;
+        if (lastSegment) {
+          filename = lastSegment.endsWith(".pdf") ? lastSegment : `${lastSegment}.pdf`;
         }
       }
 

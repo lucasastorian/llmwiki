@@ -3,7 +3,7 @@
 import * as React from 'react'
 import { Loader2, RefreshCw } from 'lucide-react'
 import { useUserStore } from '@/stores'
-import { apiFetch } from '@/lib/api'
+import { apiFetch, ApiError } from '@/lib/api'
 import { toast } from 'sonner'
 import dynamic from 'next/dynamic'
 
@@ -39,6 +39,11 @@ interface Props {
   onNavigateToDoc?: (docId: string, sourceKind: string) => void
 }
 
+// d3-force stores simulation state (x/y/vx/vy) on the node objects themselves.
+// Reusing the same objects across renders and remounts is what keeps the
+// layout stable when toggling Sources or navigating away and back.
+const nodeCacheByKb = new Map<string, Map<string, GraphNode>>()
+
 const NODE_RADIUS = 3.5
 const SOURCE_RADIUS = 2.5
 const NODE_COLOR = 'rgba(140, 140, 150, 0.7)'
@@ -60,26 +65,47 @@ export function GraphViewer({ kbId, focusNodeId, onNavigateToDoc }: Props) {
   const [error, setError] = React.useState(false)
   const hoverNodeRef = React.useRef<GraphNode | null>(null)
   const hoverNeighborsRef = React.useRef<Set<string> | null>(null)
-  const connectionCountsRef = React.useRef<Map<string, { outbound: number; inbound: number }>>(new Map())
   const [hoverNodeState, setHoverNodeState] = React.useState<GraphNode | null>(null)
   const [mousePos, setMousePos] = React.useState({ x: 0, y: 0 })
   const [dimensions, setDimensions] = React.useState({ width: 0, height: 0 })
   const [showSources, setShowSources] = React.useState(false)
 
+  // Monotonic sequence: only the latest in-flight fetch may apply its result,
+  // so a slow stale response can never overwrite fresher data.
+  const fetchSeqRef = React.useRef(0)
+
   const fetchGraph = React.useCallback(() => {
     if (!token) return
+    const seq = ++fetchSeqRef.current
     setLoading(true)
     setError(false)
     apiFetch<{ nodes: GraphNode[]; edges: GraphEdge[] }>(
       `/v1/knowledge-bases/${kbId}/graph`,
       token,
     )
-      .then(setGraphData)
-      .catch(() => setError(true))
-      .finally(() => setLoading(false))
+      .then((data) => {
+        if (seq !== fetchSeqRef.current) return
+        setGraphData(data)
+      })
+      .catch(() => {
+        if (seq !== fetchSeqRef.current) return
+        setError(true)
+      })
+      .finally(() => {
+        if (seq !== fetchSeqRef.current) return
+        setLoading(false)
+      })
   }, [kbId, token])
 
   React.useEffect(() => { fetchGraph() }, [fetchGraph])
+
+  // A cites-only wiki has edges, but the wiki-only default filters them all
+  // out — flip the source layer on rather than claiming nothing is indexed.
+  React.useEffect(() => {
+    if (!graphData || focusNodeId) return
+    const hasWikiLinks = graphData.edges.some((e) => e.type === 'links_to')
+    if (!hasWikiLinks && graphData.edges.length > 0) setShowSources(true)
+  }, [graphData, focusNodeId])
 
   // Always track container size — ref is always mounted
   React.useEffect(() => {
@@ -113,27 +139,16 @@ export function GraphViewer({ kbId, focusNodeId, onNavigateToDoc }: Props) {
         toast.success(`${res.citations} citation${res.citations !== 1 ? 's' : ''}, ${res.links} cross-reference${res.links !== 1 ? 's' : ''}`)
       }
       fetchGraph()
-    } catch {
-      toast.error('Failed to rebuild references')
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 429) {
+        toast.info('References were just rebuilt — try again in a minute')
+      } else {
+        toast.error('Failed to rebuild references')
+      }
     } finally {
       setRebuilding(false)
     }
   }, [kbId, token, rebuilding, fetchGraph])
-
-  // Connection counts for tooltip
-  const connectionCounts = React.useMemo(() => {
-    if (!graphData) return new Map<string, { outbound: number; inbound: number }>()
-    const counts = new Map<string, { outbound: number; inbound: number }>()
-    for (const n of graphData.nodes) counts.set(n.id, { outbound: 0, inbound: 0 })
-    for (const e of graphData.edges) {
-      const s = counts.get(e.source)
-      const t = counts.get(e.target)
-      if (s) s.outbound++
-      if (t) t.inbound++
-    }
-    connectionCountsRef.current = counts
-    return counts
-  }, [graphData])
 
   const forceGraphData = React.useMemo(() => {
     if (!graphData) return { nodes: [], links: [] }
@@ -153,9 +168,11 @@ export function GraphViewer({ kbId, focusNodeId, onNavigateToDoc }: Props) {
         (e) => e.source === focusNodeId || e.target === focusNodeId,
       )
     } else {
-      // Global mode: only show wiki-to-wiki links, hide hub pages (overview/log)
+      // Global mode: wiki-to-wiki links; the source layer brings citation edges with it
       const hubTitles = new Set(['overview', 'log'])
-      relevantEdges = relevantEdges.filter((e) => e.type === 'links_to')
+      relevantEdges = relevantEdges.filter(
+        (e) => e.type === 'links_to' || (showSources && e.type === 'cites'),
+      )
       relevantNodes = relevantNodes.filter((n) => {
         if (n.source_kind !== 'wiki' && !showSources) return false
         return !hubTitles.has(n.title.toLowerCase())
@@ -164,13 +181,32 @@ export function GraphViewer({ kbId, focusNodeId, onNavigateToDoc }: Props) {
 
     const nodeIds = new Set(relevantNodes.map((n) => n.id))
 
+    let cache = nodeCacheByKb.get(kbId)
+    if (!cache) {
+      cache = new Map()
+      nodeCacheByKb.set(kbId, cache)
+    }
+
+    const nodes = relevantNodes.map((n) => {
+      const cached = cache.get(n.id)
+      if (cached) {
+        // Refresh data fields; the server payload carries no x/y/vx/vy, so
+        // the simulation state survives the assign.
+        Object.assign(cached, n)
+        return cached
+      }
+      const fresh = { ...n }
+      cache.set(n.id, fresh)
+      return fresh
+    })
+
     return {
-      nodes: relevantNodes.map((n) => ({ ...n })),
+      nodes,
       links: relevantEdges
         .filter((e) => nodeIds.has(e.source) && nodeIds.has(e.target))
         .map((e) => ({ source: e.source, target: e.target, type: e.type })),
     }
-  }, [graphData, showSources, focusNodeId])
+  }, [graphData, showSources, focusNodeId, kbId])
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const handleNodeClick = React.useCallback(
@@ -276,8 +312,10 @@ export function GraphViewer({ kbId, focusNodeId, onNavigateToDoc }: Props) {
     fg.d3Force('charge')?.strength(-850)
     fg.d3Force('link')?.distance(130).strength(0.07)
 
+    let cancelled = false
     // Collision force prevents node overlap
     import('d3-force').then(({ forceCollide, forceX, forceY }) => {
+      if (cancelled || graphRef.current !== fg) return
       fg.d3Force('collide', forceCollide((node: any) =>
         (node.source_kind !== 'wiki' ? SOURCE_RADIUS : NODE_RADIUS) + 2.5
       ).iterations(2))
@@ -285,6 +323,9 @@ export function GraphViewer({ kbId, focusNodeId, onNavigateToDoc }: Props) {
       fg.d3Force('y', forceY(0).strength(0.03))
       fg.d3ReheatSimulation()
     })
+    return () => {
+      cancelled = true
+    }
   }, [forceGraphData, ready])
 
   // Determine overlay content for non-graph states

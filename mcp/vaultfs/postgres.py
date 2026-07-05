@@ -87,14 +87,25 @@ class PostgresVaultFS(VaultFS):
         await self._scaffold_wiki(str(row["id"]), row["name"])
         return row
 
-    async def set_knowledge_base_kind(self, kb_id: str, kind: str) -> dict | None:
+    async def update_knowledge_base(self, kb_id: str, name: str | None = None, description: str | None = None, kind: str | None = None) -> dict | None:
         # knowledge_bases has no RLS write policy; writes go through the
         # service role with the explicit user_id filter, like every other KB write.
+        # Renaming regenerates the slug, matching the web API's semantics.
+        if name is not None:
+            slug = await self._unique_slug(name)
+            return await service_queryrow(
+                "UPDATE knowledge_bases SET name = $1, slug = $2, "
+                "description = COALESCE($3, description), kind = COALESCE($4, kind), updated_at = now() "
+                "WHERE id = $5::uuid AND user_id = $6 "
+                "RETURNING id, name, slug, description, kind",
+                name, slug, description, kind, kb_id, self.user_id,
+            )
         return await service_queryrow(
-            "UPDATE knowledge_bases SET kind = $1, updated_at = now() "
-            "WHERE id = $2::uuid AND user_id = $3 "
-            "RETURNING id, name, slug, kind",
-            kind, kb_id, self.user_id,
+            "UPDATE knowledge_bases SET description = COALESCE($1, description), "
+            "kind = COALESCE($2, kind), updated_at = now() "
+            "WHERE id = $3::uuid AND user_id = $4 "
+            "RETURNING id, name, slug, description, kind",
+            description, kind, kb_id, self.user_id,
         )
 
 

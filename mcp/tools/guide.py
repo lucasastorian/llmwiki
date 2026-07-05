@@ -12,6 +12,8 @@ You are connected to an **LLM Wiki** — a personal knowledge workspace where yo
 2. **Compiled Wiki** (path: `/wiki/`) — markdown pages YOU create and maintain. You own this layer.
 3. **Tools** — `create_knowledge_base`, `list_knowledge_bases`, `search`, `read`, `create`, `edit`, `append`, `delete` — your interface to both layers.
 
+Sources normally arrive via the app or browser extension, but `add_source_from_url` (hosted mode) lets you pull a publicly accessible PDF in directly by URL — arXiv abstract or PDF links work as-is. Extraction runs in the background; the document becomes readable/searchable shortly after.
+
 ## Reading Images
 
 The `read` tool can return native MCP image blocks. Use `include_images=true` when visual content matters:
@@ -217,7 +219,7 @@ Use the reference graph to maintain consistency. After editing a page, check the
 
 A **course** is a knowledge base with `kind="course"`. Same engine, same tools, same page format as a wiki — the only difference is how the app renders it: the sidebar shows a lesson rail with per-lesson progress (complete / current / locked), and each lesson gets a **Mark complete** action. Progress persists, so the user can leave and resume later. That cross-session resume is the whole point.
 
-Create one with `create_knowledge_base(name="...", kind="course")`, or convert an existing wiki with `set_course_mode(knowledge_base="...", kind="course")` (reversible — pass `kind="wiki"` to convert back).
+Create one with `create_knowledge_base(name="...", kind="course")`, or convert an existing wiki with `update_knowledge_base(knowledge_base="...", kind="course")` (reversible — pass `kind="wiki"` to convert back).
 
 ### Structure — group lessons into modules (do this by default)
 A course is authored like a wiki under `/wiki/`, but **organize the lessons into modules — do not dump a flat list of lessons at the root.** A module is a folder; a lesson is a markdown file inside it. The sidebar renders each module as a collapsible group with its lessons beneath; a flat pile reads poorly and is almost never what you want.

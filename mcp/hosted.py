@@ -18,6 +18,7 @@ from starlette.routing import Route
 
 from auth import SupabaseTokenVerifier
 from tools import register
+from tools.ingest import register as register_ingest
 from vaultfs import PostgresVaultFS
 
 
@@ -95,15 +96,41 @@ def _get_user_id(ctx):
     raise RuntimeError("No user identifier in token")
 
 
-register(mcp, _get_user_id, lambda user_id: PostgresVaultFS(user_id))
+def _fs_factory(user_id: str) -> PostgresVaultFS:
+    return PostgresVaultFS(user_id)
+
+
+register(mcp, _get_user_id, _fs_factory)
+# URL ingestion calls the hosted API; the local stdio server never registers it.
+register_ingest(mcp, _get_user_id, _fs_factory)
 
 
 async def health(request):
     return PlainTextResponse("OK")
 
 
+# RFC 9728 mounts the metadata at /.well-known/oauth-protected-resource/mcp;
+# ChatGPT also probes the un-suffixed root and treats the 404 as a dead server.
+def _root_protected_resource_route() -> Route:
+    from mcp.server.auth.handlers.metadata import ProtectedResourceMetadataHandler
+    from mcp.server.auth.routes import cors_middleware
+    from mcp.shared.auth import ProtectedResourceMetadata
+
+    metadata = ProtectedResourceMetadata(
+        resource=AnyHttpUrl(settings.MCP_URL),
+        authorization_servers=[AnyHttpUrl(f"{settings.SUPABASE_URL}/auth/v1")],
+    )
+    handler = ProtectedResourceMetadataHandler(metadata)
+    return Route(
+        "/.well-known/oauth-protected-resource",
+        endpoint=cors_middleware(handler.handle, ["GET", "OPTIONS"]),
+        methods=["GET", "OPTIONS"],
+    )
+
+
 app = mcp.streamable_http_app()
 app.router.routes.insert(0, Route("/health", health))
+app.router.routes.insert(1, _root_protected_resource_route())
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8080)))

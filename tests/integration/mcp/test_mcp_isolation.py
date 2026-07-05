@@ -266,10 +266,24 @@ class TestWriteIsolation:
         row = await pg_pool.fetchrow("SELECT content FROM documents WHERE id = $1", DOC_B_ID)
         assert row["content"] == "Bob secret"
 
-    async def test_set_knowledge_base_kind_other_tenant_does_not_modify(self, fs_alice, pg_pool):
-        result = await fs_alice.set_knowledge_base_kind(str(KB_B_ID), "course")
+    async def test_update_knowledge_base_other_tenant_does_not_modify(self, fs_alice, pg_pool):
+        result = await fs_alice.update_knowledge_base(str(KB_B_ID), kind="course")
         assert result is None
         row = await pg_pool.fetchrow("SELECT kind FROM knowledge_bases WHERE id = $1", KB_B_ID)
+        assert row["kind"] == "wiki"
+
+    async def test_update_knowledge_base_rename_other_tenant_does_not_modify(self, fs_alice, pg_pool):
+        result = await fs_alice.update_knowledge_base(str(KB_B_ID), name="Pwned")
+        assert result is None
+        row = await pg_pool.fetchrow("SELECT name FROM knowledge_bases WHERE id = $1", KB_B_ID)
+        assert row["name"] != "Pwned"
+
+    async def test_update_knowledge_base_rename_own_regenerates_slug(self, fs_alice, pg_pool):
+        updated = await fs_alice.update_knowledge_base(str(KB_A_ID), name="Deep Learning Notes")
+        assert updated["name"] == "Deep Learning Notes"
+        assert updated["slug"] == "deep-learning-notes"
+        row = await pg_pool.fetchrow("SELECT slug, kind FROM knowledge_bases WHERE id = $1", KB_A_ID)
+        assert row["slug"] == "deep-learning-notes"
         assert row["kind"] == "wiki"
 
     async def test_create_document_into_other_tenant_kb_rejected(self, fs_alice, pg_pool):
