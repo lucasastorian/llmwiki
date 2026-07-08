@@ -441,10 +441,11 @@ function wikiNodeIcon(node: WikiNode, depth: number) {
 }
 
 // Course mode only — the only color in the app is the green completion check.
+// `current` (the lesson being read) beats `locked`: a page you're on never shows a lock.
 function CourseGlyph({ node, current }: { node: WikiNode; current: boolean }) {
   if (node.status === 'complete') return <Check className="size-3.5 text-emerald-500" />
-  if (node.locked) return <Lock className="size-3 text-muted-foreground/40" />
   if (current) return <span className="size-1.5 rounded-full bg-foreground" />
+  if (node.locked) return <Lock className="size-3 text-muted-foreground/40" />
   return <span className="size-2.5 rounded-full border border-border" />
 }
 
@@ -462,21 +463,20 @@ function WikiLeaf({
   currentPath?: string | null
 }) {
   const isActive = node.path != null && node.path === activePath
-  const locked = courseMode && !!node.locked
+  const locked = courseMode && !!node.locked && !isActive
   return (
     <button
-      onClick={() => { if (locked) return; if (node.path) onNavigate(node.path, node.docNumber) }}
-      aria-disabled={locked}
-      title={locked ? 'Complete the previous lesson to unlock' : undefined}
+      onClick={() => { if (node.path) onNavigate(node.path, node.docNumber) }}
+      title={locked ? 'Ahead of your current lesson' : undefined}
       className={cn(
-        'flex items-center gap-2.5 w-full text-left text-[13px] rounded-md px-2 py-1.5 transition-colors',
+        'flex items-center gap-2.5 w-full text-left text-[13px] rounded-md px-2 py-1.5 transition-colors cursor-pointer',
         locked
-          ? 'text-muted-foreground/40 cursor-not-allowed'
-          : isActive ? 'cursor-pointer bg-accent text-foreground font-medium' : 'cursor-pointer text-muted-foreground hover:text-foreground hover:bg-accent/50',
+          ? 'text-muted-foreground/40 hover:text-muted-foreground'
+          : isActive ? 'bg-accent text-foreground font-medium' : 'text-muted-foreground hover:text-foreground hover:bg-accent/50',
       )}
     >
       {courseMode
-        ? <span className="grid place-items-center size-4 shrink-0"><CourseGlyph node={node} current={node.path === currentPath} /></span>
+        ? <span className="grid place-items-center size-4 shrink-0"><CourseGlyph node={node} current={node.path === currentPath || isActive} /></span>
         : wikiNodeIcon(node, 0)}
       <span className="truncate flex-1 min-w-0">{toDisplayTitle(node.title)}</span>
     </button>
@@ -497,22 +497,21 @@ function WikiSectionItem({
   currentPath?: string | null
 }) {
   const isActive = node.path != null && node.path === activePath
-  const locked = courseMode && !!node.locked
+  const locked = courseMode && !!node.locked && !isActive
   return (
     <button
-      onClick={() => { if (locked) return; if (node.path) onNavigate(node.path, node.docNumber) }}
-      aria-disabled={locked}
-      title={locked ? 'Complete the previous lesson to unlock' : undefined}
+      onClick={() => { if (node.path) onNavigate(node.path, node.docNumber) }}
+      title={locked ? 'Ahead of your current lesson' : undefined}
       className={cn(
-        'relative block w-full text-left text-[13px] rounded-md pl-8 pr-2 py-1.5 truncate transition-colors',
+        'relative block w-full text-left text-[13px] rounded-md pl-8 pr-2 py-1.5 truncate transition-colors cursor-pointer',
         locked
-          ? 'text-muted-foreground/40 cursor-not-allowed'
-          : isActive ? 'cursor-pointer bg-accent text-foreground font-medium' : 'cursor-pointer text-muted-foreground hover:text-foreground hover:bg-accent/50',
+          ? 'text-muted-foreground/40 hover:text-muted-foreground'
+          : isActive ? 'bg-accent text-foreground font-medium' : 'text-muted-foreground hover:text-foreground hover:bg-accent/50',
       )}
     >
       {courseMode && (
         <span className="absolute left-[7px] top-1/2 -translate-y-1/2 grid place-items-center size-4 rounded-full bg-background">
-          <CourseGlyph node={node} current={node.path === currentPath} />
+          <CourseGlyph node={node} current={node.path === currentPath || isActive} />
         </span>
       )}
       {toDisplayTitle(node.title)}
@@ -621,7 +620,7 @@ function WikiTreeNode({
   const hasChildren = node.children && node.children.length > 0
   const isActive = node.path != null && node.path === activePath
   const hasActiveChild = hasChildren && node.children!.some((c) => c.path === activePath)
-  const locked = courseMode && !!node.locked
+  const locked = courseMode && !!node.locked && !isActive
   const [expanded, setExpanded] = React.useState(true)
 
   React.useEffect(() => {
@@ -632,17 +631,16 @@ function WikiTreeNode({
     <div>
       <div
         className={cn(
-          'flex items-center gap-1.5 w-full text-left text-[13px] rounded-md px-2 py-1.5 transition-colors',
+          'flex items-center gap-1.5 w-full text-left text-[13px] rounded-md px-2 py-1.5 transition-colors cursor-pointer',
           locked
-            ? 'text-muted-foreground/40 cursor-not-allowed'
+            ? 'text-muted-foreground/40 hover:text-muted-foreground'
             : isActive
-              ? 'cursor-pointer bg-accent text-foreground font-medium'
-              : 'cursor-pointer text-muted-foreground hover:text-foreground hover:bg-accent/50',
+              ? 'bg-accent text-foreground font-medium'
+              : 'text-muted-foreground hover:text-foreground hover:bg-accent/50',
         )}
         style={{ paddingLeft: `${depth * 12 + 8}px` }}
-        title={locked ? 'Complete the previous lesson to unlock' : undefined}
+        title={locked ? 'Ahead of your current lesson' : undefined}
         onClick={() => {
-          if (locked) return
           if (node.path) {
             onNavigate(node.path, node.docNumber)
           } else if (hasChildren) {
@@ -667,7 +665,7 @@ function WikiTreeNode({
           <span className="w-3.5" />
         )}
         {courseMode && node.path
-          ? <span className="grid place-items-center size-4 shrink-0"><CourseGlyph node={node} current={node.path === currentPath} /></span>
+          ? <span className="grid place-items-center size-4 shrink-0"><CourseGlyph node={node} current={node.path === currentPath || isActive} /></span>
           : wikiNodeIcon(node, depth)}
         <span className="truncate flex-1 min-w-0">{toDisplayTitle(node.title)}</span>
       </div>

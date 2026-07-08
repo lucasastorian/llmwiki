@@ -141,9 +141,11 @@ export function WikiHighlighter({ scrollRef, contentRef, documentId, contentKey 
       const container = scrollRef.current
       if (!container) return null
       const containerRect = container.getBoundingClientRect()
+      // Clamp to half the widest card (w-[26rem] = 416px) plus a small margin.
+      const halfCard = 216
       const left = Math.min(
-        Math.max(rect.left - containerRect.left + rect.width / 2, 160),
-        Math.max(container.clientWidth - 160, 160),
+        Math.max(rect.left - containerRect.left + rect.width / 2, halfCard),
+        Math.max(container.clientWidth - halfCard, halfCard),
       )
       return {
         top: rect.top - containerRect.top + container.scrollTop,
@@ -330,7 +332,7 @@ export function WikiHighlighter({ scrollRef, contentRef, documentId, contentKey 
       {peek && (
         <div
           data-wiki-highlighter
-          className="pointer-events-none absolute z-20 w-max max-w-72 -translate-x-1/2 whitespace-pre-wrap rounded-md border border-border bg-popover px-3 py-2 text-[13px] leading-relaxed text-popover-foreground shadow-md"
+          className="pointer-events-none absolute z-20 w-max max-w-[26rem] -translate-x-1/2 whitespace-pre-wrap rounded-md border border-border bg-popover px-3 py-2 text-[13px] leading-relaxed text-popover-foreground shadow-md"
           style={{ top: peek.bottom + 10, left: peek.left }}
         >
           {peek.comment}
@@ -370,16 +372,16 @@ export function WikiHighlighter({ scrollRef, contentRef, documentId, contentKey 
       {composer && (
         <div
           data-wiki-highlighter
-          className="absolute z-30 w-72 -translate-x-1/2 rounded-md border border-border bg-popover p-3 shadow-md"
+          className="absolute z-30 w-[26rem] -translate-x-1/2 rounded-md border border-border bg-popover p-3 shadow-md"
           style={{ top: composer.bottom + 8, left: composer.left }}
         >
           <Textarea
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
             placeholder="What's unclear here?"
-            rows={3}
+            rows={5}
             maxLength={4000}
-            className="min-h-20 resize-none text-sm"
+            className="max-h-72 min-h-28 resize-y text-sm"
             autoFocus
           />
           <div className="mt-2.5 flex justify-end gap-2">
@@ -404,7 +406,7 @@ export function WikiHighlighter({ scrollRef, contentRef, documentId, contentKey 
       {active && (
         <div
           data-wiki-highlighter
-          className="absolute z-30 w-72 -translate-x-1/2 rounded-md border border-border bg-popover p-3 shadow-md"
+          className="absolute z-30 w-[26rem] -translate-x-1/2 rounded-md border border-border bg-popover p-3 shadow-md"
           style={{ top: active.bottom + 12, left: active.left }}
         >
           {editing ? (
@@ -413,9 +415,9 @@ export function WikiHighlighter({ scrollRef, contentRef, documentId, contentKey 
                 value={draft}
                 onChange={(event) => setDraft(event.target.value)}
                 placeholder="What's unclear here?"
-                rows={3}
+                rows={5}
                 maxLength={4000}
-                className="min-h-20 resize-none text-sm"
+                className="max-h-72 min-h-28 resize-y text-sm"
                 autoFocus
               />
               <div className="mt-2.5 flex justify-end gap-2">

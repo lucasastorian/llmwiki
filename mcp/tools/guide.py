@@ -134,6 +134,11 @@ graph LR
 ```
 ````
 
+Mermaid's parsers are strict — a syntax error means the diagram renders as raw code:
+- Flowchart node labels containing `( ) [ ] { }` or other punctuation must be quoted: `A["Cost (5%)"]`, never `A[Cost (5%)]`
+- quadrantChart, xychart, and axis/quadrant labels cannot contain parentheses at all — rephrase (`Debt-heavy: utilities, real estate`)
+- No `$`/LaTeX inside any diagram text
+
 **Tables** — use for ANY structured comparison:
 - Feature matrices, pros/cons, timelines, metrics
 - If you're listing 3+ items with attributes, it should be a table

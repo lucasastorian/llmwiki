@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 
 import httpx
 from html_parser import Image
-from infra.safe_fetch import build_pinned_request, redirect_location, resolve_public_ip
+from infra.safe_fetch import build_pinned_request, parse_public_fetch_url, redirect_location, resolve_public_ip
 
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 IMAGE_TIMEOUT = 5
@@ -154,10 +154,10 @@ async def _fetch_image(url: str) -> tuple[bytes, str] | None:
 async def _fetch_remote_image(url: str) -> tuple[bytes, str] | None:
     """Fetch an external image with SSRF guards and size/type validation, or None."""
     current = url
-    async with httpx.AsyncClient(timeout=IMAGE_TIMEOUT, follow_redirects=False) as client:
+    async with httpx.AsyncClient(timeout=IMAGE_TIMEOUT, follow_redirects=False, trust_env=False) as client:
         for _ in range(MAX_IMAGE_REDIRECTS + 1):
-            parsed = urlparse(current)
-            if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            parsed = parse_public_fetch_url(current)
+            if not parsed:
                 return None
             ip = resolve_public_ip(parsed.hostname)
             if not ip:

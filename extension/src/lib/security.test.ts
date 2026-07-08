@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { isAllowedApiFetchUrl, isSupportedRemoteResourceUrl } from "./security";
+import { isAllowedApiFetchUrl } from "./security";
 
 describe("extension security helpers", () => {
   describe("isAllowedApiFetchUrl", () => {
@@ -26,16 +26,6 @@ describe("extension security helpers", () => {
       expect(isAllowedApiFetchUrl("file:///etc/passwd", apiUrl)).toBe(false);
       expect(isAllowedApiFetchUrl("chrome://extensions", apiUrl)).toBe(false);
       expect(isAllowedApiFetchUrl("not a url", apiUrl)).toBe(false);
-    });
-  });
-
-  describe("isSupportedRemoteResourceUrl", () => {
-    it("allows only http and https image/resource URLs", () => {
-      expect(isSupportedRemoteResourceUrl("https://assets.example/image.webp")).toBe(true);
-      expect(isSupportedRemoteResourceUrl("http://localhost:8000/image.png")).toBe(true);
-      expect(isSupportedRemoteResourceUrl("data:image/png;base64,abc")).toBe(false);
-      expect(isSupportedRemoteResourceUrl("blob:https://example.com/id")).toBe(false);
-      expect(isSupportedRemoteResourceUrl("file:///tmp/image.png")).toBe(false);
     });
   });
 });

@@ -111,6 +111,26 @@ class TestDownloadGuards:
         assert exc.value.status_code == 400
         assert sent["count"] == 0
 
+    @pytest.mark.parametrize("url", [
+        "https://example.com:444/doc.pdf",
+        "https://user:pass@example.com/doc.pdf",
+        "https://api.railway.internal/doc.pdf",
+    ])
+    async def test_unsafe_url_shape_rejected_without_sending(self, monkeypatch, url):
+        sent = {"count": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            sent["count"] += 1
+            return httpx.Response(200, content=PDF_BYTES)
+
+        monkeypatch.setattr(sf.socket, "getaddrinfo", _fake_getaddrinfo({"example.com": ["93.184.216.34"]}))
+        monkeypatch.setattr(ui.httpx, "AsyncClient", _client_with_transport(handler))
+
+        with pytest.raises(HTTPException) as exc:
+            await _service()._download(url)
+        assert exc.value.status_code == 400
+        assert sent["count"] == 0
+
     async def test_redirect_to_private_host_rejected(self, monkeypatch):
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(302, headers={"location": "http://meta.test/latest"})
@@ -127,6 +147,36 @@ class TestDownloadGuards:
         with pytest.raises(HTTPException) as exc:
             await _service()._download("https://cdn.test/doc.pdf")
         assert exc.value.status_code == 400
+
+    async def test_redirect_to_unsafe_port_rejected(self, monkeypatch):
+        sent_urls: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            sent_urls.append(str(request.url))
+            return httpx.Response(302, headers={"location": "https://cdn.test:444/private.pdf"})
+
+        monkeypatch.setattr(sf.socket, "getaddrinfo", _fake_getaddrinfo({"cdn.test": ["93.184.216.34"]}))
+        monkeypatch.setattr(ui.httpx, "AsyncClient", _client_with_transport(handler))
+
+        with pytest.raises(HTTPException) as exc:
+            await _service()._download("https://cdn.test/doc.pdf")
+        assert exc.value.status_code == 400
+        assert len(sent_urls) == 1
+
+    async def test_redirect_to_internal_hostname_rejected(self, monkeypatch):
+        sent_urls: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            sent_urls.append(str(request.url))
+            return httpx.Response(302, headers={"location": "https://api.railway.internal/private.pdf"})
+
+        monkeypatch.setattr(sf.socket, "getaddrinfo", _fake_getaddrinfo({"cdn.test": ["93.184.216.34"]}))
+        monkeypatch.setattr(ui.httpx, "AsyncClient", _client_with_transport(handler))
+
+        with pytest.raises(HTTPException) as exc:
+            await _service()._download("https://cdn.test/doc.pdf")
+        assert exc.value.status_code == 400
+        assert len(sent_urls) == 1
 
     async def test_non_pdf_content_rejected(self, monkeypatch):
         def handler(request: httpx.Request) -> httpx.Response:

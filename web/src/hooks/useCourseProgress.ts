@@ -1,6 +1,7 @@
 'use client'
 
 import * as React from 'react'
+import { toast } from 'sonner'
 import { apiFetch } from '@/lib/api'
 import { useUserStore } from '@/stores'
 import type { DocumentListItem } from '@/lib/types'
@@ -31,7 +32,8 @@ export function useCourseProgress(
           body: JSON.stringify({ metadata: { course: { status, completed_at } } }),
         })
       } catch {
-        // Optimistic state stays; the next documents refetch reconciles.
+        // The next documents refetch reverts the optimistic state — say so.
+        toast.error("Progress didn't save — check your connection and try again")
       }
     },
     [token, setDocuments],

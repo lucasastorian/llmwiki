@@ -55,9 +55,7 @@ function isLlmWikiAppPage(): boolean {
 }
 
 const STYLE_ID = "llmwiki-highlight-style";
-const MAX_INLINE_IMAGES = 24;
-const MAX_INLINE_IMAGE_BYTES = 2_500_000;
-const MAX_INLINE_TOTAL_BYTES = 6_000_000;
+const MAX_CAPTURED_IMAGES = 24;
 const PENDING_PAGE_PREFIX = "llmwiki_pending_page:";
 const LAZY_IMAGE_SRC_ATTRIBUTES = [
   "data-src",
@@ -845,7 +843,7 @@ class HighlightController {
     }, 1800);
   }
 
-  private async captureCleanHtml(): Promise<string> {
+  private captureCleanHtml(): string {
     const clone = document.documentElement.cloneNode(true) as HTMLElement;
     clone.querySelectorAll(
       ".llmwiki-pill, .llmwiki-popover, .llmwiki-toast, #llmwiki-highlight-style",
@@ -857,11 +855,13 @@ class HighlightController {
       parent.removeChild(mark);
     });
 
-    await this.inlineLoadedImages(clone);
+    this.normalizeImageUrls(clone);
     return clone.outerHTML;
   }
 
-  private async inlineLoadedImages(clone: HTMLElement): Promise<void> {
+  // No client-side image fetching: resolve each image to its best absolute
+  // URL and let the API's server-side fetcher rehost it.
+  private normalizeImageUrls(clone: HTMLElement): void {
     const liveImages = Array.from(document.images);
     const cloneImages = Array.from(clone.querySelectorAll("img"));
     const candidates = liveImages
@@ -888,31 +888,16 @@ class HighlightController {
         return item.inArticle && !item.hasKnownSize;
       })
       .sort((a, b) => b.score - a.score)
-      .slice(0, MAX_INLINE_IMAGES);
+      .slice(0, MAX_CAPTURED_IMAGES);
 
-    let totalBytes = 0;
     for (const item of candidates) {
-      if (totalBytes >= MAX_INLINE_TOTAL_BYTES) break;
-      const maxBytes = Math.min(MAX_INLINE_IMAGE_BYTES, MAX_INLINE_TOTAL_BYTES - totalBytes);
-      try {
-        const response = await chrome.runtime.sendMessage({
-          type: "FETCH_IMAGE_DATA_URL",
-          url: item.src,
-          maxBytes,
-        });
-        if (!response?.dataUrl || response?.error) continue;
-        totalBytes += response.size ?? 0;
-        const cloneImg = cloneImages[item.index];
-        if (!cloneImg) continue;
-        cloneImg.setAttribute("src", response.dataUrl);
-        cloneImg.removeAttribute("srcset");
-        cloneImg.removeAttribute("sizes");
-        if (item.width) cloneImg.setAttribute("width", String(item.width));
-        if (item.height) cloneImg.setAttribute("height", String(item.height));
-        cloneImg.setAttribute("data-llmwiki-inlined-image", "true");
-      } catch {
-        // Leave the original URL in place so the API can still try server-side.
-      }
+      const cloneImg = cloneImages[item.index];
+      if (!cloneImg) continue;
+      cloneImg.setAttribute("src", item.src);
+      cloneImg.removeAttribute("srcset");
+      cloneImg.removeAttribute("sizes");
+      if (item.width) cloneImg.setAttribute("width", String(item.width));
+      if (item.height) cloneImg.setAttribute("height", String(item.height));
     }
   }
 
@@ -968,7 +953,7 @@ class HighlightController {
         url: canonicalizeUrl(location.href),
         title: document.title || location.href,
         path: this.folderPath,
-        html: await this.captureCleanHtml(),
+        html: this.captureCleanHtml(),
         highlights: highlightsToSave.length ? highlightsToSave : undefined,
       });
       this.knowledgeBaseId = knowledgeBaseId;

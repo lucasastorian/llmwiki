@@ -21,13 +21,22 @@ export function MermaidBlock({ chart }: { chart: string }) {
   const containerRef = React.useRef<HTMLDivElement>(null)
   const idRef = React.useRef(`mermaid-${Math.random().toString(36).slice(2, 9)}`)
   const [svgContent, setSvgContent] = React.useState<string | null>(null)
+  const [failed, setFailed] = React.useState(false)
   const [fullscreen, setFullscreen] = React.useState(false)
   const isDark = useIsDarkMode()
 
   React.useEffect(() => {
     let cancelled = false
+    setFailed(false)
     import('mermaid').then(({ default: mermaid }) => {
-      mermaid.initialize({ startOnLoad: false, theme: isDark ? 'dark' : 'neutral' })
+      // Without suppressErrorRendering, a parse failure ALSO injects mermaid's
+      // bomb error SVG into document.body — the promise rejection alone is not
+      // the whole failure mode.
+      mermaid.initialize({
+        startOnLoad: false,
+        suppressErrorRendering: true,
+        theme: isDark ? 'dark' : 'neutral',
+      })
       mermaid
         .render(idRef.current, chart)
         .then(({ svg }) => {
@@ -39,8 +48,9 @@ export function MermaidBlock({ chart }: { chart: string }) {
           }
         })
         .catch(() => {
-          if (!cancelled && containerRef.current) {
-            containerRef.current.textContent = chart
+          if (!cancelled) {
+            setSvgContent(null)
+            setFailed(true)
           }
         })
     })
@@ -48,6 +58,14 @@ export function MermaidBlock({ chart }: { chart: string }) {
       cancelled = true
     }
   }, [chart, isDark])
+
+  if (failed) {
+    return (
+      <pre className="my-3 overflow-x-auto rounded-lg border border-border bg-muted/60 p-4 text-[13px] leading-relaxed text-muted-foreground">
+        {chart}
+      </pre>
+    )
+  }
 
   return (
     <>

@@ -14,7 +14,7 @@ import httpx
 from fastapi import HTTPException
 
 from config import settings
-from infra.safe_fetch import build_pinned_request, redirect_location, resolve_public_ip
+from infra.safe_fetch import build_pinned_request, parse_public_fetch_url, redirect_location, resolve_public_ip
 from services.types import DownloadedPdf
 
 if TYPE_CHECKING:
@@ -51,10 +51,10 @@ class UrlIngestService:
 
     async def _download(self, url: str) -> DownloadedPdf:
         current = url
-        async with httpx.AsyncClient(timeout=DOWNLOAD_TIMEOUT, follow_redirects=False) as client:
+        async with httpx.AsyncClient(timeout=DOWNLOAD_TIMEOUT, follow_redirects=False, trust_env=False) as client:
             for _ in range(MAX_REDIRECTS + 1):
-                parsed = urlparse(current)
-                if parsed.scheme not in ("http", "https") or not parsed.hostname:
+                parsed = parse_public_fetch_url(current)
+                if not parsed:
                     raise HTTPException(status_code=400, detail="URL must be a public http(s) address")
                 ip = resolve_public_ip(parsed.hostname)
                 if not ip:

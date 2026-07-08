@@ -157,10 +157,8 @@ export default function SaveForm({ apiUrl, accessToken }: Props) {
       // floating in the saved HTML.
       const [{ result }] = await chrome.scripting.executeScript({
         target: { tabId: tab.tabId },
-        func: async () => {
+        func: () => {
           const MAX_IMAGES = 24;
-          const MAX_IMAGE_BYTES = 2_500_000;
-          const MAX_TOTAL_BYTES = 6_000_000;
           const LAZY_IMAGE_SRC_ATTRIBUTES = [
             "data-src",
             "data-original",
@@ -214,51 +212,16 @@ export default function SaveForm({ apiUrl, accessToken }: Props) {
             .sort((a, b) => b.score - a.score)
             .slice(0, MAX_IMAGES);
 
-          const pageOrigin = location.origin;
-          const isSameOrigin = (src: string): boolean => {
-            try {
-              return new URL(src).origin === pageOrigin;
-            } catch {
-              return false;
-            }
-          };
-
-          let totalBytes = 0;
+          // No client-side image fetching: resolve each image to its best
+          // absolute URL and let the API's server-side fetcher rehost it.
           for (const item of candidates) {
             const cloneImg = cloneImages[item.index];
             if (!cloneImg) continue;
-
-            // Under activeTab we can only read same-origin resources; cross-origin
-            // images keep their absolute URL for the server-side fetch.
-            if (!isSameOrigin(item.src)) {
-              cloneImg.setAttribute("src", item.src);
-              cloneImg.removeAttribute("srcset");
-              cloneImg.removeAttribute("sizes");
-              if (item.width) cloneImg.setAttribute("width", String(item.width));
-              if (item.height) cloneImg.setAttribute("height", String(item.height));
-              continue;
-            }
-
-            if (totalBytes >= MAX_TOTAL_BYTES) continue;
-            const remaining = MAX_TOTAL_BYTES - totalBytes;
-            const maxBytes = Math.min(MAX_IMAGE_BYTES, remaining);
-            try {
-              const response = await chrome.runtime.sendMessage({
-                type: "FETCH_IMAGE_DATA_URL",
-                url: item.src,
-                maxBytes,
-              });
-              if (!response?.dataUrl || response?.error) continue;
-              totalBytes += response.size ?? 0;
-              cloneImg.setAttribute("src", response.dataUrl);
-              cloneImg.removeAttribute("srcset");
-              cloneImg.removeAttribute("sizes");
-              if (item.width) cloneImg.setAttribute("width", String(item.width));
-              if (item.height) cloneImg.setAttribute("height", String(item.height));
-              cloneImg.setAttribute("data-llmwiki-inlined-image", "true");
-            } catch {
-              // Leave the original URL in place so the API can still try server-side.
-            }
+            cloneImg.setAttribute("src", item.src);
+            cloneImg.removeAttribute("srcset");
+            cloneImg.removeAttribute("sizes");
+            if (item.width) cloneImg.setAttribute("width", String(item.width));
+            if (item.height) cloneImg.setAttribute("height", String(item.height));
           }
 
           return clone.outerHTML;

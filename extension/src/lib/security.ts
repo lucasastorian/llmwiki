@@ -8,12 +8,3 @@ export function isAllowedApiFetchUrl(targetUrl: string, configuredApiUrl: string
     return false;
   }
 }
-
-export function isSupportedRemoteResourceUrl(url: string): boolean {
-  try {
-    const parsed = new URL(url);
-    return parsed.protocol === "http:" || parsed.protocol === "https:";
-  } catch {
-    return false;
-  }
-}

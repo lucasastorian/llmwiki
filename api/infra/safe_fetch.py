@@ -2,9 +2,24 @@
 
 import ipaddress
 import socket
-from urllib.parse import ParseResult, urljoin
+from urllib.parse import ParseResult, urljoin, urlparse
 
 import httpx
+
+DEFAULT_PORTS = {"http": 80, "https": 443}
+BLOCKED_HOSTNAMES = {
+    "internal",
+    "local",
+    "localhost",
+    "localdomain",
+    "metadata.amazonaws.com",
+}
+BLOCKED_HOSTNAME_SUFFIXES = (
+    ".internal",
+    ".local",
+    ".localhost",
+    ".localdomain",
+)
 
 
 def is_blocked_address(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
@@ -38,6 +53,29 @@ def resolve_public_ip(host: str) -> str | None:
             return None
         addresses.append(ip)
     return addresses[0] if addresses else None
+
+
+def is_blocked_hostname(host: str) -> bool:
+    normalized = host.rstrip(".").lower()
+    return normalized in BLOCKED_HOSTNAMES or normalized.endswith(BLOCKED_HOSTNAME_SUFFIXES)
+
+
+def parse_public_fetch_url(url: str) -> ParseResult | None:
+    """Parse a URL that server-side fetchers are allowed to request."""
+    try:
+        parsed = urlparse(url)
+        port = parsed.port
+    except ValueError:
+        return None
+    if parsed.scheme not in DEFAULT_PORTS or not parsed.hostname:
+        return None
+    if is_blocked_hostname(parsed.hostname):
+        return None
+    if parsed.username is not None or parsed.password is not None:
+        return None
+    if port is not None and port != DEFAULT_PORTS[parsed.scheme]:
+        return None
+    return parsed
 
 
 def build_pinned_request(

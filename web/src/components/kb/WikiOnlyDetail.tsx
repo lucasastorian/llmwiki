@@ -141,14 +141,19 @@ export function WikiOnlyDetail({
   const urlWikiDocNumber = pParam ? parseInt(pParam, 10) : null
   const [wikiActivePath, setWikiActivePath] = React.useState<string | null>(null)
   const lastWikiDocNumberRef = React.useRef<number | null>(urlWikiDocNumber)
+  const handledUrlDocNumberRef = React.useRef<number | null>(null)
 
+  // Applies ?p= to the active path exactly once per URL value (deep links, back/forward).
+  // `documents` churns constantly (WS/poll, optimistic course-progress writes) — re-running
+  // on churn would re-assert a stale URL and snap in-app navigation back.
   React.useEffect(() => {
     if (urlWikiDocNumber == null || !documents.length) return
+    if (urlWikiDocNumber === handledUrlDocNumberRef.current) return
     const doc = documents.find((d) => d.document_number === urlWikiDocNumber)
-    if (doc) {
-      setWikiActivePath((doc.path + doc.filename).replace(/^\/wiki\/?/, ''))
-      lastWikiDocNumberRef.current = urlWikiDocNumber
-    }
+    if (!doc) return
+    handledUrlDocNumberRef.current = urlWikiDocNumber
+    setWikiActivePath((doc.path + doc.filename).replace(/^\/wiki\/?/, ''))
+    lastWikiDocNumberRef.current = urlWikiDocNumber
   }, [urlWikiDocNumber, documents])
 
   const indexDoc = wikiDocs.find((d) => d.filename === 'index.json' && d.path === '/wiki/')
@@ -300,19 +305,22 @@ export function WikiOnlyDetail({
     setWikiActivePath(path)
     const num = docNumber ?? wikiDocs.find((d) => (d.path + d.filename).replace(/^\/wiki\/?/, '') === path)?.document_number ?? null
     lastWikiDocNumberRef.current = num
-    if (num != null) updateParam('p', String(num))
+    if (num != null) {
+      // Our own URL write — mark handled so the sync effect never re-applies it.
+      handledUrlDocNumberRef.current = num
+      updateParam('p', String(num))
+    }
   }, [updateParam, wikiDocs])
 
-  // Advancing completes the current lesson (if not already) and moves to the next.
+  // Advancing completes the lesson being read (locks are a progression cue, not
+  // enforcement — a deep-linked read still counts) and moves to the next.
   const handleForward = React.useCallback(() => {
     if (!forward) return
-    // Never complete a still-locked lesson (reachable only via search/deep link) — it would corrupt the sequence.
-    const current = activeLessonIdx >= 0 ? lessons[activeLessonIdx] : null
-    if (activeWikiDoc && current && !current.locked && lessonStatus(activeWikiDoc) !== 'complete') {
+    if (activeWikiDoc && lessonStatus(activeWikiDoc) !== 'complete') {
       markComplete(activeWikiDoc.id)
     }
     handleWikiSelect(forward.path)
-  }, [forward, activeLessonIdx, lessons, activeWikiDoc, markComplete, handleWikiSelect])
+  }, [forward, activeWikiDoc, markComplete, handleWikiSelect])
 
   const wikiPathSet = React.useMemo(() => {
     const set = new Set<string>()

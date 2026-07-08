@@ -115,20 +115,66 @@ function normalizeMathDelimiters(md: string): string {
   return segments
     .map((segment, i) => {
       if (i % 2 === 1) return segment
-      return segment
+      const converted = segment
         .replace(/\\\[([\s\S]+?)\\\]/g, (_, inner: string) => `$$${inner}$$`)
         .replace(/\\\((.+?)\\\)/g, (_, inner: string) => `$${inner.trim()}$`)
+      return escapeCurrencyDollars(converted)
     })
     .join('')
+}
+
+// Currency ($100M) and inline math ($x_i$) share the $ delimiter, so remark-math
+// mathifies "worth $100M that produces $10M/year". A $ immediately followed by a
+// digit is currency — escape it — unless the span to its closing $ contains LaTeX syntax.
+const MATH_SYNTAX = /[\\^_{}=+]/
+
+function escapeCurrencyDollars(text: string): string {
+  let out = ''
+  let i = 0
+  while (i < text.length) {
+    const ch = text[i]
+    if (ch === '\\' && text[i + 1] === '$') {
+      out += '\\$'
+      i += 2
+      continue
+    }
+    if (ch !== '$') {
+      out += ch
+      i++
+      continue
+    }
+    if (text[i + 1] === '$') {
+      const close = text.indexOf('$$', i + 2)
+      const end = close === -1 ? text.length : close + 2
+      out += text.slice(i, end)
+      i = end
+      continue
+    }
+    if (!/\d/.test(text[i + 1] ?? '')) {
+      out += ch
+      i++
+      continue
+    }
+    const paragraphEnd = text.indexOf('\n\n', i)
+    const searchEnd = paragraphEnd === -1 ? text.length : paragraphEnd
+    const close = text.indexOf('$', i + 1)
+    const isMath = close !== -1 && close < searchEnd && MATH_SYNTAX.test(text.slice(i + 1, close))
+    out += isMath ? ch : '\\$'
+    i++
+  }
+  return out
 }
 
 // Models routinely double-escape LaTeX backslashes (\\log instead of \log) when authoring through tools;
 // KaTeX reads \\ as a line break and fails. Restore a single backslash before a command letter.
 // Genuine \\ line breaks are followed by whitespace or [, never a letter, so they are left intact.
+// Also escape bare % — in LaTeX it starts a comment and silently eats the rest of the formula.
 function remarkFixOverescapedMath() {
   const restore = (node: MdastLike): void => {
     if ((node.type === 'inlineMath' || node.type === 'math') && typeof node.value === 'string') {
-      node.value = node.value.replace(/\\\\(?=[a-zA-Z])/g, '\\')
+      node.value = node.value
+        .replace(/\\\\(?=[a-zA-Z])/g, '\\')
+        .replace(/\\%|%/g, (m) => (m === '%' ? '\\%' : m))
     }
     node.children?.forEach(restore)
   }

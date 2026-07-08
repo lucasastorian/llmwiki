@@ -99,6 +99,33 @@ class TestResolvePublicIP:
         assert sf.resolve_public_ip("nx.test") is None
 
 
+class TestParsePublicFetchURL:
+
+    @pytest.mark.parametrize("url", [
+        "http://example.com/a.png",
+        "https://example.com/a.png",
+        "http://example.com:80/a.png",
+        "https://example.com:443/a.png",
+    ])
+    def test_accepts_http_https_default_ports(self, url):
+        assert sf.parse_public_fetch_url(url) is not None
+
+    @pytest.mark.parametrize("url", [
+        "file:///etc/passwd",
+        "ftp://example.com/a.png",
+        "http://user@example.com/a.png",
+        "https://user:pass@example.com/a.png",
+        "http://example.com:81/a.png",
+        "https://example.com:444/a.png",
+        "http://example.com:bad/a.png",
+        "https://api.railway.internal/a.png",
+        "https://metadata.amazonaws.com/latest/meta-data",
+        "http://localhost/a.png",
+    ])
+    def test_rejects_unsafe_fetch_urls(self, url):
+        assert sf.parse_public_fetch_url(url) is None
+
+
 class TestFetchRemoteImage:
 
     async def test_success_pins_ip_and_preserves_host(self, monkeypatch):
@@ -135,6 +162,26 @@ class TestFetchRemoteImage:
         assert result is None
         assert sent["count"] == 0
 
+    @pytest.mark.parametrize("url", [
+        "http://cdn.test:8080/a.png",
+        "http://user:pass@cdn.test/a.png",
+        "http://api.railway.internal/a.png",
+    ])
+    async def test_rejects_unsafe_url_shape_without_sending(self, monkeypatch, url):
+        sent = {"count": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            sent["count"] += 1
+            return httpx.Response(200, content=b"x")
+
+        monkeypatch.setattr(sf.socket, "getaddrinfo", _fake_getaddrinfo({"cdn.test": ["93.184.216.34"]}))
+        monkeypatch.setattr(w.httpx, "AsyncClient", _client_with_transport(handler))
+
+        result = await w._fetch_remote_image(url)
+
+        assert result is None
+        assert sent["count"] == 0
+
     async def test_redirect_to_private_host_blocked(self, monkeypatch):
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(302, headers={"location": "http://meta.test/latest"})
@@ -151,6 +198,36 @@ class TestFetchRemoteImage:
         result = await w._fetch_remote_image("http://cdn.test/a.png")
 
         assert result is None
+
+    async def test_redirect_to_unsafe_port_blocked(self, monkeypatch):
+        sent_urls: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            sent_urls.append(str(request.url))
+            return httpx.Response(302, headers={"location": "http://cdn.test:8080/private"})
+
+        monkeypatch.setattr(sf.socket, "getaddrinfo", _fake_getaddrinfo({"cdn.test": ["93.184.216.34"]}))
+        monkeypatch.setattr(w.httpx, "AsyncClient", _client_with_transport(handler))
+
+        result = await w._fetch_remote_image("http://cdn.test/a.png")
+
+        assert result is None
+        assert len(sent_urls) == 1
+
+    async def test_redirect_to_internal_hostname_blocked(self, monkeypatch):
+        sent_urls: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            sent_urls.append(str(request.url))
+            return httpx.Response(302, headers={"location": "http://api.railway.internal/private"})
+
+        monkeypatch.setattr(sf.socket, "getaddrinfo", _fake_getaddrinfo({"cdn.test": ["93.184.216.34"]}))
+        monkeypatch.setattr(w.httpx, "AsyncClient", _client_with_transport(handler))
+
+        result = await w._fetch_remote_image("http://cdn.test/a.png")
+
+        assert result is None
+        assert len(sent_urls) == 1
 
     async def test_content_type_must_match_sniffed_bytes(self, monkeypatch):
         """A response claiming image/png but carrying non-image bytes is dropped."""
