@@ -116,6 +116,41 @@ def cmd_init(workspace: str) -> None:
     print(f"  .llmwiki/index.db — created")
 
 
+def _load_init_ignore_patterns(ws: Path) -> list:
+    """Load .llmwikiignore (or .gitignore as fallback) patterns for init walk.
+
+    Mirrors api/domain/watcher.py:_load_ignore_patterns so that init and watch
+    apply the same exclusion rules. Without this, files dropped into the
+    workspace before the first `llmwiki serve` get indexed regardless of
+    ignore rules.
+    """
+    patterns = []
+    for ignore_file in (".llmwikiignore", ".gitignore"):
+        p = ws / ignore_file
+        if p.is_file():
+            for line in p.read_text().splitlines():
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    patterns.append(line)
+            break  # use first found, don't merge
+    return patterns
+
+
+def _matches_init_ignore(relative: str, patterns: list) -> bool:
+    """Gitignore-style matching for init walk. Mirrors watcher.py logic."""
+    from fnmatch import fnmatch
+    for pattern in patterns:
+        pattern = pattern.rstrip("/")
+        if fnmatch(relative, pattern):
+            return True
+        if fnmatch(relative, f"**/{pattern}"):
+            return True
+        for part in relative.split("/"):
+            if fnmatch(part, pattern):
+                return True
+    return False
+
+
 def _index_existing_files(ws: Path, db_path: Path, user_id: str, ws_id: str) -> None:
     """Index existing files in the workspace into SQLite."""
     import hashlib
@@ -123,7 +158,9 @@ def _index_existing_files(ws: Path, db_path: Path, user_id: str, ws_id: str) -> 
     import sqlite3
 
     ignore_dirs = {".llmwiki", ".git", "node_modules", "__pycache__", ".venv", "venv"}
+    user_patterns = _load_init_ignore_patterns(ws)
     indexed = 0
+    skipped_ignored = 0
 
     conn = sqlite3.connect(str(db_path))
 
@@ -132,8 +169,18 @@ def _index_existing_files(ws: Path, db_path: Path, user_id: str, ws_id: str) -> 
     existing = {row[0] for row in cursor.fetchall()}
 
     for root_path, dirs, files in os.walk(ws):
-        # Skip ignored directories
+        # Skip ignored directories (built-in)
         dirs[:] = [d for d in dirs if d not in ignore_dirs and not d.startswith(".")]
+        # Skip directories matched by user ignore patterns
+        if user_patterns:
+            kept = []
+            for d in dirs:
+                dir_rel = str((Path(root_path) / d).relative_to(ws))
+                if _matches_init_ignore(dir_rel, user_patterns):
+                    skipped_ignored += 1
+                    continue
+                kept.append(d)
+            dirs[:] = kept
 
         for filename in files:
             if filename.startswith("."):
@@ -143,6 +190,11 @@ def _index_existing_files(ws: Path, db_path: Path, user_id: str, ws_id: str) -> 
             relative = str(full.relative_to(ws))
 
             if relative in existing:
+                continue
+
+            # Apply user ignore patterns (file-level)
+            if user_patterns and _matches_init_ignore(relative, user_patterns):
+                skipped_ignored += 1
                 continue
 
             ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
@@ -195,6 +247,8 @@ def _index_existing_files(ws: Path, db_path: Path, user_id: str, ws_id: str) -> 
 
     if indexed > 0:
         print(f"✓ Indexed {indexed} existing file(s)")
+    if skipped_ignored > 0:
+        print(f"  (skipped {skipped_ignored} path(s) matched by .llmwikiignore/.gitignore)")
 
 
 def cmd_serve(workspace: str, open_browser: bool = True) -> None:
