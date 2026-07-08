@@ -60,6 +60,8 @@ pip install -r api/requirements.txt -r mcp/requirements.txt
 cd web; npm install; cd ..
 ```
 
+If activation is blocked by your execution policy, run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once, or skip activation and use `.venv\Scripts\python` in place of `python` below.
+
 **2. Point it at a folder of your files** — PDFs, Word documents, PowerPoints, Markdown, notes. Use any folder on your disk (it does **not** go inside this repo): the one that already holds your documents, or a fresh empty one. LLM Wiki indexes it into a local search index so the files show up in the app and Claude can read them. It never moves, modifies, or uploads your files — the only things it adds are a `wiki/` folder for generated pages and a hidden `.llmwiki/` index (see [What happens on disk](#what-happens-on-disk)).
 
 ```bash
