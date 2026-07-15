@@ -74,6 +74,24 @@ class TestQuizGrader:
         assert exc.value.status_code == 429
         assert exc.value.headers == {"Retry-After": "17"}
 
+    async def test_parses_vllm_choices_inside_success_envelope(self):
+        # Real /ai/run shape for @cf/google/gemma-4-*: success envelope whose
+        # result is an OpenAI chat.completion, not {"response": ...}.
+        body = {
+            "success": True,
+            "errors": [],
+            "messages": [],
+            "result": {
+                "object": "chat.completion",
+                "choices": [
+                    {"message": {"role": "assistant", "content": '{"verdict": "correct", "feedback": "Good."}'}}
+                ],
+            },
+        }
+        result = await _grade(body)
+        assert result.verdict == "correct"
+        assert result.feedback == "Good."
+
     async def test_unsuccessful_cf_envelope_is_502(self):
         with pytest.raises(HTTPException) as exc:
             await _grade({"success": False, "errors": [{"message": "model overloaded"}]})

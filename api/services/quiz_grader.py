@@ -147,7 +147,11 @@ class QuizGrader:
             if not body.get("success"):
                 logger.warning("Workers AI grading call unsuccessful: %s", body.get("errors"))
                 raise HTTPException(status_code=502, detail="Grading service unavailable")
-            return body.get("result", {}).get("response")
+            body = body.get("result", {})
+        # Models on the legacy runtime answer {"response": ...}; vLLM-served
+        # models (Gemma 4 included) answer in OpenAI chat.completion shape.
+        if isinstance(body, dict) and "response" in body:
+            return body["response"]
         try:
             return body["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as e:
