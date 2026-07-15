@@ -6,15 +6,32 @@ from datetime import date
 
 import aioboto3
 import asyncpg
-
 from config import settings
-from db import scoped_query, scoped_queryrow, scoped_execute, service_queryrow, service_execute, get_pool
+from db import (
+    get_pool,
+    scoped_connection,
+    scoped_execute,
+    scoped_query,
+    scoped_queryrow,
+    service_execute,
+    service_queryrow,
+)
 from services.chunker import chunk_text, store_chunks_pg
-from .base import VaultFS, DuplicateDocumentError
+
+from .base import DuplicateDocumentError, StorageQuotaExceededError, VaultFS
+from .highlights import append_reply, find_highlight, parse_highlights_value
 
 logger = logging.getLogger(__name__)
 
 _s3_session = None
+_BATCH_TEXT_TYPES = ["md", "txt", "csv", "html", "svg", "json", "xml"]
+
+
+def _glob_to_like(pattern: str | None) -> str | None:
+    if pattern is None:
+        return None
+    escaped = pattern.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return escaped.replace("*", "%").replace("?", "_")
 
 _OVERVIEW_TEMPLATE = """\
 ---
@@ -66,6 +83,22 @@ class PostgresVaultFS(VaultFS):
 
     def __init__(self, user_id: str):
         self.user_id = user_id
+
+    async def _check_storage_available(self, conn, additional_bytes: int) -> None:
+        storage_limit = await conn.fetchval(
+            "SELECT storage_limit_bytes FROM users WHERE id = $1",
+            self.user_id,
+        )
+        if storage_limit is None:
+            storage_limit = settings.QUOTA_MAX_STORAGE_BYTES
+        current_bytes = await conn.fetchval(
+            "SELECT COALESCE(SUM(file_size), 0)::bigint "
+            "FROM documents WHERE user_id = $1",
+            self.user_id,
+        )
+        current_bytes = current_bytes or 0
+        if current_bytes + additional_bytes > storage_limit:
+            raise StorageQuotaExceededError(current_bytes, storage_limit)
 
 
     async def resolve_kb(self, slug: str) -> dict | None:
@@ -127,20 +160,46 @@ class PostgresVaultFS(VaultFS):
             kb_id, name, self.user_id,
         )
 
+    async def get_document_metadata(self, kb_id: str, filename: str, dir_path: str) -> dict | None:
+        return await scoped_queryrow(
+            self.user_id,
+            "SELECT id, user_id, filename, title, path, tags, version, file_type, "
+            "page_count, highlights, metadata, date, created_at, updated_at "
+            "FROM documents WHERE knowledge_base_id = $1 AND filename = $2 AND path = $3 "
+            "AND NOT archived AND user_id = $4",
+            kb_id, filename, dir_path, self.user_id,
+        )
+
+    async def find_document_metadata_by_name(self, kb_id: str, name: str) -> dict | None:
+        return await scoped_queryrow(
+            self.user_id,
+            "SELECT id, user_id, filename, title, path, tags, version, file_type, "
+            "page_count, highlights, metadata, date, created_at, updated_at "
+            "FROM documents WHERE knowledge_base_id = $1 AND (filename = $2 OR title = $2) "
+            "AND NOT archived AND user_id = $3",
+            kb_id, name, self.user_id,
+        )
+
     async def create_document(self, kb_id: str, filename: str, title: str, dir_path: str, file_type: str, content: str, tags: list[str], date: str | None = None, metadata: dict | None = None) -> dict:
         import json as _json
+        content_size = len(content.encode("utf-8"))
         pool = await get_pool()
         async with pool.acquire() as conn:
             async with conn.transaction():
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1::text))",
+                    self.user_id,
+                )
+                await self._check_storage_available(conn, content_size)
                 try:
                     row = await conn.fetchrow(
                         "INSERT INTO documents (knowledge_base_id, user_id, filename, title, path, "
-                        "file_type, status, content, tags, date, metadata, version) "
-                        "SELECT $1, $2, $3, $4, $5, $6, 'ready', $7, $8, $9, $10::jsonb, 1 "
+                        "file_type, status, content, file_size, tags, date, metadata, version) "
+                        "SELECT $1, $2, $3, $4, $5, $6, 'ready', $7, $8, $9, $10, $11::jsonb, 1 "
                         "WHERE EXISTS (SELECT 1 FROM knowledge_bases WHERE id = $1 AND user_id = $2) "
                         "RETURNING id, filename, path",
-                        kb_id, self.user_id, filename, title, dir_path, file_type, content, tags,
-                        date, _json.dumps(metadata) if metadata else None,
+                        kb_id, self.user_id, filename, title, dir_path, file_type, content,
+                        content_size, tags, date, _json.dumps(metadata) if metadata else None,
                     )
                 except asyncpg.UniqueViolationError as e:
                     # Only re-raise as DuplicateDocumentError for the path/filename index.
@@ -157,9 +216,15 @@ class PostgresVaultFS(VaultFS):
 
     async def update_document(self, doc_id: str, content: str, tags: list[str] | None = None, title: str | None = None, date: str | None = None, metadata: dict | None = None) -> dict | None:
         import json as _json
-        sets = ["content = $1", "version = COALESCE(version, 0) + 1", "updated_at = now()"]
-        args: list = [content, doc_id, self.user_id]
-        idx = 4
+        content_size = len(content.encode("utf-8"))
+        sets = [
+            "content = $1",
+            "file_size = $4",
+            "version = COALESCE(version, 0) + 1",
+            "updated_at = now()",
+        ]
+        args: list = [content, doc_id, self.user_id, content_size]
+        idx = 5
 
         if title is not None:
             sets.append(f"title = ${idx}")
@@ -187,6 +252,21 @@ class PostgresVaultFS(VaultFS):
         pool = await get_pool()
         async with pool.acquire() as conn:
             async with conn.transaction():
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1::text))",
+                    self.user_id,
+                )
+                current = await conn.fetchrow(
+                    "SELECT file_size FROM documents "
+                    "WHERE id = $1 AND user_id = $2 FOR UPDATE",
+                    doc_id, self.user_id,
+                )
+                if not current:
+                    return None
+                await self._check_storage_available(
+                    conn,
+                    content_size - (current["file_size"] or 0),
+                )
                 row = await conn.fetchrow(sql, *args)
                 if row and row["file_type"] in ("md", "txt"):
                     chunks = chunk_text(content or "")
@@ -195,6 +275,31 @@ class PostgresVaultFS(VaultFS):
                         str(row["knowledge_base_id"]), chunks,
                     )
         return {"id": row["id"], "filename": row["filename"], "path": row["path"]} if row else None
+
+    async def add_highlight_reply(self, doc_id: str, highlight_id: str, reply: dict) -> dict | None:
+        import json as _json
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    "SELECT highlights FROM documents "
+                    "WHERE id = $1 AND user_id = $2 FOR UPDATE",
+                    doc_id, self.user_id,
+                )
+                if not row:
+                    return None
+                highlights = parse_highlights_value(row["highlights"])
+                target = find_highlight(highlights, highlight_id)
+                if target is None:
+                    return None
+                append_reply(target, reply)
+                await conn.execute(
+                    "UPDATE documents SET highlights = $1::jsonb, "
+                    "version = COALESCE(version, 0) + 1, updated_at = now() "
+                    "WHERE id = $2 AND user_id = $3",
+                    _json.dumps(highlights), doc_id, self.user_id,
+                )
+                return target
 
     async def archive_documents(self, doc_ids: list[str]) -> int:
         result = await service_execute(
@@ -215,14 +320,64 @@ class PostgresVaultFS(VaultFS):
             kb_id, self.user_id,
         )
 
-    async def list_documents_with_content(self, kb_id: str) -> list[dict]:
+    async def list_documents_with_content(
+        self,
+        kb_id: str,
+        path_glob: str | None = None,
+        content_limit: int | None = None,
+        wiki_content_only: bool = False,
+    ) -> list[dict]:
+        if path_glob is None and content_limit is None and not wiki_content_only:
+            return await scoped_query(
+                self.user_id,
+                "SELECT id, filename, title, path, content, tags, file_type, page_count, "
+                "highlights, metadata, date FROM documents "
+                "WHERE knowledge_base_id = $1 AND NOT archived AND user_id = $2 "
+                "AND COALESCE(metadata->>'asset', 'false') <> 'true' "
+                "ORDER BY path, filename",
+                kb_id,
+                self.user_id,
+            )
         return await scoped_query(
             self.user_id,
-            "SELECT id, filename, title, path, content, tags, file_type, page_count, highlights, metadata, date "
-            "FROM documents WHERE knowledge_base_id = $1 AND NOT archived AND user_id = $2 "
-            "AND COALESCE(metadata->>'asset', 'false') <> 'true' "
-            "ORDER BY path, filename",
-            kb_id, self.user_id,
+            "WITH matched AS ("
+            "  SELECT id, filename, title, path, content, tags, file_type, page_count, "
+            "         highlights, metadata, date, "
+            "         CASE "
+            "           WHEN $4::bigint IS NULL AND NOT $5::boolean THEN length(COALESCE(content, '')) "
+            "           WHEN $4::bigint = 0 THEN 0 "
+            "           WHEN $5::boolean AND path LIKE '/wiki/%' THEN length(COALESCE(content, '')) "
+            "           WHEN $4::bigint IS NOT NULL AND file_type = ANY($6::text[]) THEN length(COALESCE(content, '')) "
+            "           ELSE 0 "
+            "         END::bigint AS payload_chars "
+            "  FROM documents "
+            "  WHERE knowledge_base_id = $1 AND NOT archived AND user_id = $2 "
+            "    AND COALESCE(metadata->>'asset', 'false') <> 'true' "
+            "    AND ($3::text IS NULL OR (path || filename) LIKE $3 ESCAPE '\\')"
+            "), budgeted AS ("
+            "  SELECT matched.*, COALESCE(SUM(payload_chars) OVER ("
+            "    ORDER BY path, filename ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING"
+            "  ), 0)::bigint AS chars_before "
+            "  FROM matched"
+            ") "
+            "SELECT id, filename, title, path, "
+            "       CASE "
+            "         WHEN $4::bigint IS NULL AND NOT $5::boolean THEN content "
+            "         WHEN payload_chars = 0 THEN NULL "
+            "         WHEN $4::bigint IS NULL THEN content "
+            "         WHEN chars_before >= $4::bigint THEN NULL "
+            "         ELSE left(content, LEAST(payload_chars, $4::bigint - chars_before)::int) "
+            "       END AS content, "
+            "       tags, file_type, page_count, highlights, metadata, date, "
+            "       ($4::bigint IS NOT NULL AND payload_chars > GREATEST($4::bigint - chars_before, 0)) "
+            "         AS content_truncated "
+            "FROM budgeted ORDER BY path, filename",
+            kb_id,
+            self.user_id,
+            _glob_to_like(path_glob),
+            content_limit,
+            wiki_content_only,
+            _BATCH_TEXT_TYPES,
         )
 
 
@@ -239,6 +394,35 @@ class PostgresVaultFS(VaultFS):
             self.user_id,
             "SELECT page, content, elements FROM document_pages "
             "WHERE document_id = $1 ORDER BY page",
+            doc_id,
+        )
+
+    async def get_pages_for_batch(self, doc_id: str, max_chars: int) -> list[dict]:
+        if max_chars <= 0:
+            return []
+        return await scoped_query(
+            self.user_id,
+            "WITH ordered AS ("
+            "  SELECT page, content, elements, length(content)::bigint AS content_chars, "
+            "         COALESCE(SUM(length(content) + 32) OVER ("
+            "           ORDER BY page ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING"
+            "         ), 0)::bigint AS chars_before "
+            "  FROM document_pages WHERE document_id = $1"
+            ") "
+            "SELECT page, left(content, GREATEST($2::bigint - chars_before, 0)::int) AS content, "
+            "       elements, (chars_before + content_chars > $2::bigint) AS content_truncated "
+            "FROM ordered WHERE chars_before < $2::bigint ORDER BY page",
+            doc_id,
+            max_chars,
+        )
+
+    async def get_page_index(self, doc_id: str) -> list[dict]:
+        return await scoped_query(
+            self.user_id,
+            "SELECT page, elements, "
+            "       CASE WHEN content = '' THEN 0 ELSE "
+            "         length(content) - length(replace(content, E'\\n', '')) + 1 END AS row_count "
+            "FROM document_pages WHERE document_id = $1 ORDER BY page",
             doc_id,
         )
 
@@ -359,6 +543,35 @@ class PostgresVaultFS(VaultFS):
         except Exception as e:
             logger.warning("Failed to insert reference %s -> %s: %s", source_id[:8], target_id[:8], e)
 
+    async def replace_references(
+        self,
+        source_id: str,
+        kb_id: str,
+        edges: list[tuple[str, str, int | None]],
+    ) -> None:
+        """Replace a document's complete edge set with one scoped transaction."""
+        async with scoped_connection(self.user_id) as conn:
+            await conn.execute(
+                "DELETE FROM document_references WHERE source_document_id = $1::uuid",
+                source_id,
+            )
+            if not edges:
+                return
+            await conn.execute(
+                "INSERT INTO document_references "
+                "(source_document_id, target_document_id, knowledge_base_id, reference_type, page) "
+                "SELECT $1::uuid, row.target_id, $2::uuid, row.reference_type, row.page "
+                "FROM UNNEST($3::uuid[], $4::text[], $5::int[]) "
+                "AS row(target_id, reference_type, page) "
+                "ON CONFLICT (source_document_id, target_document_id, reference_type) DO UPDATE "
+                "SET page = EXCLUDED.page, created_at = now()",
+                source_id,
+                kb_id,
+                [edge[0] for edge in edges],
+                [edge[1] for edge in edges],
+                [edge[2] for edge in edges],
+            )
+
     async def propagate_staleness(self, doc_id: str) -> None:
         await service_execute(
             "UPDATE documents SET stale_since = now() "
@@ -389,6 +602,18 @@ class PostgresVaultFS(VaultFS):
             "WHERE dr.source_document_id = $1 AND NOT d.archived AND d.user_id = $2 "
             "ORDER BY dr.reference_type, d.path, d.filename",
             doc_id, self.user_id,
+        )
+
+    async def get_reference_edges(self, kb_id: str) -> list[dict]:
+        return await scoped_query(
+            self.user_id,
+            "SELECT dr.source_document_id::text AS source_id, "
+            "       dr.target_document_id::text AS target_id, dr.reference_type, dr.page "
+            "FROM document_references dr "
+            "JOIN documents source ON source.id = dr.source_document_id "
+            "WHERE dr.knowledge_base_id = $1 AND source.user_id = $2",
+            kb_id,
+            self.user_id,
         )
 
     async def find_uncited_sources(self, kb_id: str) -> list[dict]:

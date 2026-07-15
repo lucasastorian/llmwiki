@@ -54,6 +54,21 @@ class TestMaterializeHighlights:
         assert "(p.3)" in out
         assert "check this" in out
 
+    def test_page_filter_only_includes_annotations_on_selected_pages(self):
+        _materialize_highlights = _materializer()
+
+        out = _materialize_highlights({
+            "highlights": [
+                {"id": "h1", "type": "pdf", "pdfAnchor": {"page": 2, "textContent": "keep me"}},
+                {"id": "h2", "type": "pdf", "pdfAnchor": {"page": 3, "textContent": "omit me"}},
+                {"id": "h3", "type": "text", "textAnchor": {"textContent": "unplaced"}},
+            ],
+        }, {2})
+
+        assert "keep me" in out
+        assert "omit me" not in out
+        assert "unplaced" not in out
+
     def test_includes_markdown_text_anchor_highlight(self):
         _materialize_highlights = _materializer()
 

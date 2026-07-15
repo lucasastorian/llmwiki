@@ -16,7 +16,9 @@ from services.chunker import chunk_text, store_chunks
 from services.webclip_assets import materialize_webclip_assets
 
 from .base import DocumentService, KBService, PublicWikiService, ServiceFactory, UserService
+from .highlight_merge import merge_highlights_by_id, preserve_replies
 from .parsers import parse_frontmatter, title_from_filename
+from .types import MAX_TEXT_CONTENT_BYTES
 
 logger = logging.getLogger(__name__)
 
@@ -315,20 +317,6 @@ def _normalize_webclip_path(path: str | None) -> str:
     return normalized
 
 
-def _merge_highlights_by_id(existing: list[dict], incoming: list[dict]) -> list[dict]:
-    merged: dict[str, dict] = {}
-    order: list[str] = []
-    for highlight in [*existing, *incoming]:
-        if not isinstance(highlight, dict):
-            continue
-        highlight_id = highlight.get("id")
-        if not highlight_id:
-            continue
-        if highlight_id not in merged:
-            order.append(highlight_id)
-        current = merged.get(highlight_id, {})
-        merged[highlight_id] = {**current, **highlight}
-    return [merged[highlight_id] for highlight_id in order]
 
 
 class HostedDocumentService(DocumentService):
@@ -394,6 +382,10 @@ class HostedDocumentService(DocumentService):
         return {"url": url}
 
     async def create_note(self, kb_id: str, filename: str, path: str, content: str) -> dict:
+        content_size = len(content.encode("utf-8"))
+        if content_size > MAX_TEXT_CONTENT_BYTES:
+            raise HTTPException(status_code=413, detail="Text content exceeds the 10 MiB limit")
+
         await self._validate_kb(kb_id)
 
         meta = parse_frontmatter(content)
@@ -411,12 +403,17 @@ class HostedDocumentService(DocumentService):
         conn = await self.pool.acquire()
         try:
             async with conn.transaction():
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1::text))",
+                    self.user_id,
+                )
+                await self._check_storage_available(content_size, conn=conn)
                 row = await conn.fetchrow(
                     f"INSERT INTO documents (knowledge_base_id, user_id, filename, path, title, "
-                    f"file_type, status, content, tags) "
-                    f"VALUES ($1, $2, $3, $4, $5, 'md', 'ready', $6, $7) "
+                    f"file_type, file_size, status, content, tags) "
+                    f"VALUES ($1, $2, $3, $4, $5, 'md', $6, 'ready', $7, $8) "
                     f"RETURNING {_DOC_COLUMNS}",
-                    kb_id, self.user_id, filename, path, title, content, tags,
+                    kb_id, self.user_id, filename, path, title, content_size, content, tags,
                 )
                 if content:
                     chunks = chunk_text(content)
@@ -508,7 +505,7 @@ class HostedDocumentService(DocumentService):
                 if existing:
                     parent_doc_id = str(existing["id"])
                     current_highlights = self._parse_highlights(existing["highlights"])
-                    next_highlights = _merge_highlights_by_id(current_highlights, enriched)
+                    next_highlights = merge_highlights_by_id(current_highlights, enriched)
                     row = await conn.fetchrow(
                         f"UPDATE documents SET path = $1, title = $2, file_size = $3, "
                         f"status = 'ready', content = $4, metadata = $5::jsonb, "
@@ -644,7 +641,6 @@ class HostedDocumentService(DocumentService):
         self, doc_id: str, highlights: list[dict],
         expected_version: int | None = None,
     ) -> dict | None:
-        payload = json.dumps(highlights)
         conn = await self.pool.acquire()
         try:
             async with conn.transaction():
@@ -663,6 +659,8 @@ class HostedDocumentService(DocumentService):
                     return {"conflict": True}
 
                 old_highlights = self._parse_highlights(locked["highlights"])
+                preserve_replies(highlights, old_highlights)
+                payload = json.dumps(highlights)
 
                 row = await conn.fetchrow(
                     "UPDATE documents SET highlights = $1::jsonb, "
@@ -718,6 +716,7 @@ class HostedDocumentService(DocumentService):
                     return {"conflict": True}
 
                 current = self._parse_highlights(row["highlights"])
+                preserve_replies([highlight], current)
                 # Replace existing entry with the same id, else append.
                 replaced = False
                 next_list: list[dict] = []
@@ -921,21 +920,42 @@ class HostedDocumentService(DocumentService):
             )
 
     async def update_content(self, doc_id: str, content: str) -> dict | None:
-        row = await self.pool.fetchrow(
-            "UPDATE documents SET content = $1, version = version + 1, updated_at = now() "
-            "WHERE id = $2 AND user_id = $3 RETURNING id, content, version",
-            content, doc_id, self.user_id,
-        )
-        if not row:
-            return None
+        content_size = len(content.encode("utf-8"))
+        if content_size > MAX_TEXT_CONTENT_BYTES:
+            raise HTTPException(status_code=413, detail="Text content exceeds the 10 MiB limit")
 
-        kb_id = await self.pool.fetchval(
-            "SELECT knowledge_base_id::text FROM documents WHERE id = $1 AND user_id = $2",
-            doc_id, self.user_id,
-        )
-        if kb_id:
-            chunks = chunk_text(content) if content else []
-            await store_chunks(self.pool, str(doc_id), self.user_id, kb_id, chunks)
+        conn = await self.pool.acquire()
+        try:
+            async with conn.transaction():
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1::text))",
+                    self.user_id,
+                )
+                current = await conn.fetchrow(
+                    "SELECT file_size, knowledge_base_id::text AS kb_id "
+                    "FROM documents WHERE id = $1 AND user_id = $2 FOR UPDATE",
+                    doc_id, self.user_id,
+                )
+                if not current:
+                    return None
+
+                await self._check_storage_available(
+                    content_size - (current["file_size"] or 0),
+                    conn=conn,
+                )
+                row = await conn.fetchrow(
+                    "UPDATE documents SET content = $1, file_size = $2, "
+                    "version = version + 1, updated_at = now() "
+                    "WHERE id = $3 AND user_id = $4 RETURNING id, content, version",
+                    content, content_size, doc_id, self.user_id,
+                )
+
+                chunks = chunk_text(content) if content else []
+                await store_chunks(
+                    conn, str(doc_id), self.user_id, current["kb_id"], chunks,
+                )
+        finally:
+            await self.pool.release(conn)
 
         return dict(row)
 

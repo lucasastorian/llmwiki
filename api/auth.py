@@ -1,22 +1,33 @@
 import asyncio
 import logging
 import time
+from collections import OrderedDict
 
 import httpx
 import jwt
-from jwt import PyJWK
-from fastapi import HTTPException, Request
-
 from config import settings
+from fastapi import HTTPException, Request
+from jwt import PyJWK
 
 logger = logging.getLogger(__name__)
 
 # Bounded TTL ensures we periodically pick up Supabase key rotations.
 _jwks_cache: dict[str, PyJWK] = {}
 _jwks_last_fetch: float = 0
+_jwks_last_refresh_attempt: float = 0
 _JWKS_TTL_SECONDS = 15 * 60
 _JWKS_MIN_REFRESH_SECONDS = 10
 _jwks_lock = asyncio.Lock()
+
+# Unknown key IDs are attacker-controlled because the JWT header is parsed
+# before signature verification. Keep a small negative cache so repeated misses
+# fail locally, and bound it so random kids cannot grow process memory forever.
+_UNKNOWN_KID_TTL_SECONDS = 30
+_UNKNOWN_KID_CACHE_MAX = 256
+_unknown_kids: OrderedDict[str, float] = OrderedDict()
+
+_MAX_TOKEN_LENGTH = 16 * 1024
+_MAX_KID_LENGTH = 256
 
 
 def _jwks_is_stale() -> bool:
@@ -37,20 +48,32 @@ async def _fetch_jwks() -> None:
             new_cache[kid] = PyJWK(key_data)
     _jwks_cache.clear()
     _jwks_cache.update(new_cache)
+    for kid in new_cache:
+        _unknown_kids.pop(kid, None)
     _jwks_last_fetch = time.monotonic()
     logger.info("Fetched %d JWKS keys from Supabase", len(_jwks_cache))
 
 
-async def _refresh_jwks_if_needed(force: bool = False) -> None:
-    """Serialize concurrent refreshes; force=True bypasses staleness check (used when kid is unknown)."""
+async def _refresh_jwks_if_needed(force: bool = False, kid: str | None = None) -> None:
+    """Refresh JWKS at most once per cooldown, including unknown-kid misses.
+
+    ``kid`` lets a waiter re-check whether another request already fetched the
+    key after acquiring the single-flight lock.
+    """
+    global _jwks_last_refresh_attempt
     async with _jwks_lock:
-        elapsed = time.monotonic() - _jwks_last_fetch
-        # MIN_REFRESH only gates non-forced calls; an unknown kid (force=True)
-        # bypasses it so a freshly rotated key resolves immediately.
-        if not force and elapsed < _JWKS_MIN_REFRESH_SECONDS:
+        if kid and kid in _jwks_cache:
+            return
+
+        now = time.monotonic()
+        if now - _jwks_last_refresh_attempt < _JWKS_MIN_REFRESH_SECONDS:
             return
         if not force and not _jwks_is_stale():
             return
+
+        # Record attempts, not only successful fetches. Otherwise a JWKS outage
+        # turns every authentication request into another outbound HTTP call.
+        _jwks_last_refresh_attempt = now
         try:
             await _fetch_jwks()
         except Exception:
@@ -59,6 +82,8 @@ async def _refresh_jwks_if_needed(force: bool = False) -> None:
 
 async def prefetch_jwks() -> None:
     """Eager fetch at app startup so the first request doesn't pay cold-cache cost."""
+    global _jwks_last_refresh_attempt
+    _jwks_last_refresh_attempt = time.monotonic()
     try:
         await _fetch_jwks()
     except Exception:
@@ -70,21 +95,35 @@ _EXPECTED_ISSUER = f"{settings.SUPABASE_URL.rstrip('/')}/auth/v1"
 
 async def verify_token(token: str) -> str:
     """Verify a Supabase JWT and return the user_id (sub claim). Raises ValueError on failure."""
+    if not token or len(token) > _MAX_TOKEN_LENGTH:
+        raise ValueError("Invalid token")
+
     try:
         header = jwt.get_unverified_header(token)
     except jwt.InvalidTokenError:
         raise ValueError("Invalid token")
 
     kid = header.get("kid")
-    if not kid:
+    if not isinstance(kid, str) or not kid or len(kid) > _MAX_KID_LENGTH:
         raise ValueError("Token missing kid header")
 
     if _jwks_is_stale():
         await _refresh_jwks_if_needed()
 
     if kid not in _jwks_cache:
-        await _refresh_jwks_if_needed(force=True)
+        now = time.monotonic()
+        negative_until = _unknown_kids.get(kid)
+        if negative_until is not None:
+            if negative_until > now:
+                raise ValueError("Unknown signing key")
+            _unknown_kids.pop(kid, None)
+
+        await _refresh_jwks_if_needed(force=True, kid=kid)
         if kid not in _jwks_cache:
+            _unknown_kids[kid] = time.monotonic() + _UNKNOWN_KID_TTL_SECONDS
+            _unknown_kids.move_to_end(kid)
+            while len(_unknown_kids) > _UNKNOWN_KID_CACHE_MAX:
+                _unknown_kids.popitem(last=False)
             raise ValueError("Unknown signing key")
 
     jwk = _jwks_cache[kid]

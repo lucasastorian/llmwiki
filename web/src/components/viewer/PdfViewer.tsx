@@ -6,9 +6,9 @@ import { Document, Page } from 'react-pdf'
 import { ChevronUp, ChevronDown, Search, X, Download, ZoomIn, ZoomOut, MessageSquare } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { ensurePdfWorker } from '@/lib/pdfjs'
-import { apiFetch } from '@/lib/api'
-import { useUserStore } from '@/stores'
-import type { Highlight, HighlightsResponse, PdfAnchor } from '@/lib/highlights/types'
+import { useDocumentHighlights } from '@/hooks/useWikiHighlights'
+import { createHighlightId } from '@/lib/highlights/ids'
+import type { Highlight, PdfAnchor } from '@/lib/highlights/types'
 import { computePdfAnchor, pdfRectsToViewport } from '@/lib/highlights/pdfAnchor'
 
 import 'react-pdf/dist/Page/TextLayer.css'
@@ -23,11 +23,6 @@ type Props = {
   className?: string
   initialPage?: number
   hideToolbar?: boolean
-}
-
-function createHighlightId(): string {
-  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return crypto.randomUUID()
-  return `hl-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
 }
 
 const VIRTUALIZE_BUFFER = 2
@@ -247,13 +242,17 @@ export default function PdfViewer({ fileUrl, documentId, title, className, initi
   }, [])
 
   // ─── Highlights ────────────────────────────────────────────────────
-  const token = useUserStore((s) => s.accessToken)
-  const [highlights, setHighlights] = useState<Highlight[]>([])
+  const {
+    highlights,
+    saveHighlight: persistHighlight,
+    updateComment,
+    removeHighlight,
+  } = useDocumentHighlights(documentId ?? null)
   type PopoverState =
     | {
         mode: 'create'
         pageNumber: number
-        anchor: { textContent: string; prefix: string | null; suffix: string | null; rects: PdfAnchor['rects'] }
+        anchor: Omit<PdfAnchor, 'page'>
         position: { left: number; top: number }
       }
     | {
@@ -283,15 +282,6 @@ export default function PdfViewer({ fileUrl, documentId, title, className, initi
     return () => window.clearTimeout(id)
   }, [notice])
 
-  useEffect(() => {
-    if (!documentId || !token) return
-    let cancelled = false
-    apiFetch<HighlightsResponse>(`/v1/documents/${documentId}/highlights`, token)
-      .then((res) => { if (!cancelled) setHighlights(res.highlights ?? []) })
-      .catch(() => { /* non-fatal */ })
-    return () => { cancelled = true }
-  }, [documentId, token])
-
   const pdfHighlightsByPage = useMemo(() => {
     const m = new Map<number, Highlight[]>()
     for (const h of highlights) {
@@ -313,7 +303,7 @@ export default function PdfViewer({ fileUrl, documentId, title, className, initi
 
   const handlePageMouseUp = useCallback(
     (pageNumber: number, pageEl: HTMLDivElement) => {
-      if (!documentId || !token) return
+      if (!documentId) return
       const sel = window.getSelection()
       if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return
       const range = sel.getRangeAt(0)
@@ -361,7 +351,7 @@ export default function PdfViewer({ fileUrl, documentId, title, className, initi
       setCommentDraft('')
       setCommentExpanded(false)
     },
-    [documentId, pageProxies, pageTexts, renderedViewport, token],
+    [documentId, pageProxies, pageTexts, renderedViewport],
   )
 
   const handleHighlightClick = useCallback(
@@ -392,7 +382,7 @@ export default function PdfViewer({ fileUrl, documentId, title, className, initi
   // yellow rect renders, then switch the popover to edit-expanded for that
   // just-saved highlight so the user can type their note on top of it.
   const startNoteFromCreate = useCallback(async () => {
-    if (!documentId || !token || !popover || popover.mode !== 'create' || savingHighlight) return
+    if (!documentId || !popover || popover.mode !== 'create' || savingHighlight) return
     setSavingHighlight(true)
     try {
       const highlight: Highlight = {
@@ -402,6 +392,8 @@ export default function PdfViewer({ fileUrl, documentId, title, className, initi
         textAnchor: null,
         pdfAnchor: {
           page: popover.pageNumber,
+          textStart: popover.anchor.textStart,
+          textEnd: popover.anchor.textEnd,
           textContent: popover.anchor.textContent,
           prefix: popover.anchor.prefix,
           suffix: popover.anchor.suffix,
@@ -411,18 +403,12 @@ export default function PdfViewer({ fileUrl, documentId, title, className, initi
         color: 'yellow',
         createdAt: new Date().toISOString(),
       }
-      const res = await apiFetch<HighlightsResponse>(
-        `/v1/documents/${documentId}/highlights`,
-        token,
-        { method: 'POST', body: JSON.stringify({ highlight }) },
-      )
-      setHighlights(res.highlights ?? [])
+      await persistHighlight(highlight)
       window.getSelection()?.removeAllRanges()
-      const saved = (res.highlights ?? []).find((h) => h.id === highlight.id) ?? highlight
       setPopover({
         mode: 'edit',
         pageNumber: popover.pageNumber,
-        highlight: saved,
+        highlight,
         position: popover.position,
       })
       setCommentDraft('')
@@ -432,10 +418,10 @@ export default function PdfViewer({ fileUrl, documentId, title, className, initi
     } finally {
       setSavingHighlight(false)
     }
-  }, [documentId, popover, savingHighlight, token])
+  }, [documentId, persistHighlight, popover, savingHighlight])
 
   const saveHighlight = useCallback(async () => {
-    if (!documentId || !token || !popover || savingHighlight) return
+    if (!documentId || !popover || savingHighlight) return
     setSavingHighlight(true)
     try {
       const highlight: Highlight =
@@ -447,6 +433,8 @@ export default function PdfViewer({ fileUrl, documentId, title, className, initi
               textAnchor: null,
               pdfAnchor: {
                 page: popover.pageNumber,
+                textStart: popover.anchor.textStart,
+                textEnd: popover.anchor.textEnd,
                 textContent: popover.anchor.textContent,
                 prefix: popover.anchor.prefix,
                 suffix: popover.anchor.suffix,
@@ -458,12 +446,11 @@ export default function PdfViewer({ fileUrl, documentId, title, className, initi
             }
           : { ...popover.highlight, comment: commentDraft.trim() || null }
 
-      const res = await apiFetch<HighlightsResponse>(
-        `/v1/documents/${documentId}/highlights`,
-        token,
-        { method: 'POST', body: JSON.stringify({ highlight }) },
-      )
-      setHighlights(res.highlights ?? [])
+      if (popover.mode === 'create') {
+        await persistHighlight(highlight)
+      } else {
+        await updateComment(highlight.id, highlight.comment)
+      }
       setPopover(null)
       setCommentDraft('')
       setCommentExpanded(false)
@@ -473,18 +460,13 @@ export default function PdfViewer({ fileUrl, documentId, title, className, initi
     } finally {
       setSavingHighlight(false)
     }
-  }, [commentDraft, documentId, popover, savingHighlight, token])
+  }, [commentDraft, documentId, persistHighlight, popover, savingHighlight, updateComment])
 
   const deleteHighlight = useCallback(async () => {
-    if (!documentId || !token || !popover || popover.mode !== 'edit' || savingHighlight) return
+    if (!documentId || !popover || popover.mode !== 'edit' || savingHighlight) return
     setSavingHighlight(true)
     try {
-      const res = await apiFetch<HighlightsResponse>(
-        `/v1/documents/${documentId}/highlights/${encodeURIComponent(popover.highlight.id)}`,
-        token,
-        { method: 'DELETE' },
-      )
-      setHighlights(res.highlights ?? [])
+      await removeHighlight(popover.highlight.id)
       setPopover(null)
       setCommentDraft('')
       setCommentExpanded(false)
@@ -493,7 +475,7 @@ export default function PdfViewer({ fileUrl, documentId, title, className, initi
     } finally {
       setSavingHighlight(false)
     }
-  }, [documentId, popover, savingHighlight, token])
+  }, [documentId, popover, removeHighlight, savingHighlight])
 
   const cancelPopover = useCallback(() => {
     setPopover(null)

@@ -8,9 +8,9 @@ import re
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
-import httpx
+import httpx  # noqa: F401 -- compatibility alias for existing transport tests
 from html_parser import Image
-from infra.safe_fetch import build_pinned_request, parse_public_fetch_url, redirect_location, resolve_public_ip
+from infra.safe_fetch import fetch_public_image
 
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 IMAGE_TIMEOUT = 5
@@ -153,53 +153,12 @@ async def _fetch_image(url: str) -> tuple[bytes, str] | None:
 
 async def _fetch_remote_image(url: str) -> tuple[bytes, str] | None:
     """Fetch an external image with SSRF guards and size/type validation, or None."""
-    current = url
-    async with httpx.AsyncClient(timeout=IMAGE_TIMEOUT, follow_redirects=False, trust_env=False) as client:
-        for _ in range(MAX_IMAGE_REDIRECTS + 1):
-            parsed = parse_public_fetch_url(current)
-            if not parsed:
-                return None
-            ip = resolve_public_ip(parsed.hostname)
-            if not ip:
-                return None
-            request = build_pinned_request(client, parsed, ip, {"Accept": "image/*"})
-            try:
-                resp = await client.send(request, stream=True)
-            except (httpx.HTTPError, ValueError):
-                return None
-            try:
-                redirect = redirect_location(resp, current)
-                if redirect:
-                    current = redirect
-                    continue
-                return await _read_image_response(resp)
-            finally:
-                await resp.aclose()
-    return None
-
-
-async def _read_image_response(resp: httpx.Response) -> tuple[bytes, str] | None:
-    if resp.status_code != 200:
-        return None
-
-    content_length = resp.headers.get("content-length")
-    if content_length and content_length.isdigit() and int(content_length) > MAX_IMAGE_BYTES:
-        return None
-
-    chunks = bytearray()
-    async for chunk in resp.aiter_bytes():
-        chunks.extend(chunk)
-        if len(chunks) > MAX_IMAGE_BYTES:
-            return None
-    data = bytes(chunks)
-
-    sniffed = _sniff_image_type(data)
-    content_type = _clean_content_type(resp.headers.get("content-type", ""))
-    if content_type not in SAFE_MIME_EXT:
-        content_type = sniffed or ""
-    if content_type not in SAFE_MIME_EXT or sniffed != content_type:
-        return None
-    return data, content_type
+    return await fetch_public_image(
+        url,
+        max_bytes=MAX_IMAGE_BYTES,
+        timeout=IMAGE_TIMEOUT,
+        max_redirects=MAX_IMAGE_REDIRECTS,
+    )
 
 
 def _decode_data_image(url: str) -> tuple[bytes, str] | None:

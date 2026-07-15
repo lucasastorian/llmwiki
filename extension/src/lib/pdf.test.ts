@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { hasPdfSuffix, isPdfTab } from "./pdf";
+import { hasPdfSuffix, isPdfTab, normalizePdfSourceUrl } from "./pdf";
 
 function stubExecuteScript(result: unknown): ReturnType<typeof vi.fn> {
   const executeScript = vi.fn(async () => [{ result }]);
@@ -24,6 +24,23 @@ describe("hasPdfSuffix", () => {
 
   it("matches a .pdf tab title", () => {
     expect(hasPdfSuffix("https://example.com/view?id=1", "paper.pdf")).toBe(true);
+  });
+});
+
+describe("normalizePdfSourceUrl", () => {
+  it("removes viewer fragments but preserves the complete fetch query", () => {
+    expect(
+      normalizePdfSourceUrl(
+        "  https://example.com/report.pdf?ref=mail&utm_source=inbox&signature=a%2Bb#page=7&zoom=125  ",
+      ),
+    ).toBe(
+      "https://example.com/report.pdf?ref=mail&utm_source=inbox&signature=a%2Bb",
+    );
+  });
+
+  it("leaves an already-fetchable PDF URL unchanged", () => {
+    const url = "https://arxiv.org/pdf/2506.06266?download=1";
+    expect(normalizePdfSourceUrl(url)).toBe(url);
   });
 });
 

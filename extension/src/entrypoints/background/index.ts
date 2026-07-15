@@ -1,14 +1,23 @@
 import { getSupabase } from "@/lib/supabase";
 import { getApiUrl, clearAccountSelections } from "@/lib/settings";
 import { isAllowedApiFetchUrl } from "@/lib/security";
+import {
+  CLOSE_PDF_SAVE_CONTEXT,
+  ENSURE_PDF_SAVE_CONTEXT,
+  GET_PDF_SAVE_STATUS,
+  START_PDF_SAVE,
+  type GetPdfSaveStatusMessage,
+  type StartPdfSaveMessage,
+} from "@/lib/pdf-save-jobs";
 import type { AuthChangeEvent, Session } from "@supabase/auth-js";
 
-type Message =
+type BackgroundMessage =
   | { type: "SIGN_IN_WITH_GOOGLE" }
   | { type: "SIGN_IN_WITH_PASSWORD"; email: string; password: string }
   | { type: "SIGN_OUT" }
   | { type: "GET_SESSION" }
-  | { type: "DOWNLOAD_PDF"; url: string }
+  | { type: typeof ENSURE_PDF_SAVE_CONTEXT }
+  | { type: typeof CLOSE_PDF_SAVE_CONTEXT }
   | {
       type: "API_FETCH";
       url: string;
@@ -16,6 +25,8 @@ type Message =
       headers?: Record<string, string>;
       body?: string;
     };
+
+type Message = BackgroundMessage | StartPdfSaveMessage | GetPdfSaveStatusMessage;
 
 interface ApiFetchResponse {
   ok: boolean;
@@ -35,6 +46,11 @@ export default defineBackground(() => {
       // privileged handlers. Without externally_connectable no web page can
       // reach here, but reject foreign senders as defense in depth.
       if (sender.id !== chrome.runtime.id) return false;
+      // These messages are owned by the offscreen document. Returning false
+      // lets that context be the sole responder.
+      if (message.type === START_PDF_SAVE || message.type === GET_PDF_SAVE_STATUS) {
+        return false;
+      }
       handleMessage(message)
         .then(sendResponse)
         .catch((err: unknown) => {
@@ -44,7 +60,7 @@ export default defineBackground(() => {
     },
   );
 
-  async function handleMessage(msg: Message) {
+  async function handleMessage(msg: BackgroundMessage) {
     switch (msg.type) {
       case "SIGN_IN_WITH_GOOGLE":
         return signInWithGoogle();
@@ -54,8 +70,10 @@ export default defineBackground(() => {
         return signOut();
       case "GET_SESSION":
         return getSession();
-      case "DOWNLOAD_PDF":
-        return downloadPdf(msg.url);
+      case ENSURE_PDF_SAVE_CONTEXT:
+        return ensurePdfSaveContext();
+      case CLOSE_PDF_SAVE_CONTEXT:
+        return closePdfSaveContext();
       case "API_FETCH":
         return apiFetchProxy(msg);
       default:
@@ -225,43 +243,49 @@ export default defineBackground(() => {
     };
   }
 
-  // ── PDF Download ────────────────────────────────────────
+  let offscreenCreation: Promise<void> | null = null;
+  const offscreenUrl = chrome.runtime.getURL("offscreen.html");
 
-  async function downloadPdf(
-    url: string,
-  ): Promise<{ blob: number[]; filename: string } | { error: string }> {
-    try {
-      const response = await fetch(url);
-      if (!response.ok) {
-        return { error: `Download failed: ${response.status}` };
+  async function ensurePdfSaveContext(): Promise<{ ready: true }> {
+    if (!(await hasPdfSaveContext())) {
+      offscreenCreation ??= chrome.offscreen.createDocument({
+        url: offscreenUrl,
+        reasons: ["BLOBS" as chrome.offscreen.Reason],
+        justification: "Keep PDF download and upload blobs alive after the popup closes",
+      });
+      try {
+        await offscreenCreation;
+      } finally {
+        offscreenCreation = null;
       }
-
-      const buffer = await response.arrayBuffer();
-      const bytes = Array.from(new Uint8Array(buffer));
-
-      // Derive filename
-      let filename = "document.pdf";
-      const disposition = response.headers.get("content-disposition");
-      if (disposition) {
-        const match = disposition.match(
-          /filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/,
-        );
-        if (match?.[1]) {
-          filename = match[1].replace(/['"]/g, "");
-        }
-      } else {
-        const lastSegment = new URL(url).pathname.split("/").pop();
-        if (lastSegment) {
-          filename = lastSegment.endsWith(".pdf") ? lastSegment : `${lastSegment}.pdf`;
-        }
-      }
-
-      return { blob: bytes, filename };
-    } catch (err: unknown) {
-      const message =
-        err instanceof Error ? err.message : "PDF download failed";
-      return { error: message };
     }
+    return { ready: true };
+  }
+
+  async function closePdfSaveContext(): Promise<{ closed: true }> {
+    if (offscreenCreation) await offscreenCreation;
+    if (await hasPdfSaveContext()) await chrome.offscreen.closeDocument();
+    return { closed: true };
+  }
+
+  async function hasPdfSaveContext(): Promise<boolean> {
+    // runtime.getContexts arrived in Chrome 116. For Chrome 109-115, inspect
+    // the service worker's controlled clients as recommended by Chrome.
+    if ("getContexts" in chrome.runtime) {
+      const contexts = await new Promise<chrome.runtime.ExtensionContext[]>((resolve) => {
+        chrome.runtime.getContexts({
+          contextTypes: ["OFFSCREEN_DOCUMENT" as chrome.runtime.ContextType],
+          documentUrls: [offscreenUrl],
+        }, resolve);
+      });
+      return contexts.length > 0;
+    }
+
+    const workerScope = globalThis as typeof globalThis & {
+      clients: { matchAll(): Promise<ReadonlyArray<{ url: string }>> };
+    };
+    const extensionClients = await workerScope.clients.matchAll();
+    return extensionClients.some((client) => client.url === offscreenUrl);
   }
 
 });

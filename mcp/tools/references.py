@@ -69,6 +69,7 @@ async def update_references(fs: VaultFS, kb_id: str, document_id: str, content: 
     all_docs = await fs.list_documents(kb_id)
 
     filename_to_doc: dict[str, dict] = {}
+    basename_to_doc: dict[str, dict] = {}
     wiki_path_to_doc: dict[str, dict] = {}
     for doc in all_docs:
         fn_lower = doc["filename"].lower()
@@ -78,6 +79,13 @@ async def update_references(fs: VaultFS, kb_id: str, document_id: str, content: 
             title_lower = doc["title"].lower()
             if title_lower not in filename_to_doc:
                 filename_to_doc[title_lower] = doc
+
+        base = re.sub(
+            r"\.(pdf|docx?|pptx?|xlsx?|csv|html?|md|txt)$",
+            "",
+            fn_lower,
+        )
+        basename_to_doc.setdefault(base, doc)
 
         if doc["path"].startswith("/wiki/"):
             relative = (doc["path"] + doc["filename"]).replace("/wiki/", "", 1)
@@ -91,11 +99,7 @@ async def update_references(fs: VaultFS, kb_id: str, document_id: str, content: 
         target = filename_to_doc.get(fn_lower)
         if not target:
             base = re.sub(r"\.(pdf|docx?|pptx?|xlsx?|csv|html?|md|txt)$", "", fn_lower)
-            for doc in all_docs:
-                doc_base = re.sub(r"\.(pdf|docx?|pptx?|xlsx?|csv|html?|md|txt)$", "", doc["filename"].lower())
-                if doc_base == base:
-                    target = doc
-                    break
+            target = basename_to_doc.get(base)
         if target and str(target["id"]) != document_id:
             edges.append((str(target["id"]), "cites", page))
 
@@ -110,15 +114,16 @@ async def update_references(fs: VaultFS, kb_id: str, document_id: str, content: 
         if target and str(target["id"]) != document_id:
             edges.append((str(target["id"]), "links_to", None))
 
-    await fs.delete_references(document_id)
-
-    seen = set()
+    deduped: list[tuple[str, str, int | None]] = []
+    seen: set[tuple[str, str]] = set()
     for target_id, ref_type, page in edges:
         key = (target_id, ref_type)
         if key in seen:
             continue
         seen.add(key)
-        await fs.upsert_reference(document_id, target_id, kb_id, ref_type, page)
+        deduped.append((target_id, ref_type, page))
+
+    await fs.replace_references(document_id, kb_id, deduped)
 
     logger.info(
         "Updated references for doc=%s: %d citations, %d links",

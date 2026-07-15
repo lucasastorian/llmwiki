@@ -1,14 +1,16 @@
 """Write tools — create, edit, and append wiki pages and notes."""
 
 import re
-import yaml
 from datetime import date
 
-from mcp.server.fastmcp import FastMCP, Context
-
+import yaml
 from vaultfs import VaultFS
-from vaultfs.base import DuplicateDocumentError
+from vaultfs.base import DuplicateDocumentError, StorageQuotaExceededError
+
+from mcp.server.fastmcp import Context, FastMCP
+
 from .helpers import deep_link, resolve_path
+from .quiz_lint import QUIZ_SCHEMA_HINT, lint_quiz_blocks
 from .references import update_references
 
 _ASSET_EXTENSIONS = {".svg", ".csv", ".json", ".xml", ".html"}
@@ -16,6 +18,21 @@ _FILE_EXT_RE = re.compile(r"\.(md|txt|svg|csv|json|xml|html)$", re.IGNORECASE)
 _FRONTMATTER_RE = re.compile(r"\A---[ \t]*\n(.+?\n)---[ \t]*\n", re.DOTALL)
 _FOOTNOTE_DEF_RE = re.compile(r"^\[\^([^\]]+)\]:", re.MULTILINE)
 _CONTEXT_LINES = 5
+_MAX_TEXT_CONTENT_BYTES = 10 * 1024 * 1024
+
+
+def _content_size_error(content: str) -> str | None:
+    if len(content.encode("utf-8")) > _MAX_TEXT_CONTENT_BYTES:
+        return "Error: content exceeds the 10 MiB text-document limit."
+    return None
+
+
+def _quiz_block_error(content: str) -> str | None:
+    errors = lint_quiz_blocks(content)
+    if not errors:
+        return None
+    details = "\n".join(f"- {error}" for error in errors)
+    return f"Error: invalid ```quiz block(s) — nothing was written.\n{details}\n{QUIZ_SCHEMA_HINT}"
 
 
 def _parse_frontmatter(content: str) -> dict:
@@ -205,6 +222,14 @@ class WriteHandler:
         title = self._humanize_title(title)
         content = _ensure_wiki_frontmatter(content, title, tags, date_str, dir_path, filename, file_type)
 
+        size_error = _content_size_error(content)
+        if size_error:
+            return size_error
+
+        quiz_error = _quiz_block_error(content)
+        if quiz_error:
+            return quiz_error
+
         effective_tags = _effective_tags(content, tags) or []
         if not effective_tags:
             return "Error: at least one tag is required when creating a note."
@@ -226,14 +251,17 @@ class WriteHandler:
         saved_date = _effective_date(content, date_str)
 
         if existing:
-            await self.fs.update_document(
-                str(existing["id"]),
-                content,
-                effective_tags,
-                title=title,
-                date=saved_date,
-                metadata=fm_metadata,
-            )
+            try:
+                await self.fs.update_document(
+                    str(existing["id"]),
+                    content,
+                    effective_tags,
+                    title=title,
+                    date=saved_date,
+                    metadata=fm_metadata,
+                )
+            except StorageQuotaExceededError as e:
+                return f"Error: {e}"
             doc = existing
         else:
             try:
@@ -253,6 +281,8 @@ class WriteHandler:
                     f"Error: `{dir_path}{filename}` already exists. "
                     f"Use the `edit` tool to modify it, or pass `overwrite=true` to replace it entirely."
                 )
+            except StorageQuotaExceededError as e:
+                return f"Error: {e}"
 
         doc_id = str(doc["id"])
         await self._sync_references(doc_id, content, dir_path, file_type)
@@ -285,16 +315,27 @@ class WriteHandler:
         replace_start = content.index(old_text)
         new_content = content.replace(old_text, new_text, 1)
 
+        size_error = _content_size_error(new_content)
+        if size_error:
+            return size_error
+
+        quiz_error = _quiz_block_error(new_content)
+        if quiz_error:
+            return quiz_error
+
         self.fs.write_to_disk(dir_path, filename, new_content)
         meta = _parse_frontmatter(new_content)
         fm_date, fm_metadata = _extract_metadata(meta)
-        await self.fs.update_document(
-            str(doc["id"]),
-            new_content,
-            _effective_tags(new_content, None),
-            date=fm_date,
-            metadata=fm_metadata,
-        )
+        try:
+            await self.fs.update_document(
+                str(doc["id"]),
+                new_content,
+                _effective_tags(new_content, None),
+                date=fm_date,
+                metadata=fm_metadata,
+            )
+        except StorageQuotaExceededError as e:
+            return f"Error: {e}"
 
         doc_id = str(doc["id"])
         await self._sync_references(doc_id, new_content, dir_path)
@@ -312,16 +353,27 @@ class WriteHandler:
 
         new_content = _append_markdown_section(doc.get("content") or "", content)
 
+        size_error = _content_size_error(new_content)
+        if size_error:
+            return size_error
+
+        quiz_error = _quiz_block_error(new_content)
+        if quiz_error:
+            return quiz_error
+
         self.fs.write_to_disk(dir_path, filename, new_content)
         meta = _parse_frontmatter(new_content)
         fm_date, fm_metadata = _extract_metadata(meta)
-        await self.fs.update_document(
-            str(doc["id"]),
-            new_content,
-            _effective_tags(new_content, None),
-            date=fm_date,
-            metadata=fm_metadata,
-        )
+        try:
+            await self.fs.update_document(
+                str(doc["id"]),
+                new_content,
+                _effective_tags(new_content, None),
+                date=fm_date,
+                metadata=fm_metadata,
+            )
+        except StorageQuotaExceededError as e:
+            return f"Error: {e}"
 
         doc_id = str(doc["id"])
         await self._sync_references(doc_id, new_content, dir_path)

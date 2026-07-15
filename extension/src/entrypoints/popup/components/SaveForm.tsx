@@ -3,9 +3,9 @@ import {
   getDocumentByUrl,
   moveDocument,
   saveWebPage,
-  savePdf,
   type DocumentByUrl,
   type Highlight,
+  type SaveResult,
 } from "@/lib/api";
 import {
   getSelectedFolderPath,
@@ -14,7 +14,8 @@ import {
   setSelectedFolderPath,
   setSelectedKnowledgeBaseId,
 } from "@/lib/settings";
-import { isPdfTab } from "@/lib/pdf";
+import { isPdfTab, normalizePdfSourceUrl } from "@/lib/pdf";
+import { runPdfSaveJob } from "@/lib/pdf-save-jobs";
 import KBPicker from "./KBPicker";
 import StatusFeedback, { type Status } from "./StatusFeedback";
 import { canonicalize } from "@/lib/url";
@@ -83,7 +84,10 @@ export default function SaveForm({ apiUrl, accessToken }: Props) {
       setCheckingExisting(true);
       setExistingDoc(null);
       try {
-        const doc = await getDocumentByUrl(apiUrl, accessToken, canonicalize(tab.url));
+        const sourceUrl = tab.isPdf
+          ? normalizePdfSourceUrl(tab.url)
+          : canonicalize(tab.url);
+        const doc = await getDocumentByUrl(apiUrl, accessToken, sourceUrl);
         if (cancelled) return;
         if (doc) {
           setExistingDoc(doc);
@@ -358,22 +362,28 @@ export default function SaveForm({ apiUrl, accessToken }: Props) {
   async function handleSavePdf() {
     if (!tab || !knowledgeBaseId) return;
 
-    setStatus({ type: "saving", message: "Downloading PDF..." });
-
-    const downloadResult = await chrome.runtime.sendMessage({
-      type: "DOWNLOAD_PDF",
-      url: tab.url,
-    });
-
-    if ("error" in downloadResult) {
-      throw new Error(downloadResult.error);
-    }
-
-    setStatus({ type: "saving", message: "Uploading to LLM Wiki..." });
-
-    const pdfBytes = new Uint8Array(downloadResult.blob);
     const normalizedFolderPath = normalizeFolderPath(folderPath);
-    await savePdf(apiUrl, accessToken, pdfBytes, downloadResult.filename, knowledgeBaseId, normalizedFolderPath);
+    const sourceUrl = normalizePdfSourceUrl(tab.url);
+    setStatus({ type: "saving", message: "Saving PDF..." });
+
+    // The offscreen document survives popup focus changes. Only this small job
+    // request and its status cross runtime messaging; the PDF stays a Blob.
+    const saved: SaveResult = await runPdfSaveJob({
+      url: sourceUrl,
+      apiUrl,
+      accessToken,
+      knowledgeBaseId,
+      path: normalizedFolderPath,
+    });
+    setExistingDoc({
+      id: saved.id,
+      knowledge_base_id: saved.knowledge_base_id ?? knowledgeBaseId,
+      title: saved.title ?? (title || tab.title),
+      path: saved.path ?? normalizedFolderPath,
+      filename: saved.filename ?? "document.pdf",
+      version: saved.version ?? 1,
+      highlights: saved.highlights ?? [],
+    });
 
     setSelectedKnowledgeBaseId(knowledgeBaseId).catch(() => {});
     setSelectedFolderPath(normalizedFolderPath).catch(() => {});

@@ -249,11 +249,57 @@ A course is authored like a wiki under `/wiki/`, but **organize the lessons into
 ### Each lesson is a full wiki page
 Lessons follow every wiki writing standard: required frontmatter (with a clean `title`), an opening summary (no H1 in the body — the title is rendered from frontmatter), `##` sections, at least one visual element, and citations when a lesson draws on sources. A lesson should teach, not just outline.
 
+### Checkpoint quizzes
+Embed multiple-choice checkpoints directly in a lesson (or any wiki page) with a ```quiz fence. Place each one right after the section it tests — small and frequent beats one big quiz at the end. For a heavyweight final assessment, make it its own lesson page (`04-quiz.md`) holding one larger block.
+
+````
+```quiz
+title: "Checkpoint: counting outcomes"
+questions:
+  - prompt: |
+      A fair coin is flipped 3 times. What is $P(\\text{exactly 2 heads})$?
+    options: ["$1/4$", "$3/8$", "$1/2$", "$5/8$"]
+    answer: 1
+    hints:
+      - How many total outcomes are there?
+    explanation: |
+      $2^3 = 8$ outcomes, $\\binom{3}{2} = 3$ with exactly two heads, so $3/8$.
+```
+````
+
+- `questions` is always a list, even for a single question. Per question: `prompt`, `options` (2-6 strings), `answer` (**0-based** index of the correct option), optional `hints` (shown one at a time before answering) and `explanation` (the full walkthrough, shown after answering).
+- `title` on the block is optional. Prompt, options, hints, and explanation all render markdown + KaTeX (`$...$`).
+- Write a real `explanation` for every question — it teaches the miss, not just states the answer.
+
+For deeper checks, use a **free-form question** (`type: text`): the user types an answer and an AI grader scores it against your rubric, so it must be gradeable from the rubric alone.
+
+````
+```quiz
+questions:
+  - type: text
+    prompt: |
+      A test for a rare disease is 99% accurate. Why can a positive result still mean the person probably doesn't have the disease?
+    rubric: |
+      Correct if the answer invokes the low base rate/prior: with a rare disease, false positives from the huge healthy population outnumber true positives (Bayes). Partial if it mentions false positives but never connects them to the disease being rare. Incorrect if it only restates the 99% accuracy or appeals to test error without the base rate.
+    explanation: |
+      This is the base-rate fallacy: $P(\\text{disease} \\mid +)$ depends on the prior, not just the test's accuracy.
+```
+````
+
+- `rubric` is grader-only — the user never sees it. Spell out what a correct answer must contain, what earns partial credit, and the common wrong answers to reject.
+- Prefer choice questions for quick recall; save `type: text` for explain-why and derive-it prompts where writing the reasoning is the point.
+- Quiz blocks are validated on every write: `create`/`edit`/`append` reject the whole write if a block is malformed, listing the exact problems. `lint` reports them as `invalid-quiz`.
+- The app records which questions the user answered correctly — never author or edit that state.
+
 ### Do NOT author progress
 Never write completion state into a page. The app owns progress (the user clicks **Mark complete**); it is derived per-lesson and stored by the app, not by you. Your job is to author the lessons; the app tracks the journey through them.
 
 ### Highlights are confusion signals
 Users can highlight passages on any wiki page and attach a note. These surface in the `## Highlights & Annotations` appendix when you `read` the page. On a lesson, treat them as points of confusion: rework the highlighted passage — a clearer explanation, an example, a diagram — rather than just acknowledging the note. Highlights anchor to the exact text, so rewriting a passage clears its marker in the app; an annotation quoting text that no longer exists in the page has already been addressed — don't rework it again.
+
+After addressing a note, close the loop with `reply_to_comment` (the appendix lists each highlight's id): one or two sentences on what you changed or a direct answer to the question. The reply appears threaded under the user's comment in the app. Don't reply to notes that already carry an agent reply unless the user replied again after yours.
+
+To sweep for recent comments without reading every page, use `list_comments` — it lists threads newest-first with a _needs reply_ / _replied_ status, optionally narrowed by glob (`path="/wiki/**"`). Start sessions on an active wiki by checking it.
 
 ## Available Knowledge Bases
 

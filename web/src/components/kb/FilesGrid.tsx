@@ -662,10 +662,10 @@ export function FilesGrid({
               </div>
             </ContextMenuTrigger>
             <ContextMenuContent>
-              <ContextMenuItem onClick={handleCreateNoteHere}><NotepadText className="size-3.5 mr-2" />New Note</ContextMenuItem>
-              <ContextMenuItem onClick={() => setFolderDialogOpen(true)}><FolderPlus className="size-3.5 mr-2" />New Folder</ContextMenuItem>
+              <ContextMenuItem onClick={handleCreateNoteHere}><NotepadText className="size-3.5 mr-2" />New note</ContextMenuItem>
+              <ContextMenuItem onClick={() => setFolderDialogOpen(true)}><FolderPlus className="size-3.5 mr-2" />New folder</ContextMenuItem>
               <ContextMenuSeparator />
-              <ContextMenuItem onClick={handleUploadHere}><Upload className="size-3.5 mr-2" />Upload Files</ContextMenuItem>
+              <ContextMenuItem onClick={handleUploadHere}><Upload className="size-3.5 mr-2" />Upload files</ContextMenuItem>
             </ContextMenuContent>
           </ContextMenu>
         )}
@@ -830,7 +830,7 @@ function NewCard({ onCreateNote, onUpload, onCreateFolder }: { onCreateNote: () 
         <DropdownMenuItem onClick={onCreateNote}><NotepadText className="size-3.5 mr-2" />Note</DropdownMenuItem>
         <DropdownMenuItem onClick={onCreateFolder}><FolderPlus className="size-3.5 mr-2" />Folder</DropdownMenuItem>
         <DropdownMenuSeparator />
-        <DropdownMenuItem onClick={onUpload}><Upload className="size-3.5 mr-2" />Upload Files</DropdownMenuItem>
+        <DropdownMenuItem onClick={onUpload}><Upload className="size-3.5 mr-2" />Upload files</DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
   )

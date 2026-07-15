@@ -91,7 +91,7 @@ export function SourceAreaContextMenu({
         className="flex items-center gap-2 w-full rounded-sm px-2 py-1.5 text-sm hover:bg-accent cursor-pointer"
       >
         <Folder className="size-3.5" />
-        New Folder
+        New folder
       </button>
       <div className="h-px bg-border -mx-1 my-1" />
       <button
@@ -99,7 +99,7 @@ export function SourceAreaContextMenu({
         className="flex items-center gap-2 w-full rounded-sm px-2 py-1.5 text-sm hover:bg-accent cursor-pointer"
       >
         <Upload className="size-3.5" />
-        Upload Files
+        Upload files
       </button>
     </div>,
     document.body,

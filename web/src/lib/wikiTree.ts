@@ -70,3 +70,17 @@ export function flattenLessons(nodes: WikiNode[]): WikiNode[] {
   walk(nodes)
   return out
 }
+
+// All path-bearing nodes in tree order, structural pages included — the
+// reading order used by the wiki pager.
+export function flattenPages(nodes: WikiNode[]): WikiNode[] {
+  const out: WikiNode[] = []
+  const walk = (ns: WikiNode[]) => {
+    for (const n of ns) {
+      if (n.path) out.push(n)
+      if (n.children) walk(n.children)
+    }
+  }
+  walk(nodes)
+  return out
+}

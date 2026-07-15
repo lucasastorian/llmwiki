@@ -125,6 +125,15 @@ CREATE TABLE document_chunks (
 CREATE INDEX IF NOT EXISTS idx_chunks_annotated
     ON document_chunks(knowledge_base_id) WHERE has_highlight = true;
 
+CREATE TABLE quiz_grade_attempts (
+    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ DEFAULT now() NOT NULL
+);
+
+CREATE INDEX idx_quiz_grade_attempts_user_created
+    ON quiz_grade_attempts (user_id, created_at);
+
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS stale_since TIMESTAMPTZ;
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS highlights JSONB NOT NULL DEFAULT '[]'::jsonb;
 CREATE INDEX IF NOT EXISTS idx_documents_source_url
@@ -180,6 +189,7 @@ ALTER TABLE knowledge_bases ENABLE ROW LEVEL SECURITY;
 ALTER TABLE documents ENABLE ROW LEVEL SECURITY;
 ALTER TABLE document_chunks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE document_pages ENABLE ROW LEVEL SECURITY;
+ALTER TABLE quiz_grade_attempts ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY users_select ON users
     FOR SELECT USING (id = auth.uid());

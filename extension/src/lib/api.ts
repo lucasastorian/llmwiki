@@ -14,6 +14,21 @@ export interface SaveResult {
   status: string;
   version?: number;
   highlights?: Highlight[];
+  filename?: string;
+  title?: string | null;
+  path?: string;
+  knowledge_base_id?: string;
+  already_exists?: boolean;
+}
+
+export class PdfIngestError extends Error {
+  constructor(
+    public readonly status: number,
+    public readonly detail: string,
+  ) {
+    super(detail || `PDF URL ingest failed (${status})`);
+    this.name = "PdfIngestError";
+  }
 }
 
 export interface HighlightAnchor {
@@ -70,6 +85,24 @@ function jsonHeaders(accessToken: string | null): Record<string, string> {
     ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
     "Content-Type": "application/json",
   };
+}
+
+async function errorDetail(response: Response): Promise<string> {
+  const text = await response.text();
+  if (!text) return `Request failed (${response.status})`;
+  try {
+    const data = JSON.parse(text) as { detail?: unknown };
+    return typeof data.detail === "string" ? data.detail : text;
+  } catch {
+    return text;
+  }
+}
+
+function utf8Base64(value: string): string {
+  const bytes = new TextEncoder().encode(value);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
 }
 
 // ── smartFetch ──────────────────────────────────────────────
@@ -252,6 +285,44 @@ export async function moveDocument(
   }
 }
 
+export async function ingestPdfFromUrl(
+  apiUrl: string,
+  accessToken: string,
+  url: string,
+  knowledgeBaseId: string,
+  path = "/webclipper/",
+): Promise<SaveResult> {
+  const response = await fetch(`${apiUrl}/v1/documents/from-url`, {
+    method: "POST",
+    headers: jsonHeaders(accessToken),
+    body: JSON.stringify({
+      knowledge_base_id: knowledgeBaseId,
+      url,
+      path,
+    }),
+  });
+  if (!response.ok) {
+    throw new PdfIngestError(response.status, await errorDetail(response));
+  }
+  return response.json() as Promise<SaveResult>;
+}
+
+export async function setDocumentSourceUrl(
+  apiUrl: string,
+  accessToken: string | null,
+  documentId: string,
+  sourceUrl: string,
+): Promise<void> {
+  const response = await fetch(`${apiUrl}/v1/documents/${documentId}`, {
+    method: "PATCH",
+    headers: jsonHeaders(accessToken),
+    body: JSON.stringify({ metadata: { source_url: sourceUrl } }),
+  });
+  if (!response.ok) {
+    throw new Error(`Could not record PDF source URL (${response.status})`);
+  }
+}
+
 export async function upsertHighlight(
   apiUrl: string,
   accessToken: string | null,
@@ -302,24 +373,18 @@ export async function deleteHighlight(
   return res.data as HighlightsResponse;
 }
 
-export async function savePdf(
+export async function uploadPdfBlob(
   apiUrl: string,
   accessToken: string | null,
-  pdfBytes: Uint8Array,
+  pdf: Blob,
   filename: string,
   knowledgeBaseId: string,
   path = "/webclipper/",
 ): Promise<SaveResult> {
-  // Copy bytes into a fresh ArrayBuffer so the resulting Blob/body matches
-  // the BodyInit / BlobPart types regardless of the source buffer's TypedArray
-  // backing (some lib.dom.d.ts versions reject SharedArrayBuffer-backed views).
-  const pdfBuffer = new ArrayBuffer(pdfBytes.byteLength);
-  new Uint8Array(pdfBuffer).set(pdfBytes);
-
   // Local mode: use multipart upload
   if (!accessToken) {
     const form = new FormData();
-    form.append("file", new Blob([pdfBuffer], { type: "application/pdf" }), filename);
+    form.append("file", pdf, filename);
     form.append("path", path);
     const res = await fetch(`${apiUrl}/v1/upload`, {
       method: "POST",
@@ -332,9 +397,9 @@ export async function savePdf(
 
   // Cloud mode: TUS upload
   const metadata = [
-    `filename ${btoa(filename)}`,
-    `knowledge_base_id ${btoa(knowledgeBaseId)}`,
-    `path ${btoa(path)}`,
+    `filename ${utf8Base64(filename)}`,
+    `knowledge_base_id ${utf8Base64(knowledgeBaseId)}`,
+    `path ${utf8Base64(path)}`,
   ].join(",");
 
   const createRes = await fetch(`${apiUrl}/v1/uploads`, {
@@ -342,7 +407,7 @@ export async function savePdf(
     headers: {
       ...authHeaders(accessToken),
       "Tus-Resumable": "1.0.0",
-      "Upload-Length": String(pdfBuffer.byteLength),
+      "Upload-Length": String(pdf.size),
       "Upload-Metadata": metadata,
     },
   });
@@ -365,12 +430,13 @@ export async function savePdf(
       "Upload-Offset": "0",
       "Content-Type": "application/offset+octet-stream",
     },
-    body: pdfBuffer,
+    body: pdf,
   });
   if (!patchRes.ok && patchRes.status !== 204) {
     throw new Error(`Upload failed: ${patchRes.status}`);
   }
 
-  const documentId = patchRes.headers.get("X-Document-Id") ?? "";
+  const documentId = patchRes.headers.get("X-Document-Id");
+  if (!documentId) throw new Error("Upload completed without a document id");
   return { id: documentId, status: "pending" };
 }

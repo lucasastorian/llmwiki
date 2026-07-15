@@ -46,6 +46,8 @@ interface ComputeAnchorArgs {
  * Returns null if the selection is empty or has no client rects.
  */
 export function computePdfAnchor({ range, viewport, pageContainer, pageText }: ComputeAnchorArgs): {
+  textStart: number | null
+  textEnd: number | null
   textContent: string
   prefix: string | null
   suffix: string | null
@@ -80,14 +82,18 @@ export function computePdfAnchor({ range, viewport, pageContainer, pageText }: C
   const normalizedPageText = pageText.replace(/\s+/g, ' ')
   const target = textContent
   const idx = normalizedPageText.indexOf(target)
+  let textStart: number | null = null
+  let textEnd: number | null = null
   let prefix: string | null = null
   let suffix: string | null = null
   if (idx >= 0) {
+    textStart = idx
+    textEnd = idx + target.length
     prefix = normalizedPageText.slice(Math.max(0, idx - PREFIX_CHARS), idx).trim() || null
     suffix = normalizedPageText.slice(idx + target.length, idx + target.length + SUFFIX_CHARS).trim() || null
   }
 
-  return { textContent, prefix, suffix, rects }
+  return { textStart, textEnd, textContent, prefix, suffix, rects }
 }
 
 export interface ViewportRect {

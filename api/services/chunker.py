@@ -205,14 +205,23 @@ async def _store_chunks_on_conn(
     # source_content seeds the immutable raw text; content starts identical
     # but may diverge later when highlight CRUD writes annotations into the
     # chunk via api/services/highlight_chunks.
-    await conn.executemany(
+    await conn.execute(
         "INSERT INTO document_chunks "
-        "(document_id, user_id, knowledge_base_id, chunk_index, content, source_content, page, start_char, token_count, header_breadcrumb) "
-        "VALUES ($1, $2, $3, $4, $5, $5, $6, $7, $8, $9)",
-        [
-            (document_id, user_id, knowledge_base_id, c.index, c.content, c.page, c.start_char, c.token_count, c.header_breadcrumb)
-            for c in chunks
-        ],
+        "(document_id, user_id, knowledge_base_id, chunk_index, content, source_content, "
+        " page, start_char, token_count, header_breadcrumb) "
+        "SELECT $1::uuid, $2::uuid, $3::uuid, row.chunk_index, row.content, row.content, "
+        "       row.page, row.start_char, row.token_count, row.header_breadcrumb "
+        "FROM UNNEST($4::int[], $5::text[], $6::int[], $7::int[], $8::int[], $9::text[]) "
+        "AS row(chunk_index, content, page, start_char, token_count, header_breadcrumb)",
+        document_id,
+        user_id,
+        knowledge_base_id,
+        [c.index for c in chunks],
+        [c.content for c in chunks],
+        [c.page for c in chunks],
+        [c.start_char for c in chunks],
+        [c.token_count for c in chunks],
+        [c.header_breadcrumb for c in chunks],
     )
     logger.info("Stored %d chunks for doc %s", len(chunks), document_id[:8])
 

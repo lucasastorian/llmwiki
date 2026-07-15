@@ -189,3 +189,40 @@ async def test_upsert_replace_at_cap_still_works(repo: SQLiteDocumentRepository)
     assert res is not None
     assert "limit_exceeded" not in res
     assert len(res["highlights"]) == 500
+
+
+@pytest.mark.asyncio
+async def test_upsert_without_replies_keeps_existing_thread(repo: SQLiteDocumentRepository):
+    reply = {"id": "r1", "author": "agent", "text": "clarified", "createdAt": "2026-07-09T00:00:00Z"}
+    seeded = _hl("a", "hello")
+    seeded["comment"] = "why?"
+    seeded["replies"] = [reply]
+    await repo._db.execute(
+        "UPDATE documents SET highlights = ? WHERE id = ?", (json.dumps([seeded]), "d1"),
+    )
+    await repo._db.commit()
+
+    edited = _hl("a", "hello")
+    edited["comment"] = "why exactly?"
+    edited["replies"] = []
+    res = await repo.upsert_highlight("d1", "u1", edited)
+    assert res is not None
+    assert res["highlights"][0]["comment"] == "why exactly?"
+    assert res["highlights"][0]["replies"] == [reply]
+
+
+@pytest.mark.asyncio
+async def test_replace_without_replies_keeps_existing_thread(repo: SQLiteDocumentRepository):
+    reply = {"id": "r1", "author": "agent", "text": "clarified", "createdAt": "2026-07-09T00:00:00Z"}
+    seeded = _hl("a", "hello")
+    seeded["replies"] = [reply]
+    await repo._db.execute(
+        "UPDATE documents SET highlights = ? WHERE id = ?", (json.dumps([seeded]), "d1"),
+    )
+    await repo._db.commit()
+
+    reclipped = _hl("a", "hello")
+    reclipped["replies"] = []
+    res = await repo.replace_highlights("d1", "u1", [reclipped])
+    assert res is not None
+    assert res["highlights"][0]["replies"] == [reply]

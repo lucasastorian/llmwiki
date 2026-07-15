@@ -140,7 +140,7 @@ def _index_existing_files(ws: Path, db_path: Path, user_id: str, ws_id: str) -> 
                 continue
 
             full = Path(root_path) / filename
-            relative = str(full.relative_to(ws))
+            relative = full.relative_to(ws).as_posix()
 
             if relative in existing:
                 continue
@@ -218,7 +218,7 @@ def cmd_serve(workspace: str, open_browser: bool = True) -> None:
 
     # Start API server
     api_proc = subprocess.Popen(
-        [sys.executable, "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"],
+        [sys.executable, "-m", "uvicorn", "main:app", "--host", "127.0.0.1", "--port", "8000"],
         cwd=str(API_DIR),
         env=env,
     )
@@ -288,11 +288,13 @@ def cmd_mcp(workspace: str) -> None:
     # local_server lives in mcp/; chdir so `python -m local_server` resolves
     # the module no matter where the CLI was invoked from (Claude Desktop /
     # Code launches this with cwd set to ~ on macOS).
+    # Windows os.exec* detaches from the parent's process handle, which breaks
+    # Claude Desktop's stdio lifecycle — spawn and wait there instead.
     os.chdir(str(MCP_DIR))
-    os.execvp(
-        sys.executable,
-        [sys.executable, "-m", "local_server", "--workspace", str(ws)],
-    )
+    cmd = [sys.executable, "-m", "local_server", "--workspace", str(ws)]
+    if sys.platform == "win32":
+        sys.exit(subprocess.call(cmd))
+    os.execvp(sys.executable, cmd)
 
 
 def cmd_mcp_config(workspace: str, name: str | None = None) -> None:
@@ -300,11 +302,13 @@ def cmd_mcp_config(workspace: str, name: str | None = None) -> None:
     server_name = name or f"llmwiki-{_sanitize_name(ws.name)}"
     llmwiki_path = str(REPO_ROOT / "llmwiki")
 
+    # Launch via the current interpreter: shebangs don't work on Windows, and
+    # this pins the venv python (Claude Desktop won't have it activated).
     config = {
         "mcpServers": {
             server_name: {
-                "command": llmwiki_path,
-                "args": ["mcp", str(ws)],
+                "command": sys.executable,
+                "args": [llmwiki_path, "mcp", str(ws)],
             }
         }
     }

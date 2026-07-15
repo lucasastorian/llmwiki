@@ -4,12 +4,23 @@ Tests the full flow through WriteHandler, ReadHandler, SearchHandler, DeleteHand
 Uses SqliteVaultFS with a temp workspace — no Postgres needed.
 """
 
+import json
+
 import pytest
 from tests.integration.mcp.conftest import TEST_USER_ID
 
 
 def _make_kb(kb_id: str) -> dict:
     return {"id": kb_id, "name": "test-workspace", "slug": "test-workspace"}
+
+
+class _AcceptDeleteContext:
+    async def elicit(self, message: str, schema: type):
+        class Result:
+            action = "accept"
+            data = type("Confirmation", (), {"confirm": True})()
+
+        return Result()
 
 
 class TestWriteReadFlow:
@@ -631,6 +642,35 @@ class TestReadModes:
         assert "Page one content" in result
         assert "Page two content" in result
 
+    async def test_read_pages_materializes_only_selected_page_annotations(self, fs, insert_page):
+        instance, kb_id = fs
+        from tools.read import ReadHandler
+
+        doc = await instance.create_document(kb_id, "annotated.pdf", "Annotated", "/", "pdf", "", [])
+        doc_id = str(doc["id"])
+        await insert_page(doc_id, 1, "First page")
+        await insert_page(doc_id, 2, "Second page")
+
+        highlights = [
+            {"id": "h1", "type": "pdf", "pdfAnchor": {"page": 1, "textContent": "first quote"}, "comment": "keep"},
+            {"id": "h2", "type": "pdf", "pdfAnchor": {"page": 2, "textContent": "second quote"}, "comment": "omit"},
+        ]
+        from vaultfs.sqlite import SqliteVaultFS
+        db = SqliteVaultFS._db_or_raise()
+        await db.execute(
+            "UPDATE documents SET page_count = 2, highlights = ? WHERE id = ?",
+            (json.dumps(highlights), doc_id),
+        )
+        await db.commit()
+
+        result = await ReadHandler(instance, _make_kb(kb_id)).read(
+            "annotated.pdf", "1", None, False,
+        )
+        assert "first quote" in result
+        assert "keep" in result
+        assert "second quote" not in result
+        assert "omit" not in result
+
     async def test_read_backlinks_shown(self, fs):
         instance, kb_id = fs
         from tools.write import WriteHandler
@@ -734,7 +774,7 @@ class TestSearchDeleteLifecycle:
         deleter = DeleteHandler(instance, kb)
 
         await writer.create("/", "Doomed", "content", ["tag"], "", False)
-        result = await deleter.delete("doomed.md")
+        result = await deleter.delete(_AcceptDeleteContext(), "doomed.md")
         assert "Deleted" in result
 
         assert await instance.get_document(kb_id, "doomed.md", "/") is None
@@ -748,7 +788,7 @@ class TestSearchDeleteLifecycle:
         await instance.create_document(kb_id, "extra.md", "Extra", "/wiki/", "md", "extra", ["tag"])
 
         deleter = DeleteHandler(instance, _make_kb(kb_id))
-        result = await deleter.delete("/wiki/*")
+        result = await deleter.delete(_AcceptDeleteContext(), "/wiki/*")
         assert "Skipped (protected)" in result
         assert "overview.md" in result or "log.md" in result
 
@@ -756,14 +796,19 @@ class TestSearchDeleteLifecycle:
         assert await instance.get_document(kb_id, "log.md", "/wiki/") is not None
         assert await instance.get_document(kb_id, "extra.md", "/wiki/") is None
 
-    async def test_delete_rejects_global_wildcard(self, fs):
+    @pytest.mark.parametrize("pattern", ["*", "**", "**/*", "/*", "/**"])
+    async def test_delete_accepts_global_wildcard_after_approval(self, fs, pattern):
         instance, kb_id = fs
         from tools.delete import DeleteHandler
 
+        await instance.create_document(kb_id, "root.md", "Root", "/", "md", "root", ["tag"])
+        await instance.create_document(kb_id, "nested.md", "Nested", "/wiki/", "md", "nested", ["tag"])
         deleter = DeleteHandler(instance, _make_kb(kb_id))
-        for pattern in ("*", "**", "**/*"):
-            result = await deleter.delete(pattern)
-            assert "refusing" in result.lower()
+        result = await deleter.delete(_AcceptDeleteContext(), pattern)
+
+        assert "Deleted 2 document(s)" in result
+        assert await instance.get_document(kb_id, "root.md", "/") is None
+        assert await instance.get_document(kb_id, "nested.md", "/wiki/") is None
 
     async def test_full_lifecycle(self, fs, insert_chunk):
         instance, kb_id = fs
@@ -799,7 +844,7 @@ class TestSearchDeleteLifecycle:
         list_result = await searcher.list_documents("*", None)
         assert "lifecycle" in list_result.lower()
 
-        delete_result = await deleter.delete("lifecycle.md")
+        delete_result = await deleter.delete(_AcceptDeleteContext(), "lifecycle.md")
         assert "Deleted" in delete_result
 
         assert await instance.get_document(kb_id, "lifecycle.md", "/") is None

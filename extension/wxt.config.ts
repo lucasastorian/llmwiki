@@ -5,6 +5,12 @@ const apiOrigin = new URL(process.env.VITE_API_BASE_URL ?? "https://api.llmwiki.
 export default defineConfig({
   srcDir: "src",
   modules: ["@wxt-dev/module-react"],
+  // This is a Chrome MV3 extension. WXT's multi-browser default target asks
+  // the pinned esbuild version to downlevel modern Supabase Auth code using a
+  // destructuring transform it no longer supports, which prevents packaging.
+  vite: () => ({
+    build: { target: "chrome109" },
+  }),
   // Dev runner config:
   //   - Persistent profile so the Google/Supabase sign-in survives reloads
   //   - Opens a known testbed URL so we can verify the content script bootstraps
@@ -23,7 +29,8 @@ export default defineConfig({
     name: "LLM Wiki",
     description: "Save any web page or PDF to your LLM Wiki knowledge base",
     version: "0.1.0",
-    permissions: ["activeTab", "identity", "storage", "scripting"],
+    minimum_chrome_version: "109",
+    permissions: ["activeTab", "identity", "offscreen", "storage", "scripting"],
     // The page is reached via activeTab on the toolbar click; host_permissions
     // is only the API origin so the extension can call its own backend.
     host_permissions: [`${apiOrigin}/*`, "http://localhost/*"],

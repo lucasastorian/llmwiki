@@ -16,7 +16,7 @@ import logging
 import os
 import time
 import uuid
-from pathlib import Path
+from pathlib import Path, PurePath
 
 import aiosqlite
 
@@ -93,7 +93,7 @@ def _should_ignore(path: Path, workspace: Path) -> bool:
     except ValueError:
         return True
 
-    relative_str = str(relative)
+    relative_str = relative.as_posix()
     parts = relative.parts
 
     # Built-in ignores
@@ -109,6 +109,11 @@ def _should_ignore(path: Path, workspace: Path) -> bool:
     return False
 
 
+def _workspace_relative(file_path: PurePath, workspace: PurePath) -> str:
+    """Workspace-relative path with forward slashes on every platform."""
+    return file_path.relative_to(workspace).as_posix()
+
+
 def _get_source_kind(relative_path: str) -> str:
     if relative_path.startswith("wiki/"):
         return "wiki"
@@ -117,7 +122,7 @@ def _get_source_kind(relative_path: str) -> str:
 
 async def _index_file(db: aiosqlite.Connection, workspace: Path, file_path: Path) -> None:
     """Index or re-index a single file."""
-    relative = str(file_path.relative_to(workspace))
+    relative = _workspace_relative(file_path, workspace)
     filename = file_path.name
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
 
@@ -218,7 +223,7 @@ async def _index_file(db: aiosqlite.Connection, workspace: Path, file_path: Path
 async def _remove_file(db: aiosqlite.Connection, workspace: Path, file_path: Path) -> None:
     """Remove a file from the index."""
     try:
-        relative = str(file_path.relative_to(workspace))
+        relative = _workspace_relative(file_path, workspace)
     except ValueError:
         return
 

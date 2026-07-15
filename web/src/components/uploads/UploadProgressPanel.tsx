@@ -5,8 +5,9 @@ import { useRouter, usePathname } from 'next/navigation'
 import { AlertCircle, CheckCircle2, ChevronDown, FileText, Loader2, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useUploadStore, type UploadItem } from '@/stores'
+import { cn } from '@/lib/utils'
 
-export function UploadProgressPanel() {
+export function UploadProgressPanel({ raisedForConnectionDock = false }: { raisedForConnectionDock?: boolean }) {
   const router = useRouter()
   const pathname = usePathname()
   const items = useUploadStore((s) => s.items)
@@ -28,7 +29,17 @@ export function UploadProgressPanel() {
   if (items.length === 0) return null
 
   return (
-    <div className="fixed bottom-4 right-4 z-50 w-80 overflow-hidden rounded-lg border bg-background shadow-lg">
+    <div
+      style={{
+        bottom: raisedForConnectionDock
+          ? 'calc(max(1rem, env(safe-area-inset-bottom)) + 3rem)'
+          : 'max(1rem, env(safe-area-inset-bottom))',
+        right: 'max(1rem, env(safe-area-inset-right))',
+      }}
+      className={cn(
+        'fixed z-50 w-[min(20rem,calc(100vw-2rem))] overflow-hidden rounded-lg border bg-background shadow-lg transition-[bottom] duration-200',
+      )}
+    >
       <div className="flex items-center justify-between border-b px-3 py-2">
         <span className="text-sm font-medium">{headerLabel(inFlight, items.length)}</span>
         <div className="flex items-center gap-0.5">

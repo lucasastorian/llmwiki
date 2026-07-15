@@ -16,13 +16,19 @@ def _chunk(id_: str, idx: int, source: str, *, page: int | None = None, start: i
     return ChunkRecord(id=id_, chunk_index=idx, source_content=source, page=page, start_char=start)
 
 
-def _pdf(id_: str, page: int, text: str, *, comment: str | None = None) -> dict:
+def _pdf(
+    id_: str, page: int, text: str, *, comment: str | None = None,
+    start: int | None = None, end: int | None = None,
+) -> dict:
     return {
         "id": id_,
         "type": "pdf",
         "color": "yellow",
         "createdAt": "2026-05-31T00:00:00Z",
-        "pdfAnchor": {"page": page, "textContent": text, "rects": []},
+        "pdfAnchor": {
+            "page": page, "textStart": start, "textEnd": end,
+            "textContent": text, "rects": [],
+        },
         "comment": comment,
     }
 
@@ -53,16 +59,26 @@ class TestPdfMapping:
         hit = chunks_for_highlight(h, chunks)
         assert [c.id for c in hit] == ["c2"]
 
-    def test_page_with_no_substring_match_returns_all_chunks_on_page(self):
+    def test_page_offsets_map_to_overlapping_chunks(self):
+        chunks = [
+            _chunk("c1", 0, "a" * 50, page=3, start=0),
+            _chunk("c2", 1, "b" * 50, page=3, start=50),
+            _chunk("c3", 2, "c" * 50, page=4, start=0),
+        ]
+        h = _pdf("h1", page=3, text="selection", start=40, end=60)
+        hit = chunks_for_highlight(h, chunks)
+        assert {c.id for c in hit} == {"c1", "c2"}
+
+    def test_page_with_no_substring_match_uses_one_bounded_fallback_chunk(self):
         chunks = [
             _chunk("c1", 0, "Some unrelated content.", page=3),
             _chunk("c2", 1, "More unrelated content.", page=3),
         ]
         h = _pdf("h1", page=3, text="phrase nowhere in the chunks")
         hit = chunks_for_highlight(h, chunks)
-        # Fall back to all chunks on this page so the comment surfaces as
-        # page-level rather than being silently dropped.
-        assert {c.id for c in hit} == {"c1", "c2"}
+        # Preserve page-level discoverability without duplicating one note
+        # into every search chunk on the page.
+        assert [c.id for c in hit] == ["c1"]
 
     def test_page_with_no_chunks_returns_empty(self):
         chunks = [_chunk("c1", 0, "Page 1 text", page=1)]

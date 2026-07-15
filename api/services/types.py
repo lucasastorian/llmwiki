@@ -5,7 +5,15 @@ from dataclasses import dataclass
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+MAX_TEXT_CONTENT_BYTES = 10 * 1024 * 1024
+
+
+def _validate_text_content_size(content: str) -> str:
+    if len(content.encode("utf-8")) > MAX_TEXT_CONTENT_BYTES:
+        raise ValueError("content must be at most 10 MiB when UTF-8 encoded")
+    return content
 
 
 @dataclass
@@ -46,7 +54,9 @@ class UpdateSharing(BaseModel):
 class CreateNote(BaseModel):
     filename: str
     path: str = "/"
-    content: str = ""
+    content: str = Field(default="", max_length=MAX_TEXT_CONTENT_BYTES)
+
+    _content_size = field_validator("content")(_validate_text_content_size)
 
 
 class HighlightAnchor(BaseModel):
@@ -89,10 +99,22 @@ class PdfAnchor(BaseModel):
     """PDF-relative anchor used when Highlight.type == "pdf".
     Stored once per highlight; one rect per visual line of the selection."""
     page: int = Field(ge=1)
+    # Page-local offsets into normalized extracted page text. Optional for
+    # highlights saved before offset-aware PDF anchoring was introduced.
+    textStart: int | None = Field(default=None, ge=0)
+    textEnd: int | None = Field(default=None, ge=0)
     textContent: str = Field(max_length=10000)
     prefix: str | None = Field(default=None, max_length=200)
     suffix: str | None = Field(default=None, max_length=200)
     rects: list[PdfRect] = Field(min_length=1, max_length=200)
+
+
+class HighlightReply(BaseModel):
+    """One threaded reply on a highlight's comment, authored by the user or the agent."""
+    id: str = Field(max_length=64)
+    author: Literal["user", "agent"] = "agent"
+    text: str = Field(max_length=4000)
+    createdAt: str = Field(max_length=64)
 
 
 class Highlight(BaseModel):
@@ -102,8 +124,29 @@ class Highlight(BaseModel):
     textAnchor: TextAnchor | None = None
     pdfAnchor: PdfAnchor | None = None
     comment: str | None = Field(default=None, max_length=4000)
+    replies: list[HighlightReply] = Field(default_factory=list, max_length=50)
     color: str = Field(default="yellow", max_length=32)
     createdAt: str = Field(max_length=64)
+
+    @model_validator(mode="after")
+    def validate_anchor_shape(self):
+        if self.type == "pdf":
+            if self.pdfAnchor is None:
+                raise ValueError("pdf highlights require pdfAnchor")
+            if self.anchor is not None or self.textAnchor is not None:
+                raise ValueError("pdf highlights cannot include text anchors")
+            if ((self.pdfAnchor.textStart is None) !=
+                    (self.pdfAnchor.textEnd is None)):
+                raise ValueError("pdf textStart and textEnd must be provided together")
+            if (self.pdfAnchor.textStart is not None and
+                    self.pdfAnchor.textEnd <= self.pdfAnchor.textStart):
+                raise ValueError("pdf textEnd must be greater than textStart")
+        else:
+            if self.pdfAnchor is not None:
+                raise ValueError("text highlights cannot include pdfAnchor")
+            if self.anchor is None and self.textAnchor is None:
+                raise ValueError("text highlights require anchor or textAnchor")
+        return self
 
 
 class ReplaceHighlights(BaseModel):
@@ -142,7 +185,9 @@ class CreateWebClip(BaseModel):
 
 
 class UpdateContent(BaseModel):
-    content: str
+    content: str = Field(max_length=MAX_TEXT_CONTENT_BYTES)
+
+    _content_size = field_validator("content")(_validate_text_content_size)
 
 
 class UpdateMetadata(BaseModel):
@@ -159,6 +204,17 @@ class UpdateMetadata(BaseModel):
 
 class BulkDelete(BaseModel):
     ids: list[str]
+
+
+class GradeQuizAnswer(BaseModel):
+    prompt: str = Field(min_length=1, max_length=4000)
+    rubric: str = Field(min_length=1, max_length=4000)
+    answer: str = Field(min_length=1, max_length=4000)
+
+
+class QuizGradeResponse(BaseModel):
+    verdict: Literal["correct", "partial", "incorrect"]
+    feedback: str
 
 
 class MeResponse(BaseModel):
