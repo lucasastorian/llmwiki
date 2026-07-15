@@ -2,340 +2,456 @@
 
 import * as React from 'react'
 import { useRouter } from 'next/navigation'
-import { motion, AnimatePresence } from 'framer-motion'
+import { AnimatePresence, motion } from 'framer-motion'
 import {
-  Copy, Check, Loader2, ArrowRight, ArrowLeft,
-  FileText, BookOpen, PenTool, ExternalLink,
+  ArrowLeft,
+  ArrowRight,
+  BookOpen,
+  Check,
+  ListTree,
+  Loader2,
 } from 'lucide-react'
-import { cn } from '@/lib/utils'
-import { apiFetch } from '@/lib/api'
-import { MCP_URL } from '@/lib/mcp'
-import { useUserStore, useKBStore } from '@/stores'
+import {
+  McpConnectionSetup,
+  type McpClient,
+} from '@/components/connections/McpConnectionSetup'
 import { UserMenu } from '@/components/layout/UserMenu'
+import { apiFetch } from '@/lib/api'
+import { ONBOARDING_PREVIEW_ENABLED } from '@/lib/onboarding-preview'
+import { cn } from '@/lib/utils'
+import { useKBStore, useUserStore } from '@/stores'
 
-type Step = 'welcome' | 'create' | 'connect' | 'done'
-const STEPS: Step[] = ['welcome', 'create', 'connect', 'done']
+type Step = 'choose' | 'name' | 'connect' | 'done'
+type WikiKind = 'wiki' | 'course'
+
+const STEPS: Step[] = ['choose', 'name', 'connect', 'done']
+const CLIENT_LABELS: Record<McpClient, string> = {
+  claude: 'Claude',
+  chatgpt: 'ChatGPT',
+  codex: 'Codex',
+  other: 'another AI',
+}
+const isLocal = process.env.NEXT_PUBLIC_MODE === 'local'
+const transition = { duration: 0.25, ease: [0.22, 1, 0.36, 1] as const }
 
 export default function OnboardingPage() {
-  const router = useRouter()
-  const token = useUserStore((s) => s.accessToken)
-  const user = useUserStore((s) => s.user)
-  const setOnboarded = useUserStore((s) => s.setOnboarded)
-  const createKB = useKBStore((s) => s.createKB)
+  return isLocal && !ONBOARDING_PREVIEW_ENABLED
+    ? <LocalOnboardingRedirect />
+    : <HostedOnboardingPage />
+}
 
-  const [step, setStep] = React.useState<Step>('welcome')
+function LocalOnboardingRedirect() {
+  const router = useRouter()
+
+  React.useEffect(() => {
+    router.replace('/wikis')
+  }, [router])
+
+  return null
+}
+
+function HostedOnboardingPage() {
+  const router = useRouter()
+  const token = useUserStore((state) => state.accessToken)
+  const user = useUserStore((state) => state.user)
+  const setOnboarded = useUserStore((state) => state.setOnboarded)
+  const knowledgeBases = useKBStore((state) => state.knowledgeBases)
+  const createKB = useKBStore((state) => state.createKB)
+
+  const [step, setStep] = React.useState<Step>('choose')
   const [direction, setDirection] = React.useState(1)
+  const [wikiKind, setWikiKind] = React.useState<WikiKind | null>(null)
   const [wikiName, setWikiName] = React.useState('')
+  const [nameTouched, setNameTouched] = React.useState(false)
   const [creating, setCreating] = React.useState(false)
+  const [completing, setCompleting] = React.useState(false)
   const [createdSlug, setCreatedSlug] = React.useState<string | null>(null)
-  const [error, setError] = React.useState<string | null>(null)
-  const [urlCopied, setUrlCopied] = React.useState(false)
+  const [createdName, setCreatedName] = React.useState<string | null>(null)
+  const [connectionSkipped, setConnectionSkipped] = React.useState(false)
+  const [connectionClient, setConnectionClient] = React.useState<McpClient>('claude')
+  const [createError, setCreateError] = React.useState<string | null>(null)
+  const [finishError, setFinishError] = React.useState<string | null>(null)
+  const [previewNotice, setPreviewNotice] = React.useState<string | null>(null)
 
   const stepIndex = STEPS.indexOf(step)
 
   const goToStep = React.useCallback((target: Step) => {
-    const from = STEPS.indexOf(step)
-    const to = STEPS.indexOf(target)
-    setDirection(to >= from ? 1 : -1)
+    const currentIndex = STEPS.indexOf(step)
+    const targetIndex = STEPS.indexOf(target)
+    setDirection(targetIndex >= currentIndex ? 1 : -1)
     setStep(target)
   }, [step])
 
-  React.useEffect(() => {
-    if (user) {
-      const name = user.email.split('@')[0]
-      setWikiName(`${name.charAt(0).toUpperCase() + name.slice(1)}'s Wiki`)
-    }
+  const defaultNameFor = React.useCallback((kind: WikiKind) => {
+    const suffix = kind === 'course' ? 'Course' : 'Wiki'
+    if (ONBOARDING_PREVIEW_ENABLED || !user) return `My ${suffix}`
+    const name = user.email.split('@')[0]
+    const displayName = name.charAt(0).toUpperCase() + name.slice(1)
+    return `${displayName}'s ${suffix}`
   }, [user])
 
-  const handleCreateWiki = async () => {
-    if (!token || !wikiName.trim()) return
+  React.useEffect(() => {
+    if (ONBOARDING_PREVIEW_ENABLED || createdSlug || knowledgeBases.length === 0) return
+    const existing = knowledgeBases[0]
+    setCreatedSlug(existing.slug)
+    setCreatedName(existing.name)
+    setWikiName(existing.name)
+    setWikiKind(existing.kind ?? 'wiki')
+    setStep('connect')
+  }, [createdSlug, knowledgeBases])
+
+  const handleChooseKind = (kind: WikiKind) => {
+    setWikiKind(kind)
+    if (!nameTouched) setWikiName(defaultNameFor(kind))
+    setCreateError(null)
+    goToStep('name')
+  }
+
+  const handleCreate = async () => {
+    const name = wikiName.trim()
+    if (!wikiKind || !name || creating) return
+    if (!ONBOARDING_PREVIEW_ENABLED && !token) {
+      setCreateError('Your session is still loading. Wait a moment, then try again.')
+      return
+    }
+
     setCreating(true)
-    setError(null)
+    setCreateError(null)
     try {
-      const kb = await createKB(wikiName.trim())
+      if (ONBOARDING_PREVIEW_ENABLED) {
+        setCreatedSlug('onboarding-preview')
+        setCreatedName(name)
+        goToStep('connect')
+        return
+      }
+      const kb = await createKB(name, undefined, wikiKind)
       setCreatedSlug(kb.slug)
+      setCreatedName(kb.name)
       goToStep('connect')
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Failed to create wiki'
-      setError(msg)
+    } catch (error) {
+      setCreateError(error instanceof Error ? error.message : 'Could not create your wiki. Try again.')
     } finally {
       setCreating(false)
     }
   }
 
-  const handleCopyUrl = async () => {
-    try {
-      await navigator.clipboard.writeText(MCP_URL)
-      setUrlCopied(true)
-      setTimeout(() => setUrlCopied(false), 2000)
-    } catch { /* */ }
+  const handleConnectionDecision = (skipped: boolean) => {
+    setConnectionSkipped(skipped)
+    setFinishError(null)
+    goToStep('done')
   }
 
   const handleComplete = async () => {
-    if (!token) return
+    if (completing) return
+    if (ONBOARDING_PREVIEW_ENABLED) {
+      setPreviewNotice('Preview complete. Nothing was saved.')
+      return
+    }
+    if (!token) {
+      setFinishError('Your session is still loading. Wait a moment, then try again.')
+      return
+    }
+
+    setCompleting(true)
+    setFinishError(null)
     try {
       await apiFetch('/v1/onboarding/complete', token, { method: 'POST' })
-    } catch { /* continue anyway */ }
-    setOnboarded(true)
-    router.replace(createdSlug ? `/wikis/${createdSlug}` : '/wikis')
+      setOnboarded(true)
+      router.replace(createdSlug ? `/wikis/${createdSlug}` : '/wikis')
+    } catch {
+      setFinishError('Could not save your setup progress. Check your connection and try again.')
+      setCompleting(false)
+    }
   }
 
+  const handleRestartPreview = () => {
+    setStep('choose')
+    setDirection(-1)
+    setWikiKind(null)
+    setWikiName('')
+    setNameTouched(false)
+    setCreating(false)
+    setCompleting(false)
+    setCreatedSlug(null)
+    setCreatedName(null)
+    setConnectionSkipped(false)
+    setConnectionClient('claude')
+    setCreateError(null)
+    setFinishError(null)
+    setPreviewNotice(null)
+  }
+
+  const itemLabel = wikiKind === 'course' ? 'course' : 'wiki'
+
   return (
-    <div className="h-full min-h-0 flex flex-col bg-background">
-      {/* Account indicator + sign-out, always visible during onboarding */}
-      <div className="shrink-0 absolute top-4 right-4 flex items-center gap-2 text-xs text-muted-foreground z-10">
-        {user?.email && <span className="hidden sm:inline">{user.email}</span>}
-        <UserMenu />
+    <div className="relative flex h-full min-h-0 flex-col bg-background">
+      <div className="absolute right-4 top-4 z-10 flex items-center gap-2 text-xs text-muted-foreground">
+        {ONBOARDING_PREVIEW_ENABLED ? (
+          <span>Local preview · no changes saved</span>
+        ) : (
+          <>
+            {user?.email && <span className="hidden sm:inline">{user.email}</span>}
+            <UserMenu />
+          </>
+        )}
       </div>
-      {/* Progress bar */}
-      <div className="shrink-0 px-8 pt-8 pb-0">
-        <div className="max-w-lg mx-auto flex gap-1.5">
-          {STEPS.map((s, i) => (
+
+      <div className="shrink-0 px-8 pb-0 pt-8">
+        <div
+          className="mx-auto flex max-w-lg gap-1.5"
+          role="progressbar"
+          aria-label="Onboarding progress"
+          aria-valuemin={1}
+          aria-valuemax={STEPS.length}
+          aria-valuenow={stepIndex + 1}
+          aria-valuetext={`Step ${stepIndex + 1} of ${STEPS.length}`}
+        >
+          {STEPS.map((item, index) => (
             <div
-              key={s}
+              key={item}
               className={cn(
-                'h-1 flex-1 rounded-full transition-colors duration-300',
-                i <= stepIndex ? 'bg-foreground' : 'bg-border',
+                'h-1 flex-1 rounded-full transition-colors duration-200',
+                index <= stepIndex ? 'bg-foreground' : 'bg-border',
               )}
             />
           ))}
         </div>
       </div>
 
-      {/* Step content */}
-      <div className="flex-1 min-h-0 flex items-center justify-center p-8">
-        <div className="w-full max-w-lg">
-          <AnimatePresence mode="wait" custom={direction}>
-
-          {step === 'welcome' && (
-            <motion.div
-              key="welcome"
-              custom={direction}
-              initial={{ opacity: 0, x: direction * 40 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: direction * -40 }}
-              transition={{ duration: 0.25, ease: [0.25, 0.1, 0.25, 1] }}
-              className="text-center"
-            >
-              <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-foreground mb-8">
-                <BookOpen size={28} className="text-background" />
-              </div>
-              <h1 className="text-3xl font-bold tracking-tight">
-                Welcome to LLM Wiki
-              </h1>
-              <p className="mt-4 text-base text-muted-foreground leading-relaxed max-w-sm mx-auto">
-                Your LLM compiles and maintains a structured wiki from your raw sources.
-              </p>
-
-              <div className="grid grid-cols-3 gap-3 mt-10 text-left">
-                {[
-                  { icon: FileText, title: 'Sources', desc: 'PDFs, notes, transcripts' },
-                  { icon: BookOpen, title: 'Wiki', desc: 'Auto-generated pages' },
-                  { icon: PenTool, title: 'Tools', desc: 'Search, read, write via MCP' },
-                ].map((item) => (
-                  <div key={item.title} className="rounded-xl border border-border p-4 bg-card">
-                    <item.icon className="size-4 text-muted-foreground mb-2.5" strokeWidth={1.5} />
-                    <h3 className="text-sm font-semibold">{item.title}</h3>
-                    <p className="text-[11px] text-muted-foreground mt-0.5">{item.desc}</p>
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="flex min-h-full items-start justify-center px-6 py-12 sm:px-8 sm:py-16">
+          <div className="relative w-full max-w-lg">
+            <AnimatePresence initial={false} mode="popLayout" custom={direction}>
+              {step === 'choose' && (
+                <motion.section
+                  key="choose"
+                  custom={direction}
+                  initial={{ opacity: 0, x: direction * 18 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: direction * -18 }}
+                  transition={transition}
+                  className="w-full text-center"
+                  aria-labelledby="choose-title"
+                >
+                  <div className="mb-7 inline-flex size-14 items-center justify-center rounded-2xl bg-foreground text-background">
+                    <BookOpen className="size-6" />
                   </div>
-                ))}
-              </div>
+                  <h1 id="choose-title" className="text-3xl font-bold tracking-tight">
+                    What do you want to build?
+                  </h1>
+                  <p className="mx-auto mt-3 max-w-sm text-sm leading-relaxed text-muted-foreground">
+                    Start with a flexible wiki or an ordered course. You can change this later.
+                  </p>
 
-              <button
-                onClick={() => goToStep('create')}
-                className="mt-10 inline-flex items-center gap-2 rounded-full bg-foreground text-background px-8 py-3 text-sm font-medium hover:opacity-90 transition-opacity cursor-pointer"
-              >
-                Get started
-                <ArrowRight className="size-3.5" />
-              </button>
-            </motion.div>
-          )}
-
-          {step === 'create' && (
-            <motion.div
-              key="create"
-              custom={direction}
-              initial={{ opacity: 0, x: direction * 40 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: direction * -40 }}
-              transition={{ duration: 0.25, ease: [0.25, 0.1, 0.25, 1] }}
-            >
-              <button
-                onClick={() => goToStep('welcome')}
-                className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors cursor-pointer mb-8"
-              >
-                <ArrowLeft className="size-3" />
-                Back
-              </button>
-
-              <h1 className="text-2xl font-bold tracking-tight">
-                Name your wiki
-              </h1>
-              <p className="mt-2 text-sm text-muted-foreground">
-                This is your knowledge space. You can rename it anytime.
-              </p>
-
-              <div className="mt-8">
-                <input
-                  type="text"
-                  value={wikiName}
-                  onChange={(e) => setWikiName(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && handleCreateWiki()}
-                  placeholder="My Research"
-                  className="w-full rounded-xl border border-border bg-card px-4 py-3.5 text-base focus:outline-none focus:ring-2 focus:ring-foreground/20 transition-shadow"
-                  autoFocus
-                />
-              </div>
-
-              {error && (
-                <p className="mt-3 text-sm text-red-500">{error}</p>
+                  <div className="mt-8 overflow-hidden rounded-xl border border-border bg-card text-left">
+                    {([
+                      ['wiki', 'Wiki', 'Explore a topic through connected pages.', BookOpen],
+                      ['course', 'Course', 'Follow ordered lessons and resume your progress.', ListTree],
+                    ] as const).map(([kind, title, description, Icon], index) => (
+                      <button
+                        key={kind}
+                        type="button"
+                        onClick={() => handleChooseKind(kind)}
+                        className={cn(
+                          'flex w-full items-center gap-4 px-4 py-4 text-left transition-colors hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
+                          index > 0 && 'border-t border-border',
+                        )}
+                      >
+                        <Icon className="size-4 shrink-0 text-muted-foreground" />
+                        <span className="min-w-0 flex-1">
+                          <span className="block text-sm font-semibold">{title}</span>
+                          <span className="mt-0.5 block text-xs text-muted-foreground">{description}</span>
+                        </span>
+                        <ArrowRight className="size-3.5 shrink-0 text-muted-foreground" />
+                      </button>
+                    ))}
+                  </div>
+                </motion.section>
               )}
 
-              <button
-                onClick={handleCreateWiki}
-                disabled={creating || !wikiName.trim() || !token}
-                className="mt-6 w-full inline-flex items-center justify-center gap-2 rounded-full bg-foreground text-background px-8 py-3 text-sm font-medium hover:opacity-90 transition-opacity cursor-pointer disabled:opacity-40"
-              >
-                {creating ? (
-                  <><Loader2 size={15} className="animate-spin" /> Creating...</>
-                ) : (
-                  <>Create wiki <ArrowRight className="size-3.5" /></>
-                )}
-              </button>
-            </motion.div>
-          )}
-
-          {step === 'connect' && (
-            <motion.div
-              key="connect"
-              custom={direction}
-              initial={{ opacity: 0, x: direction * 40 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: direction * -40 }}
-              transition={{ duration: 0.25, ease: [0.25, 0.1, 0.25, 1] }}
-            >
-              <button
-                onClick={() => goToStep('create')}
-                className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors cursor-pointer mb-8"
-              >
-                <ArrowLeft className="size-3" />
-                Back
-              </button>
-
-              <h1 className="text-2xl font-bold tracking-tight">
-                Connect Claude
-              </h1>
-              <p className="mt-2 text-sm text-muted-foreground">
-                Add LLM Wiki as a connector so Claude can read and write to your wiki.
-              </p>
-
-              <div className="mt-8 space-y-6">
-                {/* MCP URL */}
-                <div className="flex items-center gap-2">
-                  <code className="flex-1 text-sm font-mono bg-muted rounded-xl px-4 py-3 border border-border select-all truncate">
-                    {MCP_URL}
-                  </code>
-                  <button
-                    onClick={handleCopyUrl}
-                    className={cn(
-                      'shrink-0 flex items-center gap-1.5 rounded-xl px-4 py-3 text-sm font-medium transition-colors cursor-pointer',
-                      urlCopied
-                        ? 'bg-green-500/10 text-green-600 dark:text-green-400'
-                        : 'bg-foreground text-background hover:opacity-90'
-                    )}
-                  >
-                    {urlCopied ? <><Check size={14} /> Copied</> : <><Copy size={14} /> Copy</>}
-                  </button>
-                </div>
-
-                {/* Steps */}
-                <div className="rounded-xl border border-border bg-card p-5">
-                  <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/50 mb-3">
-                    In Claude
+              {step === 'name' && wikiKind && (
+                <motion.section
+                  key="name"
+                  custom={direction}
+                  initial={{ opacity: 0, x: direction * 18 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: direction * -18 }}
+                  transition={transition}
+                  className="w-full"
+                  aria-labelledby="name-title"
+                >
+                  <StepBack onClick={() => goToStep('choose')} />
+                  <h1 id="name-title" className="text-2xl font-bold tracking-tight">
+                    Name your {itemLabel}
+                  </h1>
+                  <p className="mt-2 text-sm text-muted-foreground">
+                    You can rename it at any time.
                   </p>
-                  <ol className="space-y-2.5">
-                    {[
-                      <>Open <strong>Settings</strong></>,
-                      <>Go to <strong>Connectors</strong></>,
-                      <>Click <strong>Add custom connector</strong></>,
-                      'Paste the URL above and approve access',
-                      'Sign in with your account when prompted',
-                    ].map((text, i) => (
-                      <li key={i} className="flex items-start gap-3 text-sm">
-                        <span className="flex items-center justify-center w-5 h-5 rounded-full bg-muted text-[10px] font-bold text-muted-foreground shrink-0 mt-0.5">
-                          {i + 1}
-                        </span>
-                        <span className="text-foreground/80">{text}</span>
-                      </li>
-                    ))}
-                  </ol>
-                </div>
-              </div>
 
-              <div className="flex gap-3 mt-8">
-                <button
-                  onClick={() => goToStep('done')}
-                  className="flex-1 inline-flex items-center justify-center gap-2 rounded-full bg-foreground text-background px-8 py-3 text-sm font-medium hover:opacity-90 transition-opacity cursor-pointer"
+                  <input
+                    type="text"
+                    value={wikiName}
+                    onChange={(event) => {
+                      setWikiName(event.target.value)
+                      setNameTouched(true)
+                      setCreateError(null)
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') void handleCreate()
+                    }}
+                    placeholder={wikiKind === 'course' ? 'Intro to reinforcement learning' : 'My research'}
+                    maxLength={100}
+                    aria-invalid={Boolean(createError)}
+                    className="mt-8 w-full rounded-xl border border-border bg-card px-4 py-3.5 text-base outline-none transition-shadow focus:ring-2 focus:ring-foreground/20"
+                    autoFocus
+                  />
+
+                  {createError && (
+                    <p role="alert" className="mt-3 text-sm text-destructive">
+                      {createError}
+                    </p>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={() => void handleCreate()}
+                    disabled={creating || !wikiName.trim() || (!ONBOARDING_PREVIEW_ENABLED && !token)}
+                    className="mt-6 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-full bg-foreground px-8 text-sm font-medium text-background transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    {creating ? <Loader2 className="size-4 animate-spin" /> : null}
+                    {creating ? 'Creating…' : `Create ${itemLabel}`}
+                    {!creating && <ArrowRight className="size-3.5" />}
+                  </button>
+                </motion.section>
+              )}
+
+              {step === 'connect' && (
+                <motion.section
+                  key="connect"
+                  custom={direction}
+                  initial={{ opacity: 0, x: direction * 18 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: direction * -18 }}
+                  transition={transition}
+                  className="w-full"
+                  aria-labelledby="connect-title"
                 >
-                  Continue
-                  <ArrowRight className="size-3.5" />
-                </button>
-              </div>
+                  <StepBack onClick={() => goToStep('name')} />
+                  <h1 id="connect-title" className="text-2xl font-bold tracking-tight">
+                    Connect {connectionClient === 'other' ? 'another AI' : CLIENT_LABELS[connectionClient]}
+                  </h1>
+                  <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+                    Add LLM Wiki so your AI can read and write your {itemLabel}.
+                  </p>
 
-              <button
-                onClick={() => goToStep('done')}
-                className="mt-3 w-full text-center text-xs text-muted-foreground/50 hover:text-muted-foreground transition-colors cursor-pointer"
-              >
-                Skip — I&apos;ll set this up later
-              </button>
-            </motion.div>
-          )}
+                  <McpConnectionSetup
+                    className="mt-7"
+                    defaultClient={connectionClient}
+                    wikiName={createdName ?? undefined}
+                    showClientHeading={false}
+                    showStarterPrompt={false}
+                    onClientChange={setConnectionClient}
+                  />
 
-          {step === 'done' && (
-            <motion.div
-              key="done"
-              custom={direction}
-              initial={{ opacity: 0, x: direction * 40 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: direction * -40 }}
-              transition={{ duration: 0.25, ease: [0.25, 0.1, 0.25, 1] }}
-              className="text-center"
-            >
-              <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-green-500/10 mb-8">
-                <Check size={28} className="text-green-600 dark:text-green-400" />
-              </div>
-              <h1 className="text-2xl font-bold tracking-tight">
-                You&apos;re all set
-              </h1>
-              <p className="mt-3 text-sm text-muted-foreground leading-relaxed max-w-sm mx-auto">
-                Upload some sources to your wiki, then ask Claude to compile them into structured pages.
-              </p>
+                  <div className="mt-7 border-t border-border pt-6">
+                    <button
+                      type="button"
+                      onClick={() => handleConnectionDecision(false)}
+                      className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-full bg-foreground px-8 text-sm font-medium text-background transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      Continue
+                      <ArrowRight className="size-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleConnectionDecision(true)}
+                      className="mt-3 w-full text-center text-xs text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      Skip for now
+                    </button>
+                  </div>
+                </motion.section>
+              )}
 
-              <button
-                onClick={handleComplete}
-                className="mt-10 inline-flex items-center justify-center gap-2 rounded-full bg-foreground text-background px-8 py-3 text-sm font-medium hover:opacity-90 transition-opacity cursor-pointer"
-              >
-                Go to my wiki
-                <ArrowRight className="size-3.5" />
-              </button>
-
-              <div className="mt-6">
-                <a
-                  href="https://claude.ai"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+              {step === 'done' && (
+                <motion.section
+                  key="done"
+                  custom={direction}
+                  initial={{ opacity: 0, x: direction * 18 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: direction * -18 }}
+                  transition={transition}
+                  className="w-full text-center"
+                  aria-labelledby="done-title"
                 >
-                  <ExternalLink size={12} />
-                  Open Claude
-                </a>
-              </div>
-            </motion.div>
-          )}
+                  <div className="mb-7 inline-flex size-14 items-center justify-center rounded-full bg-green-500/10 text-green-600 dark:text-green-400">
+                    <Check className="size-6" />
+                  </div>
+                  <h1 id="done-title" className="text-2xl font-bold tracking-tight">
+                    Your {itemLabel} is ready
+                  </h1>
+                  <p className="mx-auto mt-3 max-w-sm text-sm leading-relaxed text-muted-foreground">
+                    {connectionSkipped
+                      ? 'Start exploring now. Connect AI later from the lower-right corner of your wiki.'
+                      : 'Start with a prompt, web research, or sources, then read and refine what your AI builds.'}
+                  </p>
 
-          </AnimatePresence>
+                  {finishError && (
+                    <p role="alert" className="mt-5 text-sm text-destructive">
+                      {finishError}
+                    </p>
+                  )}
+
+                  {previewNotice ? (
+                    <div className="mt-8">
+                      <p role="status" className="text-sm text-muted-foreground">{previewNotice}</p>
+                      <button
+                        type="button"
+                        onClick={handleRestartPreview}
+                        className="mt-4 text-sm font-medium underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      >
+                        Restart preview
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => void handleComplete()}
+                      disabled={completing}
+                      className="mt-9 inline-flex min-h-11 items-center justify-center gap-2 rounded-full bg-foreground px-8 text-sm font-medium text-background transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-40"
+                    >
+                      {completing && <Loader2 className="size-4 animate-spin" />}
+                      {ONBOARDING_PREVIEW_ENABLED ? 'Finish preview' : `View my ${itemLabel}`}
+                      {!completing && <ArrowRight className="size-3.5" />}
+                    </button>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={() => goToStep('connect')}
+                    className="mx-auto mt-5 block text-xs text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    Back to connection setup
+                  </button>
+                </motion.section>
+              )}
+            </AnimatePresence>
+          </div>
         </div>
       </div>
     </div>
+  )
+}
+
+function StepBack({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="mb-7 flex items-center gap-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+    >
+      <ArrowLeft className="size-3" />
+      Back
+    </button>
   )
 }

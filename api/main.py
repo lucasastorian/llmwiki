@@ -213,6 +213,13 @@ if settings.MODE != "local":
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[settings.APP_URL],
+    # Local clipping may be initiated by the popup or extension background
+    # worker. Hosted mode keeps its existing, web-app-only CORS policy.
+    allow_origin_regex=(
+        r"(?:chrome-extension|moz-extension)://[A-Za-z0-9._-]+"
+        if settings.MODE == "local"
+        else None
+    ),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -221,7 +228,18 @@ app.add_middleware(
         "Tus-Resumable", "Tus-Version", "Tus-Max-Size", "Tus-Extension",
         "X-Document-Id",
     ],
+    # Default preflight cache is 600s — on high-latency links every endpoint
+    # re-pays an OPTIONS round-trip every 10 minutes. Browsers cap this
+    # (Chrome 7200s, Firefox 86400s), so ask for the max.
+    max_age=86400,
 )
+
+if settings.MODE == "local":
+    # This is deliberately outside CORS so Host validation also covers
+    # preflights. Local mode has no auth and supports loopback binding only.
+    from infra.local_http import LocalHTTPBoundaryMiddleware
+
+    app.add_middleware(LocalHTTPBoundaryMiddleware, app_origin=settings.APP_URL)
 
 if settings.LOGFIRE_TOKEN:
     import logfire
@@ -246,9 +264,11 @@ else:
     from routes.graph import router as graph_router
     from routes.ws import router as ws_router
     from routes.public import router as public_router
+    from routes.quiz import router as quiz_router
     from infra.tus import router as tus_router
     app.include_router(api_keys_router)
     app.include_router(tus_router)
     app.include_router(graph_router)
     app.include_router(ws_router)
     app.include_router(public_router)
+    app.include_router(quiz_router)

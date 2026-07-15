@@ -1,7 +1,5 @@
-import asyncio
 import json
 import logging
-from pathlib import Path
 
 import aioboto3
 from config import settings
@@ -23,8 +21,16 @@ class S3Service:
             await s3.put_object(Bucket=self._bucket, Key=key, Body=data, ContentType=content_type)
 
     async def upload_file(self, key: str, file_path: str, content_type: str = "application/octet-stream"):
-        data = await asyncio.to_thread(Path(file_path).read_bytes)
-        await self.upload_bytes(key, data, content_type)
+        # aioboto3's transfer helper streams from disk and automatically uses
+        # multipart upload for large files. Do not materialize a 100 MB TUS
+        # upload as one Python bytes object before sending it to S3.
+        async with self._session.client("s3") as s3:
+            await s3.upload_file(
+                file_path,
+                self._bucket,
+                key,
+                ExtraArgs={"ContentType": content_type},
+            )
 
     async def generate_presigned_get(self, key: str, expires_in: int = 3600) -> str:
         async with self._session.client("s3") as s3:
@@ -61,8 +67,8 @@ class S3Service:
             return await resp["Body"].read()
 
     async def download_to_file(self, key: str, file_path: str):
-        data = await self.download_bytes(key)
-        await asyncio.to_thread(Path(file_path).write_bytes, data)
+        async with self._session.client("s3") as s3:
+            await s3.download_file(self._bucket, key, file_path)
 
     async def download_json(self, key: str) -> dict:
         body = await self.download_bytes(key)

@@ -244,6 +244,33 @@ class TestDocumentCRUD:
         assert len(rich) == 1
         assert rich[0]["content"] == "full content"
 
+    async def test_list_documents_with_content_pushes_path_and_budget(self, fs):
+        instance, kb_id = fs
+        await instance.create_document(kb_id, "root.md", "Root", "/", "md", "root body", ["tag"])
+        await instance.create_document(
+            kb_id, "wiki.md", "Wiki", "/wiki/", "md", "abcdefghij", ["tag"]
+        )
+
+        docs = await instance.list_documents_with_content(
+            kb_id,
+            path_glob="/wiki/**",
+            content_limit=4,
+        )
+
+        assert [doc["filename"] for doc in docs] == ["wiki.md"]
+        assert docs[0]["content"] == "abcd"
+        assert docs[0]["content_truncated"] is True
+
+    async def test_lint_hydration_skips_source_bodies(self, fs):
+        instance, kb_id = fs
+        await instance.create_document(kb_id, "source.pdf", "Source", "/", "pdf", "large source", ["tag"])
+        await instance.create_document(kb_id, "page.md", "Page", "/wiki/", "md", "wiki body", ["tag"])
+
+        docs = await instance.list_documents_with_content(kb_id, wiki_content_only=True)
+        by_name = {doc["filename"]: doc for doc in docs}
+        assert by_name["source.pdf"]["content"] is None
+        assert by_name["page.md"]["content"] == "wiki body"
+
 
 class TestPages:
 
@@ -274,6 +301,18 @@ class TestPages:
         pages = await instance.get_all_pages(doc_id)
         assert len(pages) == 2
         assert pages[0]["page"] == 1
+
+    async def test_get_pages_for_batch_stops_at_budget(self, fs, insert_page):
+        instance, kb_id = fs
+        doc = await instance.create_document(kb_id, "doc.pdf", "Doc", "/", "pdf", "", ["tag"])
+        doc_id = str(doc["id"])
+        await insert_page(doc_id, 1, "abcdefghij")
+        await insert_page(doc_id, 2, "second page")
+
+        pages = await instance.get_pages_for_batch(doc_id, 4)
+        assert len(pages) == 1
+        assert pages[0]["content"] == "abcd"
+        assert pages[0]["content_truncated"] is True
 
 
 class TestSearch:
@@ -409,6 +448,26 @@ class TestReferences:
         types = {r["reference_type"] for r in forward}
         assert "cites" in types
         assert "links_to" in types
+
+    async def test_replace_references_replaces_complete_edge_set(self, fs):
+        instance, kb_id = fs
+        src = await instance.create_document(kb_id, "page.md", "Page", "/wiki/", "md", "", ["tag"])
+        old = await instance.create_document(kb_id, "old.pdf", "Old", "/", "pdf", "", ["tag"])
+        new = await instance.create_document(kb_id, "new.pdf", "New", "/", "pdf", "", ["tag"])
+        await instance.upsert_reference(str(src["id"]), str(old["id"]), kb_id, "cites", 1)
+
+        await instance.replace_references(
+            str(src["id"]),
+            kb_id,
+            [(str(new["id"]), "cites", 7)],
+        )
+
+        forward = await instance.get_forward_references(str(src["id"]))
+        assert [(row["filename"], row["page"]) for row in forward] == [("new.pdf", 7)]
+        edges = await instance.get_reference_edges(kb_id)
+        assert {(edge["source_id"], edge["target_id"]) for edge in edges} == {
+            (str(src["id"]), str(new["id"]))
+        }
 
     async def test_propagate_staleness(self, fs):
         instance, kb_id = fs

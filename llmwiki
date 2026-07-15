@@ -218,7 +218,7 @@ def cmd_serve(workspace: str, open_browser: bool = True) -> None:
 
     # Start API server
     api_proc = subprocess.Popen(
-        [sys.executable, "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"],
+        [sys.executable, "-m", "uvicorn", "main:app", "--host", "127.0.0.1", "--port", "8000"],
         cwd=str(API_DIR),
         env=env,
     )

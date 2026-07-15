@@ -1,4 +1,5 @@
 import asyncio
+from contextlib import asynccontextmanager
 import json
 
 import asyncpg
@@ -33,13 +34,19 @@ async def _set_rls(conn, user_id: str, claims: dict | None = None):
     await conn.execute("SELECT set_config('request.jwt.claims', $1, true)", json.dumps(jwt_claims))
 
 
-async def scoped_query(user_id: str, sql: str, *args, claims: dict | None = None) -> list[dict]:
+@asynccontextmanager
+async def scoped_connection(user_id: str, claims: dict | None = None):
+    """Yield one RLS-scoped connection for a multi-statement operation."""
     pool = await get_pool()
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            await _set_rls(conn, user_id, claims)
-            rows = await conn.fetch(sql, *args)
-            return [dict(r) for r in rows]
+    async with pool.acquire() as conn, conn.transaction():
+        await _set_rls(conn, user_id, claims)
+        yield conn
+
+
+async def scoped_query(user_id: str, sql: str, *args, claims: dict | None = None) -> list[dict]:
+    async with scoped_connection(user_id, claims) as conn:
+        rows = await conn.fetch(sql, *args)
+        return [dict(r) for r in rows]
 
 
 async def scoped_queryrow(user_id: str, sql: str, *args, claims: dict | None = None) -> dict | None:
@@ -48,11 +55,8 @@ async def scoped_queryrow(user_id: str, sql: str, *args, claims: dict | None = N
 
 
 async def scoped_execute(user_id: str, sql: str, *args, claims: dict | None = None) -> str:
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            await _set_rls(conn, user_id, claims)
-            return await conn.execute(sql, *args)
+    async with scoped_connection(user_id, claims) as conn:
+        return await conn.execute(sql, *args)
 
 
 async def service_queryrow(sql: str, *args) -> dict | None:

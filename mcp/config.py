@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     AWS_SECRET_ACCESS_KEY: str = ""
     AWS_REGION: str = "us-east-1"
     S3_BUCKET: str = "supavault-documents"
+    QUOTA_MAX_STORAGE_BYTES: int = 1_073_741_824
     LOGFIRE_TOKEN: str = ""
     STAGE: str = "dev"
     APP_URL: str = "http://localhost:3000"

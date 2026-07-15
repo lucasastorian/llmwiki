@@ -10,6 +10,7 @@ from mcp.server.fastmcp import Context, FastMCP
 
 from vaultfs import VaultFS
 from .helpers import glob_match
+from .quiz_lint import lint_quiz_blocks
 from .references import _parse_citation_filename, _parse_wiki_links
 from .write import (
     _extract_frontmatter_tags,
@@ -45,6 +46,8 @@ class LintContext:
     source_lookup: dict[str, dict]
     wiki_lookup: dict[str, dict]
     wiki_page_count: int
+    cited_targets_by_source: dict[str, set[str]]
+    backlinked_document_ids: set[str]
 
 
 class LintHandler:
@@ -62,15 +65,31 @@ class LintHandler:
         scope: Scope = "all",
         include_graph: bool = True,
     ) -> str:
-        all_docs = await self.fs.list_documents_with_content(self.kb_id)
+        # Source bodies are irrelevant to lint; only wiki content is hydrated.
+        all_docs = await self.fs.list_documents_with_content(
+            self.kb_id,
+            wiki_content_only=True,
+        )
         docs = self._filter_docs(all_docs, path, scope)
         if not docs:
             return f"No documents matched `{path}` in {self.slug}."
+
+        reference_edges = await self.fs.get_reference_edges(self.kb_id) if include_graph else []
+        cited_targets_by_source: dict[str, set[str]] = {}
+        backlinked_document_ids: set[str] = set()
+        for edge in reference_edges:
+            source_id = str(edge["source_id"])
+            target_id = str(edge["target_id"])
+            backlinked_document_ids.add(target_id)
+            if edge.get("reference_type") == "cites":
+                cited_targets_by_source.setdefault(source_id, set()).add(target_id)
 
         ctx = LintContext(
             source_lookup=self._source_lookup(all_docs),
             wiki_lookup=self._wiki_lookup(all_docs),
             wiki_page_count=sum(1 for doc in all_docs if self._is_wiki_page(doc)),
+            cited_targets_by_source=cited_targets_by_source,
+            backlinked_document_ids=backlinked_document_ids,
         )
 
         issues: list[LintIssue] = []
@@ -111,10 +130,11 @@ class LintHandler:
             issues.extend(self._lint_footnotes(path, content))
         issues.extend(self._lint_citations(doc, content, ctx.source_lookup))
         issues.extend(self._lint_wiki_links(doc, content, ctx.wiki_lookup))
+        issues.extend(self._lint_quiz_blocks(path, content))
 
         if include_graph:
-            issues.extend(await self._lint_reference_graph(doc, content, ctx.source_lookup))
-            issues.extend(await self._lint_orphan(doc, ctx.wiki_page_count))
+            issues.extend(self._lint_reference_graph(doc, content, ctx))
+            issues.extend(self._lint_orphan(doc, ctx))
 
         return issues
 
@@ -215,29 +235,31 @@ class LintHandler:
                 ))
         return issues
 
-    async def _lint_reference_graph(self, doc: dict, content: str, source_lookup: dict[str, dict]) -> list[LintIssue]:
+    def _lint_quiz_blocks(self, path: str, content: str) -> list[LintIssue]:
+        return [LintIssue("error", "invalid-quiz", path, message) for message in lint_quiz_blocks(content)]
+
+    def _lint_reference_graph(self, doc: dict, content: str, ctx: LintContext) -> list[LintIssue]:
         path = self._doc_path(doc)
         expected_source_ids: set[str] = set()
         for _footnote_id, raw in _FOOTNOTE_DEF_RE.findall(content):
             filename, _page = _parse_citation_filename(raw)
-            target = self._resolve_source(filename, source_lookup)
+            target = self._resolve_source(filename, ctx.source_lookup)
             if target and str(target["id"]) != str(doc["id"]):
                 expected_source_ids.add(str(target["id"]))
 
         if not expected_source_ids:
             return []
 
-        forward = await self.fs.get_forward_references(str(doc["id"]))
-        actual_source_ids = {
-            str(ref["id"])
-            for ref in forward
-            if ref.get("reference_type") == "cites" and ref.get("id")
-        }
+        actual_source_ids = ctx.cited_targets_by_source.get(str(doc["id"]), set())
         missing = expected_source_ids - actual_source_ids
         if not missing:
             return []
 
-        missing_names = sorted(self._doc_path(d) for d in source_lookup.values() if str(d["id"]) in missing)
+        missing_names = sorted(
+            self._doc_path(d)
+            for d in ctx.source_lookup.values()
+            if str(d["id"]) in missing
+        )
         return [LintIssue(
             "error",
             "citation-graph-mismatch",
@@ -245,10 +267,10 @@ class LintHandler:
             f"citation footnotes were not materialized into graph edges: {', '.join(missing_names)}",
         )]
 
-    async def _lint_orphan(self, doc: dict, wiki_page_count: int) -> list[LintIssue]:
-        if self._is_root_page(doc) or wiki_page_count <= 1:
+    def _lint_orphan(self, doc: dict, ctx: LintContext) -> list[LintIssue]:
+        if self._is_root_page(doc) or ctx.wiki_page_count <= 1:
             return []
-        if await self.fs.get_backlinks(str(doc["id"])):
+        if str(doc["id"]) in ctx.backlinked_document_ids:
             return []
         return [LintIssue("warn", "orphan-page", self._doc_path(doc), "wiki page has no incoming links or citations")]
 
@@ -398,8 +420,8 @@ def register(mcp: FastMCP, get_user_id, fs_factory) -> None:
         description=(
             "Run deterministic hygiene checks across a knowledge base.\n\n"
             "Checks wiki frontmatter, tag/date index consistency, footnote hygiene, "
-            "citation resolution, citation graph edges, dangling wiki links, orphan pages, "
-            "uncited sources, and stale pages.\n\n"
+            "citation resolution, citation graph edges, dangling wiki links, quiz blocks, "
+            "orphan pages, uncited sources, and stale pages.\n\n"
             "Use `path` to scope the run, e.g. `*`, `/wiki/**`, or `/wiki/concepts/*.md`."
         ),
     )

@@ -13,6 +13,10 @@ RUN pip-audit -r requirements.lock --strict --desc
 # ---------------------------------------------------------------------------
 FROM base AS runtime
 
+# The API image is hosted-only. Local installs keep the in-process parser, but
+# production PDF/Office parsing belongs exclusively to the converter image.
+RUN pip uninstall --yes opendataloader-pdf
+
 COPY . .
 
 ENV MODE=hosted

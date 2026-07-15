@@ -8,12 +8,12 @@ import re
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urljoin
 
-import httpx
 from bs4 import BeautifulSoup, Comment
 from bs4.element import NavigableString, Tag
+from infra import safe_fetch
 
+from .forms import FormExtractor
 from .models import Element, Image, MappedHighlight, ParseResult, TextAnchor
-from .forms import FormExtractor, FormElement
 
 logger = logging.getLogger(__name__)
 
@@ -688,56 +688,13 @@ class Parser:
     _MAX_TOTAL_BYTES = 20 * 1024 * 1024  # 20 MB total
     _EMBED_TIMEOUT = 10                   # seconds per image
     _EMBED_CONCURRENCY = 8
-
-    _ALLOWED_SCHEMES = {"http", "https"}
-
-    @staticmethod
-    def _is_dangerous_ip(addr: str) -> bool:
-        import ipaddress
-        try:
-            ip = ipaddress.ip_address(addr)
-            return ip.is_private or ip.is_loopback or ip.is_reserved or ip.is_link_local
-        except ValueError:
-            return True
-
-    @staticmethod
-    def _resolve_safe(url: str) -> tuple[str, str, int, str, str] | None:
-        """Resolve URL, validate all IPs are public.
-        Returns (safe_ip, host, port, scheme, path_with_query) or None.
-        """
-        from urllib.parse import urlparse
-        import socket
-        try:
-            parsed = urlparse(url)
-            if parsed.scheme not in Parser._ALLOWED_SCHEMES:
-                return None
-            host = parsed.hostname or ""
-            if not host:
-                return None
-            port = parsed.port or (443 if parsed.scheme == "https" else 80)
-            if host in ("localhost", "localhost.localdomain") or host.endswith(".local"):
-                return None
-            if Parser._is_dangerous_ip(host):
-                return None
-            addrs = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
-            if not addrs:
-                return None
-            for _fam, _type, _proto, _canon, sockaddr in addrs:
-                if Parser._is_dangerous_ip(sockaddr[0]):
-                    return None
-            safe_ip = addrs[0][4][0]
-            path = parsed.path or "/"
-            if parsed.query:
-                path += "?" + parsed.query
-            return safe_ip, host, port, parsed.scheme, path
-        except Exception:
-            return None
+    _MAX_EMBED_IMAGES = 32
 
     async def embed_images(self) -> None:
         imgs = [
             img for img in self.soup.find_all("img")
             if img.get("src") and not img["src"].startswith("data:")
-        ]
+        ][:self._MAX_EMBED_IMAGES]
         if not imgs:
             return
 
@@ -748,39 +705,22 @@ class Parser:
             nonlocal total_bytes
             src = img_tag["src"]
 
-            resolved = await asyncio.to_thread(Parser._resolve_safe, src)
-            if not resolved:
-                return
-            safe_ip, host, port, scheme, path = resolved
-
-            ip_str = f"[{safe_ip}]" if ":" in safe_ip else safe_ip
-            default_port = 443 if scheme == "https" else 80
-            port_suffix = f":{port}" if port != default_port else ""
-            pinned_url = f"{scheme}://{ip_str}{port_suffix}{path}"
-
             async with sem:
+                if total_bytes >= self._MAX_TOTAL_BYTES:
+                    return
                 try:
-                    async with httpx.AsyncClient(
-                        follow_redirects=False, verify=False,
-                    ) as client:
-                        resp = await client.get(
-                            pinned_url,
-                            headers={"Host": host, "User-Agent": "Mozilla/5.0"},
-                            timeout=self._EMBED_TIMEOUT,
-                        )
-                        resp.raise_for_status()
-
-                    data = resp.content
-                    if len(data) > self._MAX_IMG_BYTES:
+                    fetched = await safe_fetch.fetch_public_image(
+                        src,
+                        max_bytes=self._MAX_IMG_BYTES,
+                        timeout=self._EMBED_TIMEOUT,
+                        headers={"User-Agent": "Mozilla/5.0"},
+                    )
+                    if not fetched:
                         return
+                    data, mime = fetched
                     if total_bytes + len(data) > self._MAX_TOTAL_BYTES:
                         return
                     total_bytes += len(data)
-
-                    ct = resp.headers.get("content-type", "image/png")
-                    mime = ct.split(";")[0].strip()
-                    if not mime.startswith("image/"):
-                        return
 
                     b64 = base64.b64encode(data).decode("ascii")
                     img_tag["src"] = f"data:{mime};base64,{b64}"

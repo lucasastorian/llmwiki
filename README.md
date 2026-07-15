@@ -70,6 +70,16 @@ python llmwiki open C:\Users\you\research     # Windows
 ```
 
 This initializes the workspace, indexes the folder, starts the API and web app, and opens [localhost:3000](http://localhost:3000).
+Local mode is intentionally loopback-only: the API listens on `127.0.0.1` and does not support LAN or remote binding.
+
+To preview the hosted onboarding UX locally without authentication or API writes, start the web app with the development-only preview flag and open [localhost:3000/onboarding](http://localhost:3000/onboarding):
+
+```bash
+cd web
+NEXT_PUBLIC_ONBOARDING_PREVIEW=true npm run dev
+```
+
+Restart the development server after changing this flag. The preview simulates creation and completion in memory; it does not create a wiki or change onboarding state.
 
 **3. Connect Claude over MCP.** MCP enables Claude to read, write, and search your wiki.
 

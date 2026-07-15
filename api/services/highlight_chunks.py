@@ -65,12 +65,28 @@ def _chunks_for_pdf_highlight(h: dict, chunks: list[ChunkRecord]) -> list[ChunkR
     if target:
         exact = [c for c in candidates if target in _normalize_ws(c.source_content)]
         if exact:
-            # One-chunk bias: pick the one with the best substring fit.
+            # An exact quote is stronger than offsets produced by a different
+            # PDF text extractor. Prefer the tightest containing chunk.
             exact.sort(key=lambda c: len(c.source_content))
             return exact[:1]
-    # Fallback: associate with every chunk on this page. Worst case the
-    # comment surfaces as a page-level annotation rather than a precise one.
-    return candidates
+    ts = pdf.get("textStart")
+    te = pdf.get("textEnd")
+    if ts is not None and te is not None:
+        scored: list[tuple[int, ChunkRecord]] = []
+        for c in candidates:
+            cs = c.start_char or 0
+            ce = cs + len(c.source_content)
+            overlap = max(0, min(te, ce) - max(ts, cs))
+            if overlap > 0:
+                scored.append((overlap, c))
+        if scored:
+            scored.sort(key=lambda item: item[0], reverse=True)
+            top_score = scored[0][0]
+            return [c for score, c in scored if score >= top_score / 2]
+    # Legacy/unalignable anchors remain page-level, but keep the projection
+    # bounded to one chunk so one note cannot pollute every search chunk on a
+    # long page. The canonical sidecar still preserves the annotation.
+    return candidates[:1]
 
 
 def _chunks_for_text_highlight(h: dict, chunks: list[ChunkRecord]) -> list[ChunkRecord]:

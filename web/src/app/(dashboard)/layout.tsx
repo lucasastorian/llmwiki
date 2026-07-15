@@ -5,10 +5,17 @@ import { useRouter, usePathname } from 'next/navigation'
 import { AppShell } from '@/components/layout/AppShell'
 import { AuthProvider } from '@/components/auth/AuthProvider'
 import { withAuthTimeout } from '@/lib/auth-errors'
+import { ONBOARDING_PREVIEW_ENABLED } from '@/lib/onboarding-preview'
 
 const isLocal = process.env.NEXT_PUBLIC_MODE === 'local'
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
+  const pathname = usePathname()
+
+  if (ONBOARDING_PREVIEW_ENABLED && pathname === '/onboarding') {
+    return <AppShell>{children}</AppShell>
+  }
+
   if (isLocal) {
     return (
       <AuthProvider userId="local" email="local@localhost">

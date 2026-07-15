@@ -46,10 +46,20 @@ export interface PdfRect {
 
 export interface PdfAnchor {
   page: number
+  /** Page-local offsets into PDF.js's normalized extracted page text. */
+  textStart?: number | null
+  textEnd?: number | null
   textContent: string
   prefix?: string | null
   suffix?: string | null
   rects: PdfRect[]
+}
+
+export interface HighlightReply {
+  id: string
+  author: 'user' | 'agent'
+  text: string
+  createdAt: string
 }
 
 export interface Highlight {
@@ -59,6 +69,7 @@ export interface Highlight {
   textAnchor?: TextAnchor | null
   pdfAnchor?: PdfAnchor | null
   comment: string | null
+  replies?: HighlightReply[] | null
   color: string
   createdAt: string
 }

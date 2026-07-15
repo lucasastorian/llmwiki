@@ -1,18 +1,16 @@
-import json
-import re
-import time
 import asyncio
 import logging
-from uuid import uuid4
-from pathlib import Path
+import re
+import time
 from base64 import b64decode
 from dataclasses import dataclass, field
-
-from fastapi import APIRouter, Request, HTTPException, Response
-from starlette.requests import ClientDisconnect
+from pathlib import Path
+from uuid import uuid4
 
 from auth import get_current_user
 from config import settings
+from fastapi import APIRouter, HTTPException, Request, Response
+from starlette.requests import ClientDisconnect
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +107,7 @@ def _validate_file_signature(temp_path: Path, ext: str) -> None:
 
 TUS_VERSION = "1.0.0"
 MAX_SIZE = 104_857_600  # 100 MB
+MAX_HTML_SIZE = 10 * 1024 * 1024
 UPLOAD_DIR = Path("/tmp/supavault_tus_uploads")
 STALE_SECONDS = 3600
 
@@ -148,6 +147,7 @@ class TusUpload:
     temp_path: Path
     path: str = "/"
     last_activity: float = field(default_factory=time.time)
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False, compare=False)
 
 
 _uploads: dict[str, TusUpload] = {}
@@ -223,19 +223,67 @@ async def _finalize(upload: TusUpload, app_state) -> str:
 
     pool = app_state.pool
     try:
-        await pool.execute(
-            "INSERT INTO documents (id, knowledge_base_id, user_id, filename, path, title, "
-            "file_type, file_size, status) "
-            "VALUES ($1::uuid, $2::uuid, $3, $4, $8, $5, $6, $7, 'pending')",
-            document_id,
-            upload.knowledge_base_id,
-            user_id,
-            upload.filename,
-            title,
-            file_type,
-            file_size,
-            upload.path,
-        )
+        conn = await pool.acquire()
+        try:
+            async with conn.transaction():
+                # Re-check quota under the same per-user lock used by text and
+                # URL-ingest writes. A note created while this TUS upload was
+                # in progress must not let finalization overspend the account.
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1::text))",
+                    user_id,
+                )
+                kb_owner = await conn.fetchval(
+                    "SELECT user_id::text FROM knowledge_bases WHERE id = $1::uuid",
+                    upload.knowledge_base_id,
+                )
+                if kb_owner != user_id:
+                    raise HTTPException(
+                        status_code=403,
+                        detail="Knowledge base not found or no longer owned by you",
+                    )
+
+                limits = await conn.fetchrow(
+                    "SELECT storage_limit_bytes FROM users WHERE id = $1",
+                    user_id,
+                )
+                storage_limit = (
+                    limits["storage_limit_bytes"]
+                    if limits else settings.QUOTA_MAX_STORAGE_BYTES
+                )
+                current_bytes = await conn.fetchval(
+                    "SELECT COALESCE(SUM(file_size), 0) "
+                    "FROM documents WHERE user_id = $1",
+                    user_id,
+                )
+                current_bytes = current_bytes or 0
+                if current_bytes + file_size > storage_limit:
+                    raise HTTPException(
+                        status_code=413,
+                        detail="Storage quota changed while the upload was in progress",
+                    )
+
+                await conn.execute(
+                    "INSERT INTO documents (id, knowledge_base_id, user_id, filename, path, title, "
+                    "file_type, file_size, status) "
+                    "VALUES ($1::uuid, $2::uuid, $3, $4, $8, $5, $6, $7, 'pending')",
+                    document_id,
+                    upload.knowledge_base_id,
+                    user_id,
+                    upload.filename,
+                    title,
+                    file_type,
+                    file_size,
+                    upload.path,
+                )
+        finally:
+            await pool.release(conn)
+    except Exception:
+        try:
+            await s3_service.delete_prefix(f"{user_id}/{document_id}/")
+        except Exception:
+            logger.exception("Failed to clean S3 object after TUS finalization error")
+        raise
     finally:
         upload.temp_path.unlink(missing_ok=True)
         _uploads.pop(upload.upload_id, None)
@@ -252,7 +300,10 @@ async def cleanup_stale_uploads():
     while True:
         await asyncio.sleep(60)
         now = time.time()
-        stale = [uid for uid, u in _uploads.items() if now - u.last_activity > STALE_SECONDS]
+        stale = [
+            uid for uid, u in _uploads.items()
+            if not u.lock.locked() and now - u.last_activity > STALE_SECONDS
+        ]
         for uid in stale:
             upload = _uploads.pop(uid, None)
             if upload:
@@ -305,6 +356,11 @@ async def tus_create(request: Request):
         raise HTTPException(
             status_code=400,
             detail=f"Unsupported file type. Allowed: {', '.join(ALLOWED_EXTENSIONS.keys())}",
+        )
+    if ext in {".html", ".htm"} and upload_length > MAX_HTML_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail=f"HTML uploads exceed the {MAX_HTML_SIZE // (1024 * 1024)} MiB limit",
         )
 
     kb_id = metadata.get("knowledge_base_id", "").strip()
@@ -406,42 +462,53 @@ async def tus_patch(upload_id: str, request: Request):
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid Upload-Offset")
 
-    if client_offset != upload.upload_offset:
-        raise HTTPException(status_code=409, detail="Offset mismatch")
+    # TUS offsets are compare-and-append state. Serialize the whole operation,
+    # including finalization, so concurrent PATCH requests cannot both pass the
+    # same offset check and append the declared length twice.
+    async with upload.lock:
+        # Another PATCH may have finalized and removed this upload while this
+        # request waited for the per-upload lock.
+        if _uploads.get(upload_id) is not upload:
+            raise HTTPException(status_code=404, detail="Upload not found")
 
-    # Hard ceiling on how many bytes this PATCH can write — never let the
-    # client exceed Upload-Length, regardless of streamed body size.
-    remaining = upload.upload_length - upload.upload_offset
-    result = await _drain_to_temp(request, upload.temp_path, remaining)
-    upload.upload_offset += result.bytes_written
-    upload.last_activity = time.time()
+        if client_offset != upload.upload_offset:
+            raise HTTPException(status_code=409, detail="Offset mismatch")
 
-    if result.overflow:
-        raise HTTPException(status_code=413, detail="Body exceeds declared Upload-Length")
+        upload.last_activity = time.time()
 
-    if result.disconnected:
-        # Client hung up mid-PATCH. Bytes received so far are persisted and the
-        # offset advanced, so the client resumes from HEAD + the next PATCH.
-        return Response(
-            status_code=204,
-            headers=_tus_headers({"Upload-Offset": str(upload.upload_offset)}),
-        )
+        # Hard ceiling on how many bytes this PATCH can write — never let the
+        # client exceed Upload-Length, regardless of streamed body size.
+        remaining = upload.upload_length - upload.upload_offset
+        result = await _drain_to_temp(request, upload.temp_path, remaining)
+        upload.upload_offset += result.bytes_written
+        upload.last_activity = time.time()
 
-    if upload.upload_offset > upload.upload_length:
-        upload.temp_path.unlink(missing_ok=True)
-        _uploads.pop(upload_id, None)
-        raise HTTPException(status_code=400, detail="Upload exceeded declared length")
+        if result.overflow:
+            raise HTTPException(status_code=413, detail="Body exceeds declared Upload-Length")
 
-    headers = _tus_headers({"Upload-Offset": str(upload.upload_offset)})
+        if result.disconnected:
+            # Client hung up mid-PATCH. Bytes received so far are persisted and the
+            # offset advanced, so the client resumes from HEAD + the next PATCH.
+            return Response(
+                status_code=204,
+                headers=_tus_headers({"Upload-Offset": str(upload.upload_offset)}),
+            )
 
-    if upload.upload_offset == upload.upload_length:
-        try:
-            document_id = await _finalize(upload, request.app.state)
-            headers["X-Document-Id"] = document_id
-        except HTTPException:
-            raise
-        except Exception:
-            logger.exception("TUS finalization failed for upload %s", upload_id)
-            raise HTTPException(status_code=500, detail="Finalization failed")
+        if upload.upload_offset > upload.upload_length:
+            upload.temp_path.unlink(missing_ok=True)
+            _uploads.pop(upload_id, None)
+            raise HTTPException(status_code=400, detail="Upload exceeded declared length")
 
-    return Response(status_code=204, headers=headers)
+        headers = _tus_headers({"Upload-Offset": str(upload.upload_offset)})
+
+        if upload.upload_offset == upload.upload_length:
+            try:
+                document_id = await _finalize(upload, request.app.state)
+                headers["X-Document-Id"] = document_id
+            except HTTPException:
+                raise
+            except Exception:
+                logger.exception("TUS finalization failed for upload %s", upload_id)
+                raise HTTPException(status_code=500, detail="Finalization failed")
+
+        return Response(status_code=204, headers=headers)

@@ -6,15 +6,17 @@ import re
 import uuid
 from pathlib import Path
 
-from fastapi import HTTPException
-
 from config import settings
 from domain.watcher import mark_written
-from infra.db.sqlite import SQLiteDocumentRepository, SQLiteChunkRepository, serialized_write
+from fastapi import HTTPException
+from infra.db.sqlite import SQLiteChunkRepository, SQLiteDocumentRepository, serialized_write
 from services.chunker import chunk_text
 from services.webclip_assets import materialize_webclip_assets
-from .base import UserService, KBService, DocumentService, ServiceFactory
-from .parsers import parse_frontmatter, title_from_filename, extract_tags
+
+from .base import DocumentService, KBService, ServiceFactory, UserService
+from .highlight_merge import merge_highlights_by_id
+from .parsers import extract_tags, parse_frontmatter, title_from_filename
+from .types import MAX_TEXT_CONTENT_BYTES
 
 
 class LocalUserService(UserService):
@@ -180,22 +182,6 @@ def _merge_text_anchors(payloads: list[dict], mapped) -> list[dict]:
     return out
 
 
-def _merge_highlights_by_id(existing: list[dict], incoming: list[dict]) -> list[dict]:
-    merged: dict[str, dict] = {}
-    order: list[str] = []
-    for highlight in [*existing, *incoming]:
-        if not isinstance(highlight, dict):
-            continue
-        highlight_id = highlight.get("id")
-        if not highlight_id:
-            continue
-        if highlight_id not in merged:
-            order.append(highlight_id)
-        current = merged.get(highlight_id, {})
-        merged[highlight_id] = {**current, **highlight}
-    return [merged[highlight_id] for highlight_id in order]
-
-
 class LocalDocumentService(DocumentService):
 
     def __init__(self, db, user_id: str):
@@ -233,6 +219,9 @@ class LocalDocumentService(DocumentService):
         return {"url": f"{api_url}/v1/files/{relative}"}
 
     async def create_note(self, kb_id: str, filename: str, path: str, content: str) -> dict:
+        if len(content.encode("utf-8")) > MAX_TEXT_CONTENT_BYTES:
+            raise HTTPException(status_code=413, detail="Text content exceeds the 10 MiB limit")
+
         meta = parse_frontmatter(content)
         title = meta.get("title", "").strip() or title_from_filename(filename)
         tags = extract_tags(meta)
@@ -331,7 +320,7 @@ class LocalDocumentService(DocumentService):
             current = await self.doc_repo.get_highlights(parent_id)
             current_highlights = current["highlights"] if current else []
             enriched = _merge_text_anchors(highlights or [], result.highlights)
-            merged_highlights = _merge_highlights_by_id(current_highlights, enriched)
+            merged_highlights = merge_highlights_by_id(current_highlights, enriched)
             if merged_highlights or current_highlights:
                 await self.doc_repo.replace_highlights(parent_id, self.user_id, merged_highlights)
 
@@ -436,6 +425,9 @@ class LocalDocumentService(DocumentService):
         )
 
     async def update_content(self, doc_id: str, content: str) -> dict | None:
+        if len(content.encode("utf-8")) > MAX_TEXT_CONTENT_BYTES:
+            raise HTTPException(status_code=413, detail="Text content exceeds the 10 MiB limit")
+
         doc = await self.doc_repo.get(doc_id)
         if not doc:
             return None

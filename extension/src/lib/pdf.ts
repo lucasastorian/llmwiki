@@ -13,6 +13,23 @@ export function hasPdfSuffix(url: string, title: string | null | undefined): boo
   return title?.toLowerCase().trim().endsWith(".pdf") ?? false;
 }
 
+/**
+ * Normalize a PDF tab URL for lookup and deduplication without stripping query
+ * parameters. Signed and authenticated PDF links often depend on their full
+ * query string; only the viewer-only fragment (for example #page=12) is safe
+ * to remove.
+ */
+export function normalizePdfSourceUrl(href: string): string {
+  const value = href.trim();
+  try {
+    const url = new URL(value);
+    url.hash = "";
+    return url.toString();
+  } catch {
+    return value.split("#", 1)[0];
+  }
+}
+
 function pathnameOf(url: string): string {
   try {
     return new URL(url).pathname.toLowerCase();

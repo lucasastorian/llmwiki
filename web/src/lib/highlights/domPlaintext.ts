@@ -2,7 +2,8 @@
 // cumulative offsets, so highlights round-trip between character offsets and
 // live DOM Ranges. KaTeX subtrees are skipped — KaTeX emits every formula
 // twice (MathML + HTML spans), which would double-count text and destabilize
-// offsets across renders.
+// offsets across renders. Quiz widgets are skipped too — their DOM mutates on
+// interaction (hints, explanations), which would shift every offset after them.
 
 interface TextSegment {
   node: Text
@@ -14,7 +15,7 @@ export interface DomPlaintext {
   segments: TextSegment[]
 }
 
-const SKIP_SELECTOR = '.katex'
+const SKIP_SELECTOR = '.katex, [data-quiz-block]'
 
 export function domPlaintextFromContainer(root: HTMLElement): DomPlaintext {
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {

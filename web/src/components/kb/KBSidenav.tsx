@@ -5,7 +5,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import {
   ChevronRight, FileText, NotepadText, Library,
   Upload, BookOpen, ArrowUpRight, Search as SearchIcon,
-  Lightbulb, Box, ScrollText, Network, Folder, Check, Lock,
+  Lightbulb, Box, ScrollText, Network, Folder, Check, Lock, Plug,
   PanelLeftClose, PanelLeftOpen,
 } from 'lucide-react'
 import {
@@ -16,6 +16,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { cn } from '@/lib/utils'
 import { WikiSelector } from '@/components/kb/WikiSelector'
 import { SidenavUserMenu } from '@/components/kb/SidenavUserMenu'
+import { openMcpConnectionDock } from '@/components/connections/McpConnectionDock'
 import { apiFetch } from '@/lib/api'
 import { useUserStore } from '@/stores'
 import type { DocumentListItem, WikiNode } from '@/lib/types'
@@ -29,6 +30,7 @@ interface Usage {
 }
 
 const SIDENAV_COLLAPSED_KEY = 'kb-sidenav-collapsed'
+const isLocal = process.env.NEXT_PUBLIC_MODE === 'local'
 
 // Only normalize all-lowercase names (file slugs); preserve intentional casing like "GRPO" or "LoRA".
 function toDisplayTitle(title: string): string {
@@ -310,13 +312,19 @@ export function KBSidenav({
           )}
           <CommandSeparator />
           <CommandGroup heading="Actions">
+            {!isLocal && (
+              <CommandItem onSelect={() => { setSearchOpen(false); openMcpConnectionDock() }}>
+                <Plug className="size-3.5 mr-2 opacity-50" />
+                Connect AI
+              </CommandItem>
+            )}
             <CommandItem onSelect={() => { setSearchOpen(false); onFilesToggle() }}>
               <Folder className="size-3.5 mr-2 opacity-50" />
-              Browse Files
+              Browse files
             </CommandItem>
             <CommandItem onSelect={() => { setSearchOpen(false); onUpload() }}>
               <Upload className="size-3.5 mr-2 opacity-50" />
-              Upload Files
+              Upload files
             </CommandItem>
           </CommandGroup>
         </CommandList>
@@ -354,15 +362,26 @@ export function KBSidenav({
           <div className="px-2 py-4 text-center">
             <BookOpen className="size-6 text-muted-foreground/20 mx-auto mb-2" />
             <p className="text-xs text-muted-foreground mb-2">No wiki yet</p>
-            <a
-              href="https://claude.ai"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
-            >
-              Open Claude
-              <ArrowUpRight className="size-3" />
-            </a>
+            {isLocal ? (
+              <a
+                href="https://claude.ai"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+              >
+                Open Claude
+                <ArrowUpRight className="size-3" />
+              </a>
+            ) : (
+              <button
+                type="button"
+                onClick={openMcpConnectionDock}
+                className="inline-flex items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground"
+              >
+                Connect AI
+                <Plug className="size-3" />
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -772,4 +791,3 @@ function PageUsageBar() {
     </>
   )
 }
-

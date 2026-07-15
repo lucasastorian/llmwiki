@@ -14,6 +14,8 @@ from pathlib import Path
 
 import aiosqlite
 
+from services.highlight_merge import preserve_replies
+
 logger = logging.getLogger(__name__)
 
 _SCHEMA_PATH = Path(__file__).parent.parent.parent.parent / "shared" / "sqlite_schema.sql"
@@ -173,10 +175,10 @@ class SQLiteDocumentRepository:
 
         await self._db.execute(
             "INSERT INTO documents (id, user_id, filename, title, path, relative_path, source_kind, "
-            "file_type, status, content, tags, version, document_number) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, 'md', 'ready', ?, ?, 0, ?)",
+            "file_type, file_size, status, content, tags, version, document_number) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 'md', ?, 'ready', ?, ?, 0, ?)",
             (doc_id, user_id, filename, title, path, relative_path, source_kind,
-             content, json.dumps(tags), doc_number),
+             len(content.encode("utf-8")), content, json.dumps(tags), doc_number),
         )
         await self._db.commit()
         return await self.get(doc_id)
@@ -184,10 +186,10 @@ class SQLiteDocumentRepository:
     @_serialized
     async def update_content(self, doc_id: str, user_id: str, content: str) -> dict | None:
         cursor = await self._db.execute(
-            "UPDATE documents SET content = ?, version = version + 1, "
+            "UPDATE documents SET content = ?, file_size = ?, version = version + 1, "
             "updated_at = datetime('now') WHERE id = ? "
             "RETURNING id, content, version",
-            (content, doc_id),
+            (content, len(content.encode("utf-8")), doc_id),
         )
         row = await cursor.fetchone()
         await self._db.commit()
@@ -296,6 +298,7 @@ class SQLiteDocumentRepository:
                 await self._db.rollback()
                 return {"conflict": True}
             old_highlights = self._parse_highlights(existing[1])
+            preserve_replies(highlights, old_highlights)
 
             payload = json.dumps(highlights)
             cursor = await self._db.execute(
@@ -347,6 +350,7 @@ class SQLiteDocumentRepository:
                 return {"conflict": True}
 
             current = self._parse_highlights(highlights_raw)
+            preserve_replies([highlight], current)
             replaced = False
             next_list: list[dict] = []
             for h in current:

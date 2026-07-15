@@ -1,5 +1,6 @@
 from typing import Literal
 
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -26,6 +27,10 @@ class Settings(BaseSettings):
     AWS_REGION: str = "us-east-1"
     S3_BUCKET: str = "supavault-documents"
     MISTRAL_API_KEY: str = ""
+    CLOUDFLARE_ACCOUNT_ID: str = ""
+    CLOUDFLARE_AI_TOKEN: str = ""
+    CLOUDFLARE_AI_GATEWAY_ID: str = ""
+    QUIZ_GRADE_DAILY_LIMIT: int = Field(default=100, ge=1, le=10_000)
     PDF_BACKEND: str = "opendataloader"  # "opendataloader" or "mistral"
     STAGE: str = "dev"
     APP_URL: str = "http://localhost:3000"
@@ -42,6 +47,35 @@ class Settings(BaseSettings):
     GLOBAL_MAX_USERS: int = 10_000
 
     SENTRY_DSN: str = ""
+
+    @model_validator(mode="after")
+    def require_isolated_parser_for_hosted_uploads(self) -> "Settings":
+        """Never let the hosted upload service fall back to local parsing.
+
+        ``main.lifespan`` constructs S3 and OCR services when the access key
+        and bucket are configured. Validate the matching condition while
+        settings are loaded, before startup can initialize JWKS, Postgres, or
+        any other network client.
+        """
+        hosted_uploads_enabled = bool(self.AWS_ACCESS_KEY_ID and self.S3_BUCKET)
+        if (
+            self.MODE == "hosted"
+            and hosted_uploads_enabled
+            and not self.CONVERTER_URL.strip()
+        ):
+            raise ValueError(
+                "CONVERTER_URL is required when hosted uploads are enabled; "
+                "the hosted API must not parse uploaded PDF or Office files in-process"
+            )
+        if (
+            self.MODE == "hosted"
+            and hosted_uploads_enabled
+            and not self.CONVERTER_SECRET.strip()
+        ):
+            raise ValueError(
+                "CONVERTER_SECRET is required when hosted uploads are enabled"
+            )
+        return self
 
     @property
     def listen_database_url(self) -> str:

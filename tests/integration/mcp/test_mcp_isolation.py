@@ -15,6 +15,7 @@ import asyncpg
 import pytest
 
 from vaultfs.postgres import PostgresVaultFS
+from vaultfs.base import StorageQuotaExceededError
 import db as mcp_db
 
 USER_A_ID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
@@ -301,6 +302,83 @@ class TestWriteIsolation:
         assert rows == []
 
 
+class TestTextStorageAccounting:
+    async def test_create_tracks_utf8_file_size(self, fs_alice, pg_pool):
+        doc = await fs_alice.create_document(
+            str(KB_A_ID), "unicode.md", "Unicode", "/wiki/", "md", "hé", ["t"],
+        )
+
+        assert await pg_pool.fetchval(
+            "SELECT file_size FROM documents WHERE id = $1",
+            doc["id"],
+        ) == len("hé".encode("utf-8"))
+
+    async def test_create_rejects_quota_without_inserting(self, fs_alice, pg_pool):
+        await pg_pool.execute(
+            "UPDATE users SET storage_limit_bytes = 3 WHERE id = $1",
+            USER_A_ID,
+        )
+
+        with pytest.raises(StorageQuotaExceededError):
+            await fs_alice.create_document(
+                str(KB_A_ID), "too-large.md", "Too Large", "/wiki/", "md", "four", ["t"],
+            )
+
+        assert await pg_pool.fetchval(
+            "SELECT COUNT(*) FROM documents WHERE filename = 'too-large.md'",
+        ) == 0
+
+    async def test_update_quota_failure_is_atomic(self, fs_alice, pg_pool):
+        await pg_pool.execute(
+            "UPDATE documents SET file_size = 1 WHERE id = $1",
+            DOC_A_ID,
+        )
+        await pg_pool.execute(
+            "UPDATE users SET storage_limit_bytes = 2 WHERE id = $1",
+            USER_A_ID,
+        )
+
+        with pytest.raises(StorageQuotaExceededError):
+            await fs_alice.update_document(DOC_A_ID, "abc")
+
+        row = await pg_pool.fetchrow(
+            "SELECT content, file_size FROM documents WHERE id = $1",
+            DOC_A_ID,
+        )
+        assert dict(row) == {"content": "Alice secret", "file_size": 1}
+
+
+class TestReplyIsolation:
+    """add_highlight_reply is scoped by user_id in both the lock and the write."""
+
+    REPLY = {"id": "r-test", "author": "agent", "text": "reply", "createdAt": "2026-07-09T00:00:00Z"}
+
+    async def _seed_highlight(self, pg_pool, doc_id: str) -> None:
+        await pg_pool.execute(
+            "UPDATE documents SET highlights = $1::jsonb WHERE id = $2",
+            '[{"id": "h1", "type": "text", "comment": "a note", '
+            '"textAnchor": {"textStart": 0, "textEnd": 4, "textContent": "text"}}]',
+            doc_id,
+        )
+
+    async def test_reply_to_other_tenant_highlight_returns_none(self, fs_alice, pg_pool):
+        await self._seed_highlight(pg_pool, DOC_B_ID)
+        result = await fs_alice.add_highlight_reply(str(DOC_B_ID), "h1", dict(self.REPLY))
+        assert result is None
+        row = await pg_pool.fetchrow("SELECT highlights, version FROM documents WHERE id = $1", DOC_B_ID)
+        assert "r-test" not in (row["highlights"] or "")
+        assert row["version"] == 1
+
+    async def test_reply_to_own_highlight_persists_and_bumps_version(self, fs_bob, pg_pool):
+        await self._seed_highlight(pg_pool, DOC_B_ID)
+        result = await fs_bob.add_highlight_reply(str(DOC_B_ID), "h1", dict(self.REPLY))
+        assert result is not None
+        assert result["replies"][0]["id"] == "r-test"
+        row = await pg_pool.fetchrow("SELECT highlights, version FROM documents WHERE id = $1", DOC_B_ID)
+        assert "r-test" in row["highlights"]
+        assert row["version"] == 2
+
+
 class TestReferenceIsolation:
     """Reference mutations now use scoped_execute (RLS-enforced)."""
 
@@ -330,6 +408,22 @@ class TestReferenceIsolation:
         )
         assert row is None
 
+    async def test_replace_references_is_bulk_and_scoped(self, fs_alice, pg_pool):
+        await fs_alice.replace_references(
+            str(DOC_A_ID),
+            str(KB_A_ID),
+            [(str(DOC_A2_ID), "links_to", None)],
+        )
+        rows = await pg_pool.fetch(
+            "SELECT reference_type FROM document_references WHERE source_document_id = $1",
+            DOC_A_ID,
+        )
+        assert [row["reference_type"] for row in rows] == ["links_to"]
+        bob = await pg_pool.fetchrow(
+            "SELECT id FROM document_references WHERE id = $1", REF_B_ID,
+        )
+        assert bob is not None
+
 
 class TestListDocumentsWithContentIsolation:
 
@@ -342,6 +436,16 @@ class TestListDocumentsWithContentIsolation:
         assert len(docs) == 2
         contents = [d.get("content") for d in docs if d.get("content")]
         assert "Alice secret" in contents
+
+    async def test_path_filter_and_content_budget_are_applied_in_postgres(self, fs_alice):
+        docs = await fs_alice.list_documents_with_content(
+            str(KB_A_ID),
+            path_glob="/wiki/**",
+            content_limit=5,
+        )
+        assert [doc["filename"] for doc in docs] == ["notes.md"]
+        assert docs[0]["content"] == "Alice"
+        assert docs[0]["content_truncated"] is True
 
 
 class TestPageIsolation:
@@ -363,6 +467,13 @@ class TestPageIsolation:
     async def test_get_all_pages_own_doc_returns_data(self, fs_alice):
         pages = await fs_alice.get_all_pages(str(DOC_A_ID))
         assert len(pages) == 1
+
+    async def test_get_pages_for_batch_is_bounded_and_scoped(self, fs_alice):
+        pages = await fs_alice.get_pages_for_batch(str(DOC_A_ID), 5)
+        assert len(pages) == 1
+        assert pages[0]["content"] == "Alice"
+        assert pages[0]["content_truncated"] is True
+        assert await fs_alice.get_pages_for_batch(str(DOC_B_ID), 5) == []
 
 
 class TestGraphQueryIsolation:
@@ -387,6 +498,13 @@ class TestGraphQueryIsolation:
         refs = await fs_alice.get_forward_references(str(DOC_A_ID))
         assert len(refs) == 1
         assert refs[0]["filename"] == "source.pdf"
+
+    async def test_get_reference_edges_returns_only_own_kb(self, fs_alice):
+        edges = await fs_alice.get_reference_edges(str(KB_A_ID))
+        assert [(edge["source_id"], edge["target_id"]) for edge in edges] == [
+            (str(DOC_A_ID), str(DOC_A2_ID))
+        ]
+        assert await fs_alice.get_reference_edges(str(KB_B_ID)) == []
 
     async def test_find_uncited_sources_other_kb_returns_empty(self, fs_alice):
         sources = await fs_alice.find_uncited_sources(str(KB_B_ID))

@@ -4,18 +4,20 @@ import * as React from 'react'
 import { useSearchParams } from 'next/navigation'
 import dynamic from 'next/dynamic'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Upload as UploadIcon, BookOpen, ArrowUpRight, Loader2 } from 'lucide-react'
+import { Upload as UploadIcon, BookOpen, ArrowUpRight, Loader2, PlugZap } from 'lucide-react'
 import { useUserStore, useUploadStore } from '@/stores'
 import { useKBDocuments } from '@/hooks/useKBDocuments'
 import { apiFetch } from '@/lib/api'
 import { toast } from 'sonner'
 import { KBSidenav } from '@/components/kb/KBSidenav'
+import { openMcpConnectionDock } from '@/components/connections/McpConnectionDock'
 import { SelectionActionBar } from '@/components/kb/SelectionActionBar'
 import { WikiContent } from '@/components/wiki/WikiContent'
 import type { DocumentListItem, WikiNode } from '@/lib/types'
 import type { ViewMode } from '@/components/kb/viewMode'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+const isLocal = process.env.NEXT_PUBLIC_MODE === 'local'
 
 const FilesGrid = dynamic(() => import('@/components/kb/FilesGrid').then((mod) => mod.FilesGrid), {
   ssr: false,
@@ -920,7 +922,7 @@ export function KBDetail({ kbId, kbSlug, kbName, viewMode, routeFilesPath }: Pro
                 <div className="text-center max-w-sm">
                   <h3 className="text-base font-medium mb-1.5">No wiki yet</h3>
                   <p className="text-sm text-muted-foreground leading-relaxed">
-                    Add some sources, then ask Claude to compile a wiki from them.
+                    Connect an AI to create the first pages, or add sources for it to work from.
                   </p>
                 </div>
                 <div className="flex items-center gap-3 mt-2">
@@ -929,17 +931,28 @@ export function KBDetail({ kbId, kbSlug, kbName, viewMode, routeFilesPath }: Pro
                     className="inline-flex items-center gap-2 rounded-full bg-foreground text-background px-5 py-2 text-sm font-medium hover:opacity-90 transition-opacity cursor-pointer"
                   >
                     <UploadIcon className="size-3.5 opacity-60" />
-                    Upload Sources
+                    Upload sources
                   </button>
-                  <a
-                    href="https://claude.ai"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-2 rounded-full border border-border px-5 py-2 text-sm font-medium hover:bg-accent transition-colors"
-                  >
-                    Open Claude
-                    <ArrowUpRight className="size-3.5 opacity-60" />
-                  </a>
+                  {isLocal ? (
+                    <a
+                      href="https://claude.ai"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-2 rounded-full border border-border px-5 py-2 text-sm font-medium hover:bg-accent transition-colors"
+                    >
+                      Open Claude
+                      <ArrowUpRight className="size-3.5 opacity-60" />
+                    </a>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={openMcpConnectionDock}
+                      className="inline-flex items-center gap-2 rounded-full border border-border px-5 py-2 text-sm font-medium hover:bg-accent transition-colors"
+                    >
+                      Connect AI
+                      <PlugZap className="size-3.5 text-accent-blue" />
+                    </button>
+                  )}
                 </div>
               </motion.div>
             )}
