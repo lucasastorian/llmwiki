@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/lucasastorian-llmwiki-badge.png)](https://mseep.ai/app/lucasastorian-llmwiki)
+
 # LLM Wiki
 
 **An autonomous, self-maintaining personal Wikipedia built and maintained by AI.**
