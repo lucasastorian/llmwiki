@@ -18,7 +18,7 @@ from services.highlight_merge import preserve_replies
 
 logger = logging.getLogger(__name__)
 
-_SCHEMA_PATH = Path(__file__).parent.parent.parent.parent / "shared" / "sqlite_schema.sql"
+_SCHEMA_PATH = Path(__file__).parent / "sqlite_schema.sql"
 
 _DOC_COLUMNS = (
     "id, user_id, filename, title, path, relative_path, source_kind, "
