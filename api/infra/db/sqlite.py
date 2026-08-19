@@ -55,6 +55,29 @@ def rows_to_dicts(cursor: aiosqlite.Cursor, rows: list[tuple]) -> list[dict]:
     return [_row_to_dict(cursor, r) for r in rows]
 
 
+def _fts5_safe_query(query: str) -> str:
+    """Make a plain keyword query safe for FTS5 MATCH.
+
+    FTS5 gives bare punctuation query syntax meaning: 'agentic-os' parses as a
+    column filter ("no such column: os"), 'a:b' likewise, 'AND'/'OR'/'NOT' are
+    operators. Users of the search tool type plain keywords, so quote every
+    token — implicit AND between quoted tokens is preserved, and a trailing '*'
+    stays outside the quotes so prefix queries keep working. A query that
+    already contains a double quote is assumed to be deliberate FTS5 phrase
+    syntax and passes through untouched. (Same helper in mcp/vaultfs/sqlite.py.)
+    """
+    if '"' in query:
+        return query
+    quoted = []
+    for token in query.split():
+        prefix = token.endswith("*")
+        body = token[:-1] if prefix else token
+        if not body:
+            continue
+        quoted.append('"' + body + '"' + ("*" if prefix else ""))
+    return " ".join(quoted)
+
+
 # Local-mode requests share one aiosqlite connection, so a committing write
 # in one request could otherwise flush another's open transaction. This lock
 # serializes write spans; reads don't take it.
@@ -754,7 +777,7 @@ class SQLiteChunkRepository:
             "JOIN documents d ON dc.document_id = d.id "
             "WHERE chunks_fts MATCH ? AND d.status != 'failed' "
         )
-        params: list = [query]
+        params: list = [_fts5_safe_query(query)]
 
         if path_filter == "wiki":
             sql += "AND d.source_kind = 'wiki' "

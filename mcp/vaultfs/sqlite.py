@@ -36,6 +36,29 @@ No sources ingested yet - add your first source to get started.\
 """
 
 
+def _fts5_safe_query(query: str) -> str:
+    """Make a plain keyword query safe for FTS5 MATCH.
+
+    FTS5 gives bare punctuation query syntax meaning: 'agentic-os' parses as a
+    column filter ("no such column: os"), 'a:b' likewise, 'AND'/'OR'/'NOT' are
+    operators. Users of the search tool type plain keywords, so quote every
+    token — implicit AND between quoted tokens is preserved, and a trailing '*'
+    stays outside the quotes so prefix queries keep working. A query that
+    already contains a double quote is assumed to be deliberate FTS5 phrase
+    syntax and passes through untouched. (Same helper in api/infra/db/sqlite.py.)
+    """
+    if '"' in query:
+        return query
+    quoted = []
+    for token in query.split():
+        prefix = token.endswith("*")
+        body = token[:-1] if prefix else token
+        if not body:
+            continue
+        quoted.append('"' + body + '"' + ("*" if prefix else ""))
+    return " ".join(quoted)
+
+
 def _rows_to_dicts(cursor: aiosqlite.Cursor, rows: list[tuple]) -> list[dict]:
     cols = [d[0] for d in cursor.description]
     results = []
@@ -480,6 +503,7 @@ class SqliteVaultFS(VaultFS):
         scope: str = "all",
     ) -> list[dict]:
         db = self._db_or_raise()
+        fts_query = _fts5_safe_query(query)
         # SQLite's chunks_fts only indexes `content` (which already includes
         # annotations after sync). Scope filtering is a Python-side
         # substring check; to avoid scope filters returning fewer rows than
@@ -497,7 +521,7 @@ class SqliteVaultFS(VaultFS):
             "JOIN documents d ON dc.document_id = d.id "
             "WHERE chunks_fts MATCH ? AND d.status != 'failed' "
         )
-        params: list = [query]
+        params: list = [fts_query]
         if annotated_only:
             sql += "AND dc.has_highlight = 1 "
         if path_filter == "wiki":
