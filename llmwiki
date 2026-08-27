@@ -26,6 +26,50 @@ API_DIR = REPO_ROOT / "api"
 MCP_DIR = REPO_ROOT / "mcp"
 WEB_DIR = REPO_ROOT / "web"
 
+# Keep in sync with domain.file_types.SIMPLE_TEXT_TYPES
+TEXT_TYPES = {
+    "md", "txt", "csv", "svg", "json", "xml",
+    "yaml", "yml", "toml", "ini", "cfg", "rst", "tex", "latex",
+}
+
+
+_chunker = None
+
+
+def _load_chunker():
+    """Load mcp/services/chunker.py by path, not as `services.chunker`.
+
+    `api/services` and `mcp/services` share a top-level package name, so a
+    plain import gets whichever landed in sys.modules first — and only the
+    mcp copy has the SQLite writers.
+    """
+    global _chunker
+    if _chunker is None:
+        import importlib.util
+        path = MCP_DIR / "services" / "chunker.py"
+        spec = importlib.util.spec_from_file_location("llmwiki_chunker", path)
+        _chunker = importlib.util.module_from_spec(spec)
+        # Must be in sys.modules before exec: the module uses postponed
+        # annotations, and @dataclass resolves them via sys.modules[__module__].
+        sys.modules[spec.name] = _chunker
+        spec.loader.exec_module(_chunker)
+    return _chunker
+
+
+def _chunk_document(conn, doc_id: str, content: str) -> int:
+    """Build search chunks for an indexed text document. Returns chunk count.
+
+    Without this the index lists documents that no search can reach: MCP
+    `search` matches on `chunks_fts`, which the triggers only populate from
+    `document_chunks`. The API server's reconcile pass backfills the same
+    rows at startup, but `llmwiki mcp` never runs it, so a CLI-built index
+    used through MCP alone stayed permanently unsearchable.
+    """
+    chunker = _load_chunker()
+    chunks = chunker.chunk_text(content)
+    chunker.store_chunks_sqlite_sync(conn, doc_id, chunks)
+    return len(chunks)
+
 
 def _sanitize_name(name: str) -> str:
     slug = name.lower().strip()
@@ -69,14 +113,20 @@ def cmd_init(workspace: str) -> None:
 
     # Scaffold the wiki overview. Activity is captured in knowledge_base_events.
     doc1_id = str(uuid.uuid4())
+    overview_content = (
+        f"This wiki tracks research on {ws_name}.\n\n"
+        "## Key Findings\n\nNo sources ingested yet."
+    )
     conn.execute(
         "INSERT INTO documents (id, user_id, filename, title, path, relative_path, source_kind, "
-        "file_type, status, content, tags, version, document_number) "
+        "file_type, status, content, tags, version, parser, document_number) "
         "VALUES (?, ?, 'overview.md', 'Overview', '/wiki/', 'wiki/overview.md', 'wiki', "
-        "'md', 'ready', ?, '[]', 0, 1)",
-        (doc1_id, user_id,
-         f"This wiki tracks research on {ws_name}.\n\n## Key Findings\n\nNo sources ingested yet."),
+        "'md', 'ready', ?, '[]', 0, 'text', 1)",
+        (doc1_id, user_id, overview_content),
     )
+    # _index_existing_files skips wiki/overview.md as already-indexed, so its
+    # chunks have to be built here or the scaffold page is never searchable.
+    _chunk_document(conn, doc1_id, overview_content)
 
     conn.commit()
     conn.close()
@@ -106,6 +156,7 @@ def _index_existing_files(ws: Path, db_path: Path, user_id: str, ws_id: str) -> 
 
     ignore_dirs = {".llmwiki", ".git", "node_modules", "__pycache__", ".venv", "venv"}
     indexed = 0
+    chunked = 0
 
     conn = sqlite3.connect(str(db_path))
 
@@ -142,13 +193,8 @@ def _index_existing_files(ws: Path, db_path: Path, user_id: str, ws_id: str) -> 
             stem = filename.rsplit(".", 1)[0] if "." in filename else filename
             title = stem.replace("-", " ").replace("_", " ").strip().title()
 
-            # Keep in sync with domain.file_types.SIMPLE_TEXT_TYPES
             content = None
-            text_types = {
-                "md", "txt", "csv", "svg", "json", "xml",
-                "yaml", "yml", "toml", "ini", "cfg", "rst", "tex", "latex",
-            }
-            if ext in text_types:
+            if ext in TEXT_TYPES:
                 try:
                     content = full.read_text(encoding="utf-8", errors="replace")
                 except Exception:
@@ -157,18 +203,26 @@ def _index_existing_files(ws: Path, db_path: Path, user_id: str, ws_id: str) -> 
             doc_id = str(uuid.uuid4())
             content_hash = hashlib.sha256(full.read_bytes()).hexdigest() if full.stat().st_size < 100_000_000 else None
 
+            # `parser` doubles as the chunked-marker, so reconcile skips text
+            # docs the CLI already chunked (including ones that legitimately
+            # yield zero chunks) and still picks up PDFs/HTML, which need an
+            # extraction backend this indexer does not run.
+            parser = "text" if content is not None else None
+
             try:
                 conn.execute(
                     "INSERT INTO documents (id, user_id, filename, title, path, relative_path, "
                     "source_kind, file_type, file_size, status, content, tags, version, "
-                    "content_hash, mtime_ns, last_indexed_at, document_number) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready', ?, '[]', 0, ?, ?, datetime('now'), "
+                    "content_hash, mtime_ns, last_indexed_at, parser, document_number) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready', ?, '[]', 0, ?, ?, datetime('now'), ?, "
                     "(SELECT COALESCE(MAX(document_number), 0) + 1 FROM documents))",
                     (doc_id, user_id, filename, title, dir_path, relative,
                      source_kind, ext or "bin", stat.st_size, content,
-                     content_hash, int(stat.st_mtime_ns)),
+                     content_hash, int(stat.st_mtime_ns), parser),
                 )
                 indexed += 1
+                if content:
+                    chunked += _chunk_document(conn, doc_id, content)
             except Exception as e:
                 print(f"  Warning: could not index {relative}: {e}", file=sys.stderr)
 
@@ -176,7 +230,7 @@ def _index_existing_files(ws: Path, db_path: Path, user_id: str, ws_id: str) -> 
     conn.close()
 
     if indexed > 0:
-        print(f"✓ Indexed {indexed} existing file(s)")
+        print(f"✓ Indexed {indexed} existing file(s) — {chunked} search chunk(s)")
 
 
 def cmd_serve(workspace: str, open_browser: bool = True) -> None:

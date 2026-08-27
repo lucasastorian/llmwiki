@@ -4,17 +4,22 @@ Mirrors api/services/chunker.py so MCP-created content shows up in
 keyword search alongside API-created content. Splits content into
 ~512 token chunks with ~128 token overlap, tracking markdown headers
 for breadcrumb context. Persists into `document_chunks` (Postgres via
-asyncpg, SQLite via aiosqlite — chunks_fts is kept in sync by triggers
-in the local schema).
+asyncpg, SQLite via aiosqlite or the stdlib sqlite3 — chunks_fts is kept
+in sync by triggers in the local schema).
 """
+
+from __future__ import annotations
 
 import json
 import logging
 import re
+import sqlite3
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
-import aiosqlite
-import asyncpg
+if TYPE_CHECKING:
+    import aiosqlite
+    import asyncpg
 
 logger = logging.getLogger(__name__)
 
@@ -203,6 +208,30 @@ async def store_chunks_sqlite(
     await db.execute("DELETE FROM document_chunks WHERE document_id = ?", (document_id,))
     if chunks:
         await db.executemany(
+            "INSERT INTO document_chunks "
+            "(document_id, chunk_index, content, source_content, page, start_char, token_count, header_breadcrumb) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                (document_id, c.index, c.content, c.content, c.page, c.start_char, c.token_count,
+                 c.header_breadcrumb)
+                for c in chunks
+            ],
+        )
+
+
+def store_chunks_sqlite_sync(
+    conn: sqlite3.Connection,
+    document_id: str,
+    chunks: list[Chunk],
+) -> None:
+    """Blocking stdlib-sqlite3 variant, for the `llmwiki` CLI indexer.
+
+    Same statements as `store_chunks_sqlite`; the CLI indexes with plain
+    sqlite3 and has no event loop to await on. Caller commits.
+    """
+    conn.execute("DELETE FROM document_chunks WHERE document_id = ?", (document_id,))
+    if chunks:
+        conn.executemany(
             "INSERT INTO document_chunks "
             "(document_id, chunk_index, content, source_content, page, start_char, token_count, header_breadcrumb) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
