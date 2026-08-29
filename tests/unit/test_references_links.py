@@ -98,3 +98,50 @@ def test_non_wiki_and_image_links_are_skipped():
     for content in skipped:
         edges = extract_references(content, "writer-1", "notes/", {}, {}, wiki_map)
         assert edges == [], content
+
+
+def test_latex_is_not_parsed_as_a_link():
+    """A bracket group followed by a parenthesis group also occurs in LaTeX.
+
+    `\\left[\\begin{array}{c} i \\\\ k l \\end{array}\\right](\\mu \\nu)` has the
+    markdown link shape but no link in it. Measured on a 2,222-page maths wiki,
+    33 of 4,460 extracted hrefs were LaTeX of this kind and every one dangled.
+    """
+    extract_references = _references_module().extract_references
+    wiki_map = _wiki_path_map([_ABS, _BARE])
+
+    maths = [
+        r"$\left[\begin{array}{c} i \\ k l \end{array}\right](\mu \nu)$",
+        r"$q_{(\mu \nu) k l}^{(\kappa \lambda)}\left[E\right](\kappa \lambda)$",
+        r"$\left[x\right](+)$",
+    ]
+    for content in maths:
+        assert extract_references(content, "writer-1", "notes/", {}, {}, wiki_map) == [], content
+
+
+def test_tightening_extracts_the_same_path_shaped_targets():
+    """The tightening must not cost a real link.
+
+    Compares the href set the pattern extracts against the untightened pattern
+    on targets that are genuinely paths, so the assertion is about the regex
+    change alone and not about downstream resolution.
+    """
+    import re
+
+    module = _references_module()
+    loose = re.compile(r"(?<!!)\[(?:[^\]]*)\]\(([^)]+)\)")
+    tight = module._WIKI_LINK_RE
+
+    path_shaped = [
+        "[bare](name.md)",
+        "[dotted](./sibling.md)",
+        "[parent](../parent.md)",
+        "[absolute](/wiki/abs.md)",
+        "[anchored](/wiki/abs.md#section)",
+        "[encoded](/wiki/my%20page.md)",
+        "[extensionless](LICENSE)",
+        "[nested](a/b/c/deep.md)",
+    ]
+    for content in path_shaped:
+        assert [m.group(1) for m in tight.finditer(content)] == \
+               [m.group(1) for m in loose.finditer(content)], content

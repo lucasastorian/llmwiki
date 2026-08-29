@@ -10,7 +10,13 @@ import logging
 logger = logging.getLogger(__name__)
 
 _CITATION_RE = re.compile(r"\[\^\d+\]:\s*(.+)$", re.MULTILINE)
-_WIKI_LINK_RE = re.compile(r"(?<!!)\[(?:[^\]]*)\]\(([^)]+)\)")
+# A bracket group followed by a parenthesis group is the markdown link
+# shape, but it is also a common LaTeX shape:
+#     \left[\begin{array}{c} i \\ k l \end{array}\right](\mu \nu)
+# Constrain the target to characters a path can contain, so mathematics is
+# not parsed as a link. Still accepts extensionless targets, anchors and
+# percent-encoded spaces; excludes backslash, whitespace and the rest.
+_WIKI_LINK_RE = re.compile(r"(?<!!)\[(?:[^\]]*)\]\(([A-Za-z0-9._~\-/%#]+)\)")
 
 
 def parse_citation_filename(raw: str) -> tuple[str, int | None]:
