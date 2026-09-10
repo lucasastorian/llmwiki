@@ -28,7 +28,7 @@
     "postcss": "8.5.26",
     "tailwindcss": "4.1.18",
     "typescript": "5.9.3",
-    "vitest": "4.1.7",
+    "vitest": "4.1.11",
     "wxt": "0.19.29"
   },
   "overrides": {
