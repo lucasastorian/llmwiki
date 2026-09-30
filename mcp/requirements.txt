@@ -1,6 +1,6 @@
 mcp[cli]==1.28.1
 asyncpg==0.31.0
-pyjwt[crypto]==2.13.0
+pyjwt[crypto]==2.15.0
 pydantic==2.13.4
 pydantic-settings==2.14.2
 uvicorn[standard]==0.46.0
