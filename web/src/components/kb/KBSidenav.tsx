@@ -1,9 +1,10 @@
 'use client'
 
 import * as React from 'react'
+import Link from 'next/link'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
-  ChevronRight, FileText, NotepadText, Library,
+  ChevronLeft, ChevronRight, FileText, NotepadText, Library,
   Upload, BookOpen, ArrowUpRight, Search as SearchIcon,
   Lightbulb, Box, ScrollText, Network, Folder, Check, ListChecks, Lock, Plug,
   PanelLeftClose, PanelLeftOpen, History,
@@ -165,6 +166,7 @@ export function KBSidenav({
     >
       {collapsed && (
         <div className="flex flex-col items-center gap-1.5 pt-2">
+          <AllWikisLink className="size-8" />
           <button
             onClick={toggleCollapsed}
             title="Expand sidebar"
@@ -224,6 +226,7 @@ export function KBSidenav({
       {!collapsed && (
         <>
           <div className="shrink-0 px-2 pt-2 pb-2 flex items-center gap-1">
+            <AllWikisLink className="size-7 shrink-0" />
             <div className="flex-1 min-w-0">
               <WikiSelector kbId={kbId} kbName={kbName} />
             </div>
@@ -474,6 +477,22 @@ export function KBSidenav({
       </>
       )}
     </div>
+  )
+}
+
+function AllWikisLink({ className }: { className: string }) {
+  return (
+    <Link
+      href="/wikis"
+      title="All wikis"
+      aria-label="All wikis"
+      className={cn(
+        'flex items-center justify-center rounded-md text-muted-foreground/50 hover:text-muted-foreground hover:bg-sidebar-accent transition-colors',
+        className,
+      )}
+    >
+      <ChevronLeft className="size-3.5" />
+    </Link>
   )
 }
 
