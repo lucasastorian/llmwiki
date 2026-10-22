@@ -3,6 +3,7 @@
 import asyncio
 import importlib
 import json
+import logging
 import tempfile
 import threading
 from collections.abc import MutableMapping, MutableSequence, MutableSet
@@ -21,10 +22,13 @@ _AUTH = {"Authorization": f"Bearer {_SECRET}"}
 
 @pytest.fixture
 def converter_module(monkeypatch):
-    Path("/tmp/conversions").mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("CONVERTER_SECRET", _SECRET)
     module = importlib.import_module("converter.main")
     return importlib.reload(module)
+
+
+def test_converter_does_not_log_presigned_request_urls(converter_module):
+    assert logging.getLogger("httpx").level >= logging.WARNING
 
 
 class _FakeStreamResponse:
@@ -555,7 +559,6 @@ async def test_table_text_shares_the_element_budget(monkeypatch, converter_modul
 
 @pytest.fixture
 def pdf_inspector_module(monkeypatch):
-    Path("/tmp/conversions").mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("CONVERTER_SECRET", _SECRET)
     monkeypatch.setenv("PDF_ENGINE", "pdf-inspector")
     module = importlib.import_module("converter.main")
@@ -672,7 +675,28 @@ async def test_temp_directory_cleanup(monkeypatch, converter_module):
     assert len(created_paths) == 1
     temp_path = Path(created_paths[0])
     assert not temp_path.exists()
-    assert not list(Path("/tmp/conversions").glob(f"{temp_path.name}*"))
+
+
+async def test_work_dir_is_created_under_runtime_temp_dir(monkeypatch, converter_module, tmp_path):
+    """A read-only root FS mounts an empty writable temp dir at runtime; nothing pre-created can be assumed."""
+    _install_mocks(monkeypatch, converter_module)
+    monkeypatch.setattr(extraction_service_module.tempfile, "tempdir", str(tmp_path))
+    seen_pdf_paths = []
+    fake_run = process_group.run_in_process_group
+
+    def recording_run(command: list[str], timeout: int, what: str) -> None:
+        seen_pdf_paths.append(Path(command[-2]))
+        fake_run(command, timeout, what)
+
+    monkeypatch.setattr(process_group, "run_in_process_group", recording_run)
+
+    resp = await _post_extract(
+        converter_module,
+        {"source_url": "https://bucket.s3.amazonaws.com/alpha.pdf", "source_ext": "pdf"},
+    )
+
+    assert resp.status_code == 200
+    assert seen_pdf_paths[0].parent.parent == tmp_path
 
 
 async def test_auth_enforcement(monkeypatch, converter_module):

@@ -8,11 +8,7 @@ logger = logging.getLogger(__name__)
 
 class S3Service:
     def __init__(self):
-        self._session = aioboto3.Session(
-            aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
-            aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
-            region_name=settings.AWS_REGION,
-        )
+        self._session = aioboto3.Session(region_name=settings.AWS_REGION)
         self._bucket = settings.S3_BUCKET
 
     async def upload_bytes(self, key: str, data: bytes, content_type: str = "application/octet-stream"):

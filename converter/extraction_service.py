@@ -53,7 +53,7 @@ class ExtractionService:
 
     async def _extract_from_source(self, request: ExtractRequest, ext: str, request_id: str) -> list[dict]:
         try:
-            with tempfile.TemporaryDirectory(dir="/tmp/conversions") as tmpdir:
+            with tempfile.TemporaryDirectory(prefix="conversion-") as tmpdir:
                 source_path = Path(tmpdir) / f"source.{ext}"
                 await self._downloader.download(request.source_url, source_path, request_id)
                 pdf_path = await self._to_pdf(source_path, ext, tmpdir, request_id)

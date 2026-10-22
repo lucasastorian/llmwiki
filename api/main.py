@@ -60,7 +60,7 @@ async def lifespan(app: FastAPI):
 
     s3_service = None
     ocr_service = None
-    if settings.AWS_ACCESS_KEY_ID and settings.S3_BUCKET:
+    if settings.S3_BUCKET:
         from services.s3 import S3Service
         s3_service = S3Service()
     if s3_service:

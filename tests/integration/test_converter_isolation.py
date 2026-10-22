@@ -282,8 +282,10 @@ async def test_converter_extract_retries_capacity_response(monkeypatch):
     assert sleeps == [0.0, 0.0]
 
 
-async def test_converter_extract_requests_are_bounded(monkeypatch):
+@pytest.mark.parametrize("max_concurrency", [1, 2])
+async def test_converter_extract_requests_are_bounded(monkeypatch, max_concurrency):
     ocr = _import_ocr_module(monkeypatch)
+    monkeypatch.setattr(ocr.settings, "CONVERTER_MAX_CONCURRENCY", max_concurrency)
     service = ocr.OCRService(RecordingS3(), pool=None)
     active = 0
     peak = 0
@@ -327,7 +329,7 @@ async def test_converter_extract_requests_are_bounded(monkeypatch):
         for i in range(5)
     ))
 
-    assert peak == converter_client.ConverterClient.MAX_CONCURRENT_REQUESTS == 2
+    assert peak == max_concurrency
 
 
 def test_tus_upload_namespace_isolation():

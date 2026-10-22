@@ -14,10 +14,8 @@ class Settings(BaseSettings):
 
     DATABASE_URL: str = ""
     SUPABASE_URL: str = ""
-    AWS_ACCESS_KEY_ID: str = ""
-    AWS_SECRET_ACCESS_KEY: str = ""
     AWS_REGION: str = "us-east-1"
-    S3_BUCKET: str = "supavault-documents"
+    S3_BUCKET: str = ""
     QUOTA_MAX_STORAGE_BYTES: int = 1_073_741_824
     LOGFIRE_TOKEN: str = ""
     STAGE: str = "dev"

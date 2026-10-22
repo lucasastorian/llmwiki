@@ -14,11 +14,9 @@ logger = logging.getLogger(__name__)
 class ConverterClient:
     MAX_RETRIES = 3
     RETRY_BACKOFF = [1, 2]
-    # The converter's default capacity; 503 retries cover capacity shared across API workers.
-    MAX_CONCURRENT_REQUESTS = 2
 
     def __init__(self) -> None:
-        self._semaphore = asyncio.Semaphore(self.MAX_CONCURRENT_REQUESTS)
+        self._semaphore = asyncio.Semaphore(settings.CONVERTER_MAX_CONCURRENCY)
 
     async def extract(self, source_url: str, ext: str, pdf_upload_url: str | None = None) -> ConverterExtraction:
         """Fetch per-page markdown for a source file (optionally storing its PDF rendition), verifying the request_id echo."""

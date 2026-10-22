@@ -21,7 +21,8 @@ aiosqlite==0.22.1
 watchfiles==1.1.0
 slowapi==0.1.9
 # Pinned to override vulnerable transitive resolutions.
-aiohttp==3.14.3
+aiohttp==3.14.4
+certifi>=2026.10.19
 cryptography==50.0.0
 requests==2.33.1
 urllib3==2.8.0

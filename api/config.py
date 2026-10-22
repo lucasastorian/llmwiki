@@ -15,10 +15,8 @@ class Settings(BaseSettings):
     DIRECT_DATABASE_URL: str = ""
     SUPABASE_URL: str = ""
     LOGFIRE_TOKEN: str = ""
-    AWS_ACCESS_KEY_ID: str = ""
-    AWS_SECRET_ACCESS_KEY: str = ""
     AWS_REGION: str = "us-east-1"
-    S3_BUCKET: str = "supavault-documents"
+    S3_BUCKET: str = ""
     MISTRAL_API_KEY: str = ""
     CLOUDFLARE_ACCOUNT_ID: str = ""
     CLOUDFLARE_AUTH_TOKEN: str = ""
@@ -39,6 +37,8 @@ class Settings(BaseSettings):
 
     CONVERTER_URL: str = ""
     CONVERTER_SECRET: str = ""
+    # Must not exceed the converter's MAX_CONCURRENT_EXTRACTIONS, or excess requests exhaust 503 retries.
+    CONVERTER_MAX_CONCURRENCY: int = Field(default=2, ge=1, le=64)
 
     GLOBAL_OCR_ENABLED: bool = True
     GLOBAL_MAX_PAGES: int = 1_000_000
@@ -49,7 +49,7 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def require_isolated_parser_for_hosted_uploads(self) -> "Settings":
         """Fail at settings load, before any network client starts, if hosted uploads would parse in-process."""
-        hosted_uploads_enabled = bool(self.AWS_ACCESS_KEY_ID and self.S3_BUCKET)
+        hosted_uploads_enabled = bool(self.S3_BUCKET)
         if (
             self.MODE == "hosted"
             and hosted_uploads_enabled

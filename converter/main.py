@@ -10,6 +10,8 @@ from converter.extraction_service import ExtractionService
 from converter.models import ExtractRequest
 
 logging.basicConfig(level=logging.INFO)
+# httpx logs full request URLs at INFO, and ours are presigned S3 capabilities.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 config = ConverterConfig.from_env()
 service = ExtractionService(config)

@@ -47,14 +47,10 @@ No sources ingested yet - add your first source to get started.\
 """
 
 
-def _get_s3_session():
+def _get_s3_session() -> aioboto3.Session | None:
     global _s3_session
-    if _s3_session is None and settings.AWS_ACCESS_KEY_ID:
-        _s3_session = aioboto3.Session(
-            aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
-            aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
-            region_name=settings.AWS_REGION,
-        )
+    if _s3_session is None and settings.S3_BUCKET:
+        _s3_session = aioboto3.Session(region_name=settings.AWS_REGION)
     return _s3_session
 
 

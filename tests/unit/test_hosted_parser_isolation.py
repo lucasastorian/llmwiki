@@ -13,7 +13,6 @@ from pydantic import ValidationError
 def _settings(**overrides) -> Settings:
     values = {
         "MODE": "hosted",
-        "AWS_ACCESS_KEY_ID": "",
         "S3_BUCKET": "",
         "CONVERTER_URL": "",
     }
@@ -27,7 +26,6 @@ def test_hosted_uploads_require_converter_even_if_ocr_kill_switch_is_off(
 ):
     with pytest.raises(ValidationError, match="CONVERTER_URL is required"):
         _settings(
-            AWS_ACCESS_KEY_ID="test-access-key",
             S3_BUCKET="test-bucket",
             CONVERTER_URL="   ",
             GLOBAL_OCR_ENABLED=global_ocr_enabled,
@@ -36,7 +34,6 @@ def test_hosted_uploads_require_converter_even_if_ocr_kill_switch_is_off(
 
 def test_hosted_uploads_accept_isolated_converter():
     settings = _settings(
-        AWS_ACCESS_KEY_ID="test-access-key",
         S3_BUCKET="test-bucket",
         CONVERTER_URL="https://converter.internal",
         CONVERTER_SECRET="test-converter-secret",
@@ -47,29 +44,29 @@ def test_hosted_uploads_accept_isolated_converter():
 def test_hosted_uploads_require_converter_authentication():
     with pytest.raises(ValidationError, match="CONVERTER_SECRET is required"):
         _settings(
-            AWS_ACCESS_KEY_ID="test-access-key",
             S3_BUCKET="test-bucket",
             CONVERTER_URL="https://converter.internal",
             CONVERTER_SECRET="   ",
         )
 
 
-@pytest.mark.parametrize(
-    ("access_key", "bucket"),
-    [("", "test-bucket"), ("test-access-key", "")],
-)
-def test_hosted_mode_without_upload_service_does_not_require_converter(
-    access_key,
-    bucket,
-):
-    settings = _settings(AWS_ACCESS_KEY_ID=access_key, S3_BUCKET=bucket)
+def test_hosted_mode_without_upload_service_does_not_require_converter():
+    settings = _settings(S3_BUCKET="")
     assert settings.CONVERTER_URL == ""
+
+
+def test_hosted_uploads_enabled_by_bucket_alone_without_static_keys():
+    with pytest.raises(ValidationError, match="CONVERTER_URL is required"):
+        _settings(S3_BUCKET="test-bucket")
+
+
+def test_s3_bucket_defaults_to_disabled():
+    assert Settings(_env_file=None, MODE="hosted").S3_BUCKET == ""
 
 
 def test_local_uploads_keep_in_process_parsing_available():
     settings = _settings(
         MODE="local",
-        AWS_ACCESS_KEY_ID="test-access-key",
         S3_BUCKET="test-bucket",
         CONVERTER_URL="",
     )
@@ -82,7 +79,6 @@ def test_importing_hosted_ocr_does_not_import_pdf_parser():
         **os.environ,
         "PYTHONPATH": str(api_dir),
         "MODE": "hosted",
-        "AWS_ACCESS_KEY_ID": "",
         "S3_BUCKET": "",
     }
     result = subprocess.run(
