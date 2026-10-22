@@ -21,6 +21,10 @@ export const metadata: Metadata = {
   metadataBase: new URL("https://llmwiki.app"),
   manifest: "/manifest.webmanifest",
   icons: {
+    icon: [
+      { url: "/icon.svg", type: "image/svg+xml" },
+      { url: "/icon-192x192.png", sizes: "192x192", type: "image/png" },
+    ],
     apple: [
       {
         url: "/apple-touch-icon.png",
