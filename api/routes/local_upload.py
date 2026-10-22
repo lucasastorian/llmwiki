@@ -1,12 +1,6 @@
-"""Local file upload route — simple multipart, no TUS.
-
-Copies uploaded files directly into the workspace and indexes them.
-"""
+"""Local multipart upload (no TUS): copies files into the workspace and indexes them."""
 
 import asyncio
-import contextlib
-import contextvars
-import functools
 import hashlib
 import os
 import uuid
@@ -18,6 +12,7 @@ from deps import get_user_id
 from domain.file_types import PROCESSING_TYPES, SIMPLE_TEXT_TYPES
 from domain.watcher import mark_written
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from infra.threads import executor_future, to_thread_joined, wait_ignoring_cancellation
 from services.types import MAX_TEXT_CONTENT_BYTES
 
 router = APIRouter(tags=["upload"])
@@ -33,48 +28,18 @@ class _StagedUpload:
     digest: str
 
 
-async def _wait_ignoring_cancellation(future):
-    """Wait for already-started cleanup/critical work despite repeated cancellation."""
-    while not future.done():
-        try:
-            return await asyncio.shield(future)
-        except asyncio.CancelledError:
-            continue
-    return future.result()
-
-
-def _executor_future(func, /, *args, **kwargs):
-    loop = asyncio.get_running_loop()
-    context = contextvars.copy_context()
-    call = functools.partial(context.run, func, *args, **kwargs)
-    return loop.run_in_executor(None, call)
-
-
-async def _to_thread_joined(func, /, *args, **kwargs):
-    """Run blocking work without letting cancellation race its cleanup."""
-    worker = _executor_future(func, *args, **kwargs)
-    try:
-        return await asyncio.shield(worker)
-    except asyncio.CancelledError:
-        # Retrieving the result prevents an abandoned worker exception warning;
-        # the caller's cancellation remains authoritative for ordinary errors.
-        with contextlib.suppress(Exception):
-            await _wait_ignoring_cancellation(worker)
-        raise
-
-
 async def _to_thread_cleanup(func, /, *args, **kwargs):
     """Finish filesystem cleanup even if shutdown sends another cancellation."""
-    return await _wait_ignoring_cancellation(_executor_future(func, *args, **kwargs))
+    return await wait_ignoring_cancellation(executor_future(func, *args, **kwargs))
 
 
 async def _to_thread_deferred_cancel(func, /, *args, **kwargs):
     """Finish a critical filesystem mutation and report cancellation afterward."""
-    worker = _executor_future(func, *args, **kwargs)
+    worker = executor_future(func, *args, **kwargs)
     try:
         return await asyncio.shield(worker), None
     except asyncio.CancelledError as cancellation:
-        return await _wait_ignoring_cancellation(worker), cancellation
+        return await wait_ignoring_cancellation(worker), cancellation
 
 
 async def _await_deferred_cancel(awaitable):
@@ -83,11 +48,11 @@ async def _await_deferred_cancel(awaitable):
     try:
         return await asyncio.shield(task), None
     except asyncio.CancelledError as cancellation:
-        return await _wait_ignoring_cancellation(task), cancellation
+        return await wait_ignoring_cancellation(task), cancellation
 
 
 async def _await_cleanup(awaitable):
-    return await _wait_ignoring_cancellation(asyncio.create_task(awaitable))
+    return await wait_ignoring_cancellation(asyncio.create_task(awaitable))
 
 
 def _write_chunk(output, chunk: bytes) -> None:
@@ -130,7 +95,7 @@ async def _stream_upload_to_temp(
     max_bytes: int = MAX_LOCAL_UPLOAD_BYTES,
 ) -> _StagedUpload:
     """Stream an upload to a same-directory temporary file."""
-    await _to_thread_joined(dest.parent.mkdir, parents=True, exist_ok=True)
+    await to_thread_joined(dest.parent.mkdir, parents=True, exist_ok=True)
     temp_path = dest.with_name(f".{dest.name}.{uuid.uuid4().hex}.upload")
     hasher = hashlib.sha256()
     total = 0
@@ -141,7 +106,7 @@ async def _stream_upload_to_temp(
 
     completed = False
     try:
-        await _to_thread_joined(open_output)
+        await to_thread_joined(open_output)
         output = output_holder["output"]
         while True:
             chunk = await file.read(UPLOAD_CHUNK_BYTES)
@@ -154,9 +119,9 @@ async def _stream_upload_to_temp(
                     detail=f"Upload exceeds the {max_bytes // (1024 * 1024)} MB limit",
                 )
             hasher.update(chunk)
-            await _to_thread_joined(_write_chunk, output, chunk)
+            await to_thread_joined(_write_chunk, output, chunk)
 
-        await _to_thread_joined(_flush_and_close, output)
+        await to_thread_joined(_flush_and_close, output)
         completed = True
         return _StagedUpload(temp_path, total, hasher.hexdigest())
     finally:
@@ -165,26 +130,6 @@ async def _stream_upload_to_temp(
             await _to_thread_cleanup(output.close)
         if not completed:
             await _to_thread_cleanup(temp_path.unlink, missing_ok=True)
-
-
-async def _stream_upload_to_path(
-    file: UploadFile,
-    dest: Path,
-    *,
-    max_bytes: int = MAX_LOCAL_UPLOAD_BYTES,
-) -> tuple[int, str]:
-    """Compatibility helper: stage, atomically publish, and clean on cancellation."""
-    staged = await _stream_upload_to_temp(file, dest, max_bytes=max_bytes)
-    publish_state = {"published": False}
-    try:
-        await _to_thread_joined(_publish_and_mark, staged.path, dest, publish_state)
-        return staged.size, staged.digest
-    except BaseException:
-        if publish_state["published"]:
-            await _to_thread_cleanup(dest.unlink, missing_ok=True)
-        raise
-    finally:
-        await _to_thread_cleanup(staged.path.unlink, missing_ok=True)
 
 
 @router.post("/v1/upload", status_code=201)
@@ -205,9 +150,7 @@ async def upload_file(
     max_bytes = MAX_TEXT_CONTENT_BYTES if ext in SIMPLE_TEXT_TYPES else MAX_LOCAL_UPLOAD_BYTES
     staged = await _stream_upload_to_temp(file, dest, max_bytes=max_bytes)
     try:
-        # Determine metadata and text chunks before publishing. Text parsing is
-        # deliberately off the event loop, and the chunks are later inserted in
-        # the same transaction as the document row.
+        # Chunk off the event loop before publishing; chunks commit in the document row's transaction.
         stem = filename.rsplit(".", 1)[0] if "." in filename else filename
         title = stem.replace("-", " ").replace("_", " ").strip().title()
         dir_path = (
@@ -220,15 +163,15 @@ async def upload_file(
         text_chunks = None
         needs_processing = ext in PROCESSING_TYPES
         if ext in SIMPLE_TEXT_TYPES:
-            text_content = await _to_thread_joined(
+            text_content = await to_thread_joined(
                 staged.path.read_text,
                 encoding="utf-8",
                 errors="replace",
             )
             from services.chunker import chunk_text
 
-            text_chunks = await _to_thread_joined(chunk_text, text_content)
-        mtime_ns = (await _to_thread_joined(staged.path.stat)).st_mtime_ns
+            text_chunks = await to_thread_joined(chunk_text, text_content)
+        mtime_ns = (await to_thread_joined(staged.path.stat)).st_mtime_ns
 
         from infra.db.sqlite import SQLiteDocumentRepository, serialized_write
 
@@ -245,7 +188,7 @@ async def upload_file(
                     "SELECT id FROM documents WHERE relative_path = ?",
                     (relative,),
                 )
-                if await existing.fetchone() or await _to_thread_joined(dest.exists):
+                if await existing.fetchone() or await to_thread_joined(dest.exists):
                     raise HTTPException(
                         status_code=409,
                         detail=f"'{relative}' already exists",

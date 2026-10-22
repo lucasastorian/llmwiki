@@ -32,8 +32,7 @@ BLOCKED_HOSTNAME_SUFFIXES = (
 
 
 def is_blocked_address(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-    # IPv6 transition formats can embed an internal IPv4 target inside an
-    # otherwise-global outer address (for example, 6to4 under 2002::/16).
+    # IPv6 transition formats can embed an internal IPv4 target in a global-looking address.
     if isinstance(addr, ipaddress.IPv6Address) and (
         addr.ipv4_mapped is not None
         or addr.sixtofour is not None
@@ -41,8 +40,7 @@ def is_blocked_address(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> b
     ):
         return True
 
-    # not is_global also catches shared address space (100.64.0.0/10, CGNAT) —
-    # which is what Railway's internal network uses.
+    # not is_global also covers CGNAT 100.64.0.0/10, which Railway's internal network uses.
     return (
         addr.is_private
         or addr.is_loopback
@@ -172,13 +170,7 @@ async def fetch_public_image(
     max_redirects: int = 3,
     headers: dict[str, str] | None = None,
 ) -> tuple[bytes, str] | None:
-    """Fetch a public raster image without exposing internal network targets.
-
-    DNS is resolved and validated before every hop, then the request is pinned
-    to that address while retaining the original Host header and TLS SNI. The
-    response is streamed under ``max_bytes`` and its declared MIME type must
-    match a safe raster image signature.
-    """
+    """Fetch a public raster image, validating and IP-pinning DNS on every hop and capping at ``max_bytes``."""
     if max_bytes <= 0 or timeout <= 0 or max_redirects < 0:
         return None
 

@@ -45,10 +45,7 @@ const defaultDependencies: PdfSaveJobClientDependencies = {
   jobTimeoutMs: PDF_JOB_TIMEOUT_MS,
 };
 
-/**
- * Run a PDF save in the offscreen extension document and poll only its small
- * status object. Destroying the popup stops polling, but not the save itself.
- */
+/** Runs the save in the offscreen document so closing the popup stops polling, not the save. */
 export async function runPdfSaveJob(
   request: SavePdfFromTabRequest,
   dependencies: PdfSaveJobClientDependencies = defaultDependencies,
@@ -75,14 +72,13 @@ export async function runPdfSaveJob(
   const startMessage: StartPdfSaveMessage = { type: START_PDF_SAVE, jobId, request };
   let accepted = false;
 
-  // createDocument resolves after the page is created, but allow a short load
-  // window before treating a missing offscreen listener as a hard failure.
+  // createDocument resolves before the offscreen listener is registered.
   for (let attempt = 0; attempt < 10 && !accepted; attempt += 1) {
     if (attempt > 0) {
       try {
         await sendMessage({ type: ENSURE_PDF_SAVE_CONTEXT });
       } catch {
-        // The previous context may be finishing its idle shutdown.
+        // Previous context may still be shutting down.
       }
     }
     try {

@@ -1,45 +1,54 @@
 import { describe, expect, it } from 'vitest'
-import { locateTextAnchor, normalizeAnchorText } from './locator'
 
-describe('normalizeAnchorText', () => {
-  it('collapses whitespace and strips zero-width characters', () => {
-    expect(normalizeAnchorText('  hello​   world\n\t!')).toBe('hello world !')
-    expect(normalizeAnchorText('a b')).toBe('a b')
+import fixture from '../../../../tests/fixtures/parity/highlight_locator.json'
+import { locateTextAnchor, normalizeAnchorText, type LocateResult } from './locator'
+
+interface Documented {
+  name: string
+  knownDiscrepancy?: string
+}
+
+interface NormalizeCase extends Documented {
+  input: string
+  expected: string
+  tsExpected?: string
+}
+
+interface LocateCase extends Documented {
+  plaintext: string
+  textContent: string
+  prefix?: string
+  suffix?: string
+  expected: LocateResult | null
+  tsExpected?: LocateResult | null
+}
+
+const normalizeCases: NormalizeCase[] = fixture.normalizeAnchorText
+const locateCases: LocateCase[] = fixture.locateTextAnchor
+
+describe('normalizeAnchorText parity with the server', () => {
+  it.each(normalizeCases)('$name', (c) => {
+    expect(normalizeAnchorText(c.input)).toBe(c.tsExpected ?? c.expected)
   })
 })
 
-describe('locateTextAnchor', () => {
-  const page = 'The transformer architecture uses attention.\nAttention is all you need, famously.'
-
-  it('finds a unique match and returns original-text offsets', () => {
-    const result = locateTextAnchor(page, { textContent: 'transformer architecture' })
-    expect(result).not.toBeNull()
-    expect(page.slice(result!.textStart, result!.textEnd)).toBe('transformer architecture')
-  })
-
-  it('matches across whitespace differences', () => {
-    const result = locateTextAnchor(page, { textContent: 'attention. Attention is' })
-    expect(result).not.toBeNull()
-    expect(result!.textContent).toBe('attention.\nAttention is')
-  })
-
-  it('disambiguates repeated text via prefix/suffix context', () => {
-    const repeated = 'alpha beta gamma. delta beta epsilon.'
-    const result = locateTextAnchor(repeated, {
-      textContent: 'beta',
-      prefix: 'delta ',
-      suffix: ' epsilon',
+describe('locateTextAnchor parity with the server', () => {
+  it.each(locateCases)('$name', (c) => {
+    const located = locateTextAnchor(c.plaintext, {
+      textContent: c.textContent,
+      prefix: c.prefix,
+      suffix: c.suffix,
     })
-    expect(result).not.toBeNull()
-    expect(result!.textStart).toBe(repeated.indexOf('beta', repeated.indexOf('delta')))
+    expect(located).toEqual(c.tsExpected ?? c.expected)
   })
+})
 
-  it('refuses short ambiguous matches without scoring context', () => {
-    const repeated = 'aa x aa y aa'
-    expect(locateTextAnchor(repeated, { textContent: 'aa' })).toBeNull()
-  })
-
-  it('returns null when the text is absent', () => {
-    expect(locateTextAnchor(page, { textContent: 'nonexistent passage' })).toBeNull()
+describe('documented locator discrepancies', () => {
+  it('documents every TS-only expectation as a discrepancy', () => {
+    const overridden = [...normalizeCases, ...locateCases].filter((c) => c.tsExpected !== undefined)
+    for (const c of overridden) {
+      expect(c.knownDiscrepancy).toBeTruthy()
+      expect(c.tsExpected).not.toEqual(c.expected)
+    }
   })
 })

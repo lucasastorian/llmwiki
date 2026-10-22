@@ -1,9 +1,10 @@
 'use client'
 
 import * as React from 'react'
+import Link from 'next/link'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
-  ChevronRight, FileText, NotepadText, Library,
+  ChevronLeft, ChevronRight, FileText, NotepadText, Library,
   Upload, BookOpen, ArrowUpRight, Search as SearchIcon,
   Lightbulb, Box, ScrollText, Network, Folder, Check, ListChecks, Lock, Plug,
   PanelLeftClose, PanelLeftOpen, History,
@@ -12,7 +13,7 @@ import {
   CommandDialog, CommandInput, CommandList, CommandItem,
   CommandEmpty, CommandGroup, CommandSeparator,
 } from '@/components/ui/command'
-import { cn } from '@/lib/utils'
+import { cn, toDisplayTitle } from '@/lib/utils'
 import { WikiSelector } from '@/components/kb/WikiSelector'
 import { SidenavUserMenu } from '@/components/kb/SidenavUserMenu'
 import { openMcpConnectionDock } from '@/components/connections/McpConnectionDock'
@@ -25,11 +26,6 @@ const isLocal = process.env.NEXT_PUBLIC_MODE === 'local'
 const useIsomorphicLayoutEffect = typeof window === 'undefined' ? React.useEffect : React.useLayoutEffect
 
 // Only normalize all-lowercase names (file slugs); preserve intentional casing like "GRPO" or "LoRA".
-function toDisplayTitle(title: string): string {
-  if (title !== title.toLowerCase()) return title
-  return title.replace(/\b\w/g, (c) => c.toUpperCase())
-}
-
 function withoutLegacyActivityPages(nodes: WikiNode[]): WikiNode[] {
   const result: WikiNode[] = []
   for (const node of nodes) {
@@ -170,6 +166,7 @@ export function KBSidenav({
     >
       {collapsed && (
         <div className="flex flex-col items-center gap-1.5 pt-2">
+          <AllWikisLink className="size-8" />
           <button
             onClick={toggleCollapsed}
             title="Expand sidebar"
@@ -228,8 +225,8 @@ export function KBSidenav({
 
       {!collapsed && (
         <>
-          {/* Wiki selector */}
           <div className="shrink-0 px-2 pt-2 pb-2 flex items-center gap-1">
+            <AllWikisLink className="size-7 shrink-0" />
             <div className="flex-1 min-w-0">
               <WikiSelector kbId={kbId} kbName={kbName} />
             </div>
@@ -258,7 +255,6 @@ export function KBSidenav({
         </div>
       )}
 
-      {/* Search + Graph */}
       {!collapsed && (
       <div className="shrink-0 px-2 pb-1 flex items-center gap-1.5">
         <button
@@ -288,7 +284,6 @@ export function KBSidenav({
       </div>
       )}
 
-      {/* Search palette */}
       <CommandDialog open={searchOpen} onOpenChange={setSearchOpen} onCloseAutoFocus={restoreSearchFocus}>
         <CommandInput placeholder="Jump to page, source, or action..." aria-label="Search pages and sources" />
         <CommandList>
@@ -392,7 +387,6 @@ export function KBSidenav({
         </div>
       )}
 
-      {/* Wiki tree — top-level folders render as sections; pages grouped beneath a guide */}
       {!collapsed && (
       <>
       <div className="flex-1 min-h-0 overflow-y-auto no-scrollbar px-2 pt-1.5">
@@ -448,7 +442,6 @@ export function KBSidenav({
         )}
       </div>
 
-      {/* Sources — Upload rides the row */}
       <div className="shrink-0 px-2 pb-1">
         <div className="flex items-center gap-1">
           <button
@@ -478,13 +471,28 @@ export function KBSidenav({
         </div>
       </div>
 
-      {/* User menu */}
       <div className="shrink-0 border-t border-border p-2">
         <SidenavUserMenu />
       </div>
       </>
       )}
     </div>
+  )
+}
+
+function AllWikisLink({ className }: { className: string }) {
+  return (
+    <Link
+      href="/wikis"
+      title="All wikis"
+      aria-label="All wikis"
+      className={cn(
+        'flex items-center justify-center rounded-md text-muted-foreground/50 hover:text-muted-foreground hover:bg-sidebar-accent transition-colors',
+        className,
+      )}
+    >
+      <ChevronLeft className="size-3.5" />
+    </Link>
   )
 }
 
@@ -523,8 +531,7 @@ function wikiNodeIcon(node: WikiNode, depth: number) {
   return <FileText className="size-3 shrink-0 opacity-50" />
 }
 
-// Course mode only — the only color in the app is the green completion check.
-// `current` (the lesson being read) beats `locked`: a page you're on never shows a lock.
+// `current` beats `locked`: the page you're on never shows a lock.
 function CourseGlyph({ node, current }: { node: WikiNode; current: boolean }) {
   if (node.status === 'complete') return <Check className="size-3.5 text-emerald-500" />
   if (current) return <span className="size-1.5 rounded-full bg-foreground" />

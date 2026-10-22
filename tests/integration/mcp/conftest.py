@@ -1,7 +1,4 @@
-"""Fixtures for MCP VaultFS and tool handler tests.
-
-Uses SqliteVaultFS with a temp workspace — no Postgres needed.
-"""
+"""SqliteVaultFS fixtures on a temp workspace."""
 
 import json
 import os

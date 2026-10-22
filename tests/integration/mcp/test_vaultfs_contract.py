@@ -1,7 +1,4 @@
-"""Tier 1: VaultFS contract tests against SqliteVaultFS.
-
-Tests every VaultFS method. Self-contained — no Postgres needed.
-"""
+"""VaultFS contract tests against SqliteVaultFS."""
 
 import uuid
 
@@ -422,43 +419,25 @@ class TestBytesAndDisk:
 
 class TestReferences:
 
-    async def test_upsert_and_get_backlinks(self, fs):
+    async def test_get_backlinks(self, fs):
         instance, kb_id = fs
         src = await instance.create_document(kb_id, "page.md", "Page", "/wiki/", "md", "content", ["tag"])
         target = await instance.create_document(kb_id, "source.pdf", "Source", "/", "pdf", "", ["tag"])
-        await instance.upsert_reference(str(src["id"]), str(target["id"]), kb_id, "cites", 3)
+        await instance.replace_references(str(src["id"]), kb_id, [(str(target["id"]), "cites", 3)])
 
         backlinks = await instance.get_backlinks(str(target["id"]))
         assert len(backlinks) == 1
         assert backlinks[0]["filename"] == "page.md"
         assert backlinks[0]["reference_type"] == "cites"
 
-    async def test_upsert_reference_updates_existing(self, fs):
-        instance, kb_id = fs
-        src = await instance.create_document(kb_id, "page.md", "Page", "/wiki/", "md", "content", ["tag"])
-        target = await instance.create_document(kb_id, "source.pdf", "Source", "/", "pdf", "", ["tag"])
-        await instance.upsert_reference(str(src["id"]), str(target["id"]), kb_id, "cites", 3)
-        await instance.upsert_reference(str(src["id"]), str(target["id"]), kb_id, "cites", 7)
-
-        forward = await instance.get_forward_references(str(src["id"]))
-        assert len(forward) == 1
-
-    async def test_delete_references(self, fs):
-        instance, kb_id = fs
-        src = await instance.create_document(kb_id, "page.md", "Page", "/wiki/", "md", "content", ["tag"])
-        target = await instance.create_document(kb_id, "source.pdf", "Source", "/", "pdf", "", ["tag"])
-        await instance.upsert_reference(str(src["id"]), str(target["id"]), kb_id, "cites", 1)
-        await instance.delete_references(str(src["id"]))
-
-        assert await instance.get_forward_references(str(src["id"])) == []
-
     async def test_get_forward_references(self, fs):
         instance, kb_id = fs
         src = await instance.create_document(kb_id, "page.md", "Page", "/wiki/", "md", "content", ["tag"])
         t1 = await instance.create_document(kb_id, "a.pdf", "A", "/", "pdf", "", ["tag"])
         t2 = await instance.create_document(kb_id, "b.md", "B", "/wiki/", "md", "", ["tag"])
-        await instance.upsert_reference(str(src["id"]), str(t1["id"]), kb_id, "cites", 5)
-        await instance.upsert_reference(str(src["id"]), str(t2["id"]), kb_id, "links_to", None)
+        await instance.replace_references(
+            str(src["id"]), kb_id, [(str(t1["id"]), "cites", 5), (str(t2["id"]), "links_to", None)],
+        )
 
         forward = await instance.get_forward_references(str(src["id"]))
         types = {r["reference_type"] for r in forward}
@@ -470,7 +449,7 @@ class TestReferences:
         src = await instance.create_document(kb_id, "page.md", "Page", "/wiki/", "md", "", ["tag"])
         old = await instance.create_document(kb_id, "old.pdf", "Old", "/", "pdf", "", ["tag"])
         new = await instance.create_document(kb_id, "new.pdf", "New", "/", "pdf", "", ["tag"])
-        await instance.upsert_reference(str(src["id"]), str(old["id"]), kb_id, "cites", 1)
+        await instance.replace_references(str(src["id"]), kb_id, [(str(old["id"]), "cites", 1)])
 
         await instance.replace_references(
             str(src["id"]),
@@ -489,7 +468,7 @@ class TestReferences:
         instance, kb_id = fs
         target = await instance.create_document(kb_id, "target.md", "Target", "/wiki/", "md", "content", ["tag"])
         linker = await instance.create_document(kb_id, "linker.md", "Linker", "/wiki/", "md", "content", ["tag"])
-        await instance.upsert_reference(str(linker["id"]), str(target["id"]), kb_id, "links_to", None)
+        await instance.replace_references(str(linker["id"]), kb_id, [(str(target["id"]), "links_to", None)])
 
         await instance.propagate_staleness(str(target["id"]))
 
@@ -504,7 +483,7 @@ class TestReferences:
         wiki = await instance.create_document(kb_id, "page.md", "Page", "/wiki/", "md", "", ["tag"])
 
         cited = await instance.get_document(kb_id, "cited.pdf", "/")
-        await instance.upsert_reference(str(wiki["id"]), str(cited["id"]), kb_id, "cites", 1)
+        await instance.replace_references(str(wiki["id"]), kb_id, [(str(cited["id"]), "cites", 1)])
 
         uncited = await instance.find_uncited_sources(kb_id)
         filenames = [u["filename"] for u in uncited]

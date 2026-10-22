@@ -13,9 +13,7 @@ async def to_thread_joined(func: Callable[..., Any], /, *args: Any, **kwargs: An
     loop = asyncio.get_running_loop()
     context = contextvars.copy_context()
     call = functools.partial(context.run, func, *args, **kwargs)
-    # A raw executor Future is not swept up by loop-wide Task cancellation.
-    # That lets the request task join the actual process-owning thread before
-    # releasing the extraction capacity slot.
+    # Executor Futures escape loop-wide task cancellation, so the thread is joined before the slot frees.
     worker = loop.run_in_executor(None, call)
     try:
         return await asyncio.shield(worker)

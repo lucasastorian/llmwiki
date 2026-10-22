@@ -8,12 +8,11 @@ import auth
 import jwt
 import pytest
 from fastapi import Request
-from infra.rate_limit import _user_or_ip
+from infra.rate_limit import _client_ip
 
 
 def _unsigned_for_unknown_kid(kid: str, sub: str = "attacker") -> str:
-    # Signature validity is irrelevant: unknown-kid handling occurs before the
-    # signing key is available, exactly as it does for an attacker request.
+    # Signature is irrelevant: unknown-kid handling runs before any signing key is available.
     return jwt.encode(
         {"sub": sub},
         "test-signing-key-that-is-at-least-32-bytes",
@@ -120,8 +119,8 @@ async def test_oversized_bearer_is_rejected_before_jwt_parsing(monkeypatch):
 
 
 def test_pre_auth_rate_limit_ignores_unverified_subject():
-    one = _user_or_ip(_request(_unsigned_for_unknown_kid("one", sub="alice")))
-    two = _user_or_ip(_request(_unsigned_for_unknown_kid("two", sub="bob")))
+    one = _client_ip(_request(_unsigned_for_unknown_kid("one", sub="alice")))
+    two = _client_ip(_request(_unsigned_for_unknown_kid("two", sub="bob")))
 
     assert one == two == "ip:203.0.113.10"
 
@@ -129,6 +128,6 @@ def test_pre_auth_rate_limit_ignores_unverified_subject():
 def test_pre_auth_rate_limit_still_separates_addresses():
     token = _unsigned_for_unknown_kid("one")
 
-    assert _user_or_ip(_request(token, "203.0.113.10")) != _user_or_ip(
+    assert _client_ip(_request(token, "203.0.113.10")) != _client_ip(
         _request(token, "203.0.113.11")
     )

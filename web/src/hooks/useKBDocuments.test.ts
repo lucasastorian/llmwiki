@@ -17,6 +17,7 @@ vi.mock('@/lib/auth-token', () => ({
 const apiFetchMock = vi.mocked(apiFetch)
 
 class FakeWebSocket {
+  static latest: FakeWebSocket | null = null
   onopen: (() => void) | null = null
   onmessage: (() => void) | null = null
   onclose: ((event: CloseEvent) => void) | null = null
@@ -24,6 +25,10 @@ class FakeWebSocket {
 
   send = vi.fn()
   close = vi.fn()
+
+  constructor() {
+    FakeWebSocket.latest = this
+  }
 }
 
 interface Deferred<T> {
@@ -37,6 +42,16 @@ function deferred<T>(): Deferred<T> {
     resolve = res
   })
   return { promise, resolve }
+}
+
+async function deliverWsEventAndRefetch(response: DocumentListItem[]): Promise<void> {
+  const callsBefore = apiFetchMock.mock.calls.length
+  apiFetchMock.mockResolvedValueOnce(response)
+  act(() => {
+    FakeWebSocket.latest!.onmessage!()
+  })
+  await waitFor(() => expect(apiFetchMock).toHaveBeenCalledTimes(callsBefore + 1))
+  await act(async () => {})
 }
 
 function documentItem(id: string, overrides: Partial<DocumentListItem> = {}): DocumentListItem {
@@ -155,5 +170,49 @@ describe('useKBDocuments', () => {
 
     await waitFor(() => expect(result.current.loadError).toBeNull())
     expect(result.current.documents).toHaveLength(1)
+  })
+
+  it('keeps document identity when a websocket refetch echoes optimistic metadata with jsonb key order', async () => {
+    apiFetchMock.mockResolvedValueOnce([
+      documentItem('lesson', { metadata: { source_url: 'https://example.test' } }),
+    ])
+    const { result } = renderHook(() => useKBDocuments('kb-1'))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    const course = { status: 'complete', completed_at: '2026-08-10T02:00:00.000Z' }
+    act(() => {
+      result.current.setDocuments((prev) => prev.map((d) => ({
+        ...d, metadata: { ...d.metadata, course },
+      })))
+    })
+    const optimisticDocuments = result.current.documents
+
+    await deliverWsEventAndRefetch([
+      documentItem('lesson', {
+        metadata: { course, source_url: 'https://example.test' },
+        updated_at: '2026-08-10T02:00:01.000Z',
+      }),
+    ])
+
+    expect(result.current.documents).toBe(optimisticDocuments)
+  })
+
+  it('replaces only the changed document when a websocket event changes its page count', async () => {
+    apiFetchMock.mockResolvedValueOnce([
+      documentItem('paper', { file_type: 'pdf', page_count: null }),
+      documentItem('overview'),
+    ])
+    const { result } = renderHook(() => useKBDocuments('kb-1'))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    const [paper, overview] = result.current.documents
+
+    await deliverWsEventAndRefetch([
+      documentItem('paper', { file_type: 'pdf', page_count: 12 }),
+      documentItem('overview'),
+    ])
+
+    expect(result.current.documents[0]).not.toBe(paper)
+    expect(result.current.documents[0].page_count).toBe(12)
+    expect(result.current.documents[1]).toBe(overview)
   })
 })

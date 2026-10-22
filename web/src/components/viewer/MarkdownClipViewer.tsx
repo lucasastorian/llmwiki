@@ -101,10 +101,7 @@ export default function MarkdownClipViewer({ documentId, className }: Props) {
         class:
           'prose prose-sm dark:prose-invert max-w-none focus:outline-none select-text',
       },
-      // Read mode: links don't open by default (Link extension is configured
-      // with openOnClick: false in the shared factory). Keep that off so
-      // selection inside a link doesn't navigate, but still let an explicit
-      // click open the URL safely in a new tab.
+      // openOnClick is off so selecting inside a link doesn't navigate; a plain click still opens a new tab.
       handleClick: (_view, _pos, event) => {
         const anchor = (event.target as HTMLElement).closest('a')
         if (!anchor) return false
@@ -257,22 +254,17 @@ export default function MarkdownClipViewer({ documentId, className }: Props) {
     }
   }, [loadHighlights, token])
 
-  // Set content on the editor once markdown is loaded.
   React.useEffect(() => {
     if (!editor || markdown === null) return
     editor.commands.setContent(markdown, { emitUpdate: false })
   }, [editor, markdown])
 
-  // Apply highlights once both editor + highlights are ready. Done in a
-  // requestAnimationFrame to give the editor a chance to settle after
-  // setContent (TipTap rebuilds the doc tree synchronously, but waiting
-  // one frame avoids occasional stale-doc issues with very large docs).
+  // Wait a frame after setContent; very large docs occasionally expose a stale doc otherwise.
   React.useEffect(() => {
     if (!editor || markdown === null || highlights === null) return
     let raf = 0
     raf = requestAnimationFrame(() => {
-      const canonical = canonicalPlaintextFromTipTapDoc(editor.state.doc)
-      const ranges = decorationsFromHighlights(highlights, canonical)
+      const ranges = decorationsFromHighlights(highlights, editor.state.doc)
       editor.view.dispatch(
         editor.state.tr.setMeta(highlightPluginKey, { setDecorations: ranges }),
       )

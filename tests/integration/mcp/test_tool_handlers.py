@@ -1,25 +1,32 @@
-"""Tier 2: End-to-end tool handler tests (tool → handler → VaultFS).
-
-Tests the full flow through WriteHandler, ReadHandler, SearchHandler, DeleteHandler.
-Uses SqliteVaultFS with a temp workspace — no Postgres needed.
-"""
+"""Tool → handler → SqliteVaultFS end-to-end on a temp workspace."""
 
 import json
+from types import SimpleNamespace
 
 import pytest
+from pydantic import BaseModel
+
+from mcp.server.elicitation import AcceptedElicitation
+from mcp.types import ClientCapabilities
 
 
 def _make_kb(kb_id: str) -> dict:
     return {"id": kb_id, "name": "test-workspace", "slug": "test-workspace"}
 
 
-class _AcceptDeleteContext:
-    async def elicit(self, message: str, schema: type):
-        class Result:
-            action = "accept"
-            data = type("Confirmation", (), {"confirm": True})()
+class _ElicitingSession:
+    def check_client_capability(self, capability: ClientCapabilities) -> bool:
+        return capability.elicitation is not None
 
-        return Result()
+
+class _AcceptDeleteContext:
+    def __init__(self) -> None:
+        self.request_context = SimpleNamespace(session=_ElicitingSession())
+
+    async def elicit(
+        self, message: str, schema: type[BaseModel]
+    ) -> AcceptedElicitation[BaseModel]:
+        return AcceptedElicitation(data=schema(confirm=True))
 
 
 class TestWriteReadFlow:
@@ -621,8 +628,7 @@ class TestLintTool:
         kb = _make_kb(kb_id)
         linter = LintHandler(instance, kb)
 
-        # Uncited source + a stale page would surface under graph checks; with
-        # include_graph=False neither should appear.
+        # Graph-only issues (uncited source, stale page) must not appear with include_graph=False.
         await instance.create_document(kb_id, "uncited.pdf", "Uncited", "/", "pdf", "", ["source"])
         await instance.create_document(
             kb_id,
@@ -826,7 +832,7 @@ class TestReadModes:
 
         target = await instance.create_document(kb_id, "target.md", "Target", "/wiki/", "md", "target content", ["tag"])
         source = await instance.create_document(kb_id, "source.md", "Source", "/wiki/", "md", "links to target", ["tag"])
-        await instance.upsert_reference(str(source["id"]), str(target["id"]), kb_id, "links_to", None)
+        await instance.replace_references(str(source["id"]), kb_id, [(str(target["id"]), "links_to", None)])
 
         result = await reader.read("wiki/target.md", "", None, False)
         assert "Referenced by" in result

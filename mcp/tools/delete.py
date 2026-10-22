@@ -1,5 +1,3 @@
-"""Delete tool — remove documents from the knowledge vault."""
-
 import json
 from dataclasses import dataclass
 
@@ -47,8 +45,6 @@ class DeleteConfirmation(BaseModel):
 
 
 class DeleteHandler:
-    """Deletes documents from the knowledge vault."""
-
     def __init__(self, fs: VaultFS, kb: dict):
         self.fs = fs
         self.kb = kb
@@ -79,16 +75,14 @@ class DeleteHandler:
         try:
             approval = await ctx.elicit(message=preview, schema=DeleteConfirmation)
         except McpError:
-            # A client can advertise elicitation but still reject the request
-            # (for example, METHOD_NOT_FOUND from a partial implementation).
+            # Clients can advertise elicitation yet still reject it (e.g. METHOD_NOT_FOUND).
             return self._approval_unavailable(preview)
 
         if approval.action == "decline":
             return "Deletion declined. No documents were deleted."
         if approval.action == "cancel":
             return "Deletion cancelled. No documents were deleted."
-        confirmed = getattr(getattr(approval, "data", None), "confirm", False)
-        if approval.action != "accept" or not confirmed:
+        if not approval.data.confirm:
             return "Deletion was not explicitly confirmed. No documents were deleted."
 
         return await self._execute(plan)
@@ -147,8 +141,7 @@ class DeleteHandler:
             deleted = [d for d in deletable if str(d["id"]) not in remaining]
             changed.extend(d for d in deletable if str(d["id"]) in remaining)
 
-        # Delete local files only after the database mutation succeeds. A DB
-        # failure must never leave the index pointing at a file we removed.
+        # Remove files only after the DB delete succeeds so the index never points at a missing file.
         self.fs.delete_from_disk(deleted)
 
         return self._format_response(
@@ -159,7 +152,6 @@ class DeleteHandler:
         )
 
     async def _find_documents(self, path: str) -> list[dict]:
-        """Find documents by exact path or glob pattern."""
         if "*" in path or "?" in path:
             docs = await self.fs.list_documents(self.kb_id)
             if path in _ALL_DOCUMENTS_PATTERNS:
@@ -194,13 +186,7 @@ class DeleteHandler:
 
     @staticmethod
     def _client_supports_elicitation(ctx: Context) -> bool:
-        try:
-            session = ctx.request_context.session
-        except (AttributeError, ValueError):
-            # Lightweight Context fakes and compatible wrappers may not expose
-            # the underlying session; ctx.elicit remains the source of truth.
-            return True
-        return session.check_client_capability(
+        return ctx.request_context.session.check_client_capability(
             ClientCapabilities(elicitation=ElicitationCapability())
         )
 
@@ -220,7 +206,6 @@ class DeleteHandler:
         protected: list[dict],
         changed: list[dict],
     ) -> str:
-        """Build the response message listing deleted and skipped files."""
         lines = [f"Deleted {deleted_count} document(s):\n"]
         for d in deletable:
             lines.append(f"  {_document_path(d)}")

@@ -66,8 +66,6 @@ interface Props {
 
 export function WikiHighlighter({ scrollRef, contentRef, documentId, contentKey, api }: Props) {
   const { highlights, saveHighlight, updateComment, removeHighlight } = api
-  // Text selection is transient. Persistence starts only when the user chooses
-  // Highlight or saves a Note from the selection toolbar.
   const [pending, setPending] = React.useState<PendingSelection | null>(null)
   const [active, setActive] = React.useState<ActiveCard | null>(null)
   const [draft, setDraft] = React.useState('')
@@ -79,8 +77,7 @@ export function WikiHighlighter({ scrollRef, contentRef, documentId, contentKey,
 
   const supportsPainting = typeof CSS !== 'undefined' && 'highlights' in CSS
 
-  // The paint-time plaintext snapshot dies whenever React swaps the rendered
-  // DOM; hand out a rebuilt one when its nodes are no longer connected.
+  // The cached snapshot goes stale whenever React swaps the rendered DOM.
   const freshPlaintext = React.useCallback((content: HTMLElement): DomPlaintext => {
     const cached = dpRef.current
     if (
@@ -121,8 +118,7 @@ export function WikiHighlighter({ scrollRef, contentRef, documentId, contentKey,
     CSS.highlights.set(NOTE_REGISTRY_KEY, new window.Highlight(...noteRanges))
   }, [contentRef, highlights, supportsPainting])
 
-  // Repaint on data/page changes, and on DOM mutations (images resolving,
-  // Mermaid hydrating) that replace the text nodes our Ranges point at.
+  // DOM mutations (images resolving, Mermaid hydrating) replace the text nodes our Ranges point at.
   React.useEffect(() => {
     if (!supportsPainting) return
     const content = contentRef.current
@@ -147,7 +143,6 @@ export function WikiHighlighter({ scrollRef, contentRef, documentId, contentKey,
     }
   }, [supportsPainting])
 
-  // Close any open card when navigating to another page.
   React.useEffect(() => {
     setPending(null)
     setActive(null)
@@ -162,7 +157,7 @@ export function WikiHighlighter({ scrollRef, contentRef, documentId, contentKey,
       const container = scrollRef.current
       if (!container) return null
       const containerRect = container.getBoundingClientRect()
-      // Clamp to half the widest card (w-[26rem] = 416px) plus a small margin.
+      // Half the widest card (w-[26rem] = 416px) plus a margin.
       const halfCard = 216
       const left = Math.min(
         Math.max(rect.left - containerRect.left + rect.width / 2, halfCard),
@@ -177,23 +172,21 @@ export function WikiHighlighter({ scrollRef, contentRef, documentId, contentKey,
     [scrollRef],
   )
 
-  // Mutations paint optimistically in useWikiHighlights, so the overlays close
-  // immediately and failures roll back + toast from the background.
+  // useWikiHighlights paints optimistically and rolls back on failure.
   const persist = React.useCallback((action: () => Promise<void>, failure: string): void => {
     action().catch((err: unknown) => {
       toast.error(err instanceof Error ? err.message : failure)
     })
   }, [])
 
-  // Releasing a selection only opens the action toolbar. The selection stays
-  // native so Cmd/Ctrl+C works without leaving a persisted highlight.
+  // The selection stays native so Cmd/Ctrl+C works without persisting a highlight.
   React.useEffect(() => {
     const container = scrollRef.current
     if (!container) return
     const handlePointerUp = (event: PointerEvent) => {
       const target = event.target as HTMLElement
       if (target.closest('[data-wiki-highlighter]')) return
-      // The selection settles after pointerup (double/triple click included).
+      // The selection settles after pointerup, including double/triple click.
       requestAnimationFrame(() => {
         const selectionAnchor = readSelectionAnchor(contentRef.current)
         if (!selectionAnchor) return
@@ -211,7 +204,6 @@ export function WikiHighlighter({ scrollRef, contentRef, documentId, contentKey,
     return () => container.removeEventListener('pointerup', handlePointerUp)
   }, [contentRef, localPosition, scrollRef])
 
-  // Click on painted text opens the comment card for that highlight.
   React.useEffect(() => {
     const container = scrollRef.current
     if (!container) return
@@ -246,8 +238,7 @@ export function WikiHighlighter({ scrollRef, contentRef, documentId, contentKey,
     return () => container.removeEventListener('click', handleClick)
   }, [contentRef, freshPlaintext, localPosition, scrollRef])
 
-  // Hovering a noted highlight peeks its comment; click still opens the
-  // editable card. Uses the paint-time plaintext cache, so mousemove stays cheap.
+  // Uses the paint-time plaintext cache so mousemove stays cheap.
   React.useEffect(() => {
     const container = scrollRef.current
     if (!container) return
@@ -325,8 +316,7 @@ export function WikiHighlighter({ scrollRef, contentRef, documentId, contentKey,
   React.useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
-        // Only touch the native selection when a highlight is actually pending
-        // — otherwise Escape would destroy unrelated user selections.
+        // Escape must not destroy unrelated user selections.
         if (pending) clearPending()
         if (active) setActive(null)
         return
@@ -552,8 +542,7 @@ function hitTestHighlight(
   if (!point) return null
   const offset = offsetAtDomPoint(dp, point.node, point.offset)
   if (offset === null) return null
-  // Accept offset === end: the caret for a click on the last glyph often
-  // lands on the trailing insertion point.
+  // offset === end: a click on the last glyph often lands on the trailing caret position.
   return resolved.find((r) => offset >= r.start && offset <= r.end) ?? null
 }
 

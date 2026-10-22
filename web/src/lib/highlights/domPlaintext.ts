@@ -1,9 +1,4 @@
-// Plaintext view of a rendered wiki page: text nodes in document order with
-// cumulative offsets, so highlights round-trip between character offsets and
-// live DOM Ranges. KaTeX subtrees are skipped — KaTeX emits every formula
-// twice (MathML + HTML spans), which would double-count text and destabilize
-// offsets across renders. Quiz widgets are skipped too — their DOM mutates on
-// interaction (hints, explanations), which would shift every offset after them.
+// Skips KaTeX (emits each formula twice) and quiz widgets (mutate on interaction) so offsets stay stable.
 
 interface TextSegment {
   node: Text
@@ -74,8 +69,7 @@ function pointAtOffset(dp: DomPlaintext, offset: number): { node: Text; offset: 
 function offsetOfPoint(dp: DomPlaintext, container: Node, offsetInNode: number): number | null {
   if (container.nodeType === Node.TEXT_NODE) {
     const segment = dp.segments.find((s) => s.node === container)
-    // A text node not in the walk (e.g. inside KaTeX) falls through to the
-    // probe path, mapping to the next tracked segment.
+    // Untracked text nodes (e.g. inside KaTeX) fall through to the probe path.
     if (segment) return segment.start + Math.min(offsetInNode, segment.node.data.length)
   }
   const probe = document.createRange()
@@ -86,8 +80,7 @@ function offsetOfPoint(dp: DomPlaintext, container: Node, offsetInNode: number):
   }
   probe.collapse(true)
   for (const segment of dp.segments) {
-    // A detached node (stale snapshot mid-re-render) makes comparePoint throw
-    // WrongDocumentError.
+    // comparePoint throws WrongDocumentError on nodes detached mid-re-render.
     if (!segment.node.isConnected) continue
     if (probe.comparePoint(segment.node, 0) >= 0) return segment.start
   }

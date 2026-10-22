@@ -1,6 +1,5 @@
-"""Integration tests for knowledge base CRUD lifecycle."""
-
 import pytest
+from config import settings
 
 from tests.helpers.jwt import auth_headers
 
@@ -74,21 +73,13 @@ class TestCreateKB:
 
         assert resp.status_code == 409
 
-    async def test_global_user_cap_enforced(self, client):
-        import os
-        old = os.environ.get("GLOBAL_MAX_USERS")
-        os.environ["GLOBAL_MAX_USERS"] = "0"
-        try:
-            # Config is cached at import, so this tests the DB check path
-            # The actual check is: SELECT COUNT(DISTINCT id) FROM users >= GLOBAL_MAX_USERS
-            # Since we have 1 user and cap is set via env, this may not take effect
-            # due to Settings being cached. This is a known limitation.
-            pass
-        finally:
-            if old:
-                os.environ["GLOBAL_MAX_USERS"] = old
-            else:
-                os.environ.pop("GLOBAL_MAX_USERS", None)
+    async def test_global_user_cap_enforced(self, client, pool, monkeypatch):
+        monkeypatch.setattr(settings, "GLOBAL_MAX_USERS", 1)
+
+        resp = await client.post("/v1/knowledge-bases", headers=auth_headers(USER_ID), json={"name": "Over Cap"})
+
+        assert resp.status_code == 503
+        assert await pool.fetchval("SELECT COUNT(*) FROM knowledge_bases WHERE user_id = $1", USER_ID) == 0
 
 
 class TestListAndGetKB:
@@ -104,7 +95,7 @@ class TestListAndGetKB:
         assert "KB One" in names
         assert "KB Two" in names
 
-    async def test_get_includes_counts(self, client, pool):
+    async def test_list_includes_counts(self, client, pool):
         headers = auth_headers(USER_ID)
         create_resp = await client.post(
             "/v1/knowledge-bases", headers=headers,
@@ -112,9 +103,7 @@ class TestListAndGetKB:
         )
         kb_id = create_resp.json()["id"]
 
-        resp = await client.get(f"/v1/knowledge-bases/{kb_id}", headers=headers)
-        assert resp.status_code == 200
-        data = resp.json()
+        data = await listed_kb(client, headers, kb_id)
         assert "source_count" in data
         assert "wiki_page_count" in data
         # Activity is database-backed; the only scaffolded page is Overview.
@@ -142,8 +131,7 @@ class TestListAndGetKB:
             kb_id, USER_ID,
         )
 
-        resp = await client.get(f"/v1/knowledge-bases/{kb_id}", headers=headers)
-        data = resp.json()
+        data = await listed_kb(client, headers, kb_id)
         assert data["lesson_count"] == 2
         assert data["lessons_completed"] == 1
 
@@ -205,3 +193,9 @@ class TestDeleteKB:
             headers=auth_headers(USER_ID),
         )
         assert resp.status_code == 404
+
+
+async def listed_kb(client, headers: dict, kb_id: str) -> dict:
+    resp = await client.get("/v1/knowledge-bases", headers=headers)
+    assert resp.status_code == 200
+    return next(kb for kb in resp.json() if kb["id"] == kb_id)

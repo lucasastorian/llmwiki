@@ -1,6 +1,3 @@
-"""Search tool — browse, search, and query references in the knowledge vault."""
-
-import logging
 from typing import Literal
 
 from vaultfs import VaultFS
@@ -8,8 +5,6 @@ from vaultfs import VaultFS
 from mcp.server.fastmcp import Context, FastMCP
 
 from .helpers import MAX_LIST, MAX_SEARCH, deep_link, glob_match, resolve_path
-
-logger = logging.getLogger(__name__)
 
 _CONTEXT_CHARS = 120
 
@@ -32,8 +27,6 @@ def _extract_snippet(content: str, query: str) -> str:
 
 
 class SearchHandler:
-    """Executes list, search, and reference queries on the knowledge vault."""
-
     def __init__(self, fs: VaultFS, kb: dict):
         self.fs = fs
         self.kb = kb
@@ -86,13 +79,7 @@ class SearchHandler:
         self, query: str, path: str, tags: list[str] | None, limit: int,
         annotated_only: bool = False, scope: str = "all",
     ) -> str:
-        """Full-text search across document chunks.
-
-        `annotated_only=True` restricts to chunks the user has highlighted.
-        `scope='annotations'` matches only within the user's notes/quotes;
-        `scope='source'` matches only within original document content;
-        `scope='all'` (default) matches either.
-        """
+        """Full-text search across chunks; `scope` is all, annotations (user notes/quotes), or source."""
         path_filter = self._path_filter_key(path)
 
         matches = await self.fs.search_chunks(
@@ -205,19 +192,13 @@ class SearchHandler:
         return None
 
     def _apply_path_glob(self, matches: list[dict], path: str) -> list[dict]:
-        """Narrow results by a file-level glob (e.g. `*.pdf`).
-
-        The coarse wiki/sources filter is pushed into SQL; finer globs the SQL
-        can't express are applied here, mirroring list/read/delete. Bare
-        directory scopes (no wildcard) are left to the coarse filter.
-        """
+        """Apply file-level globs the coarse SQL wiki/sources filter can't express."""
         if path in ("*", "**", "**/*") or not ("*" in path or "?" in path):
             return matches
         glob_pat = path if path.startswith("/") else "/" + path.lstrip("/")
         return [m for m in matches if glob_match(m["path"] + m["filename"], glob_pat)]
 
     def _format_source_line(self, doc: dict) -> str:
-        """Format a single source document for list output."""
         tag_str = f" [{', '.join(doc['tags'])}]" if doc.get("tags") else ""
         date_part = ""
         if doc.get("updated_at"):
@@ -227,7 +208,6 @@ class SearchHandler:
         return f"  {doc['path']}{doc['filename']} ({doc.get('file_type', '')}{pages_part}{date_part}){tag_str}"
 
     def _format_wiki_line(self, doc: dict) -> str:
-        """Format a single wiki page for list output."""
         date_part = ""
         if doc.get("updated_at"):
             date_val = doc["updated_at"]
@@ -235,14 +215,7 @@ class SearchHandler:
         return f"  {doc['path']}{doc['filename']}{date_part}"
 
     def _format_search_result(self, match: dict, query: str) -> str:
-        """Format a single search result with snippet.
-
-        Snippet is taken from `content` — which already contains the
-        materialized source + annotations footnote block, so the LLM sees
-        both sides in their proper context without us re-stitching them.
-        A small marker after the header signals whether the match came
-        from the user's annotations.
-        """
+        """Format a result whose snippet comes from the materialized content, so source and annotations are already stitched."""
         filepath = f"{match['path']}{match['filename']}"
         page_str = f" (p.{match['page']})" if match.get("page") else ""
         breadcrumb = f"\n  {match['header_breadcrumb']}" if match.get("header_breadcrumb") else ""
@@ -250,10 +223,7 @@ class SearchHandler:
         score = match.get("score", 0)
         score_str = f" [{score:.1f}]" if score else ""
 
-        # Mark which side of the chunk produced the match so the LLM can
-        # attribute correctly — "note" = user's voice, "source" = doc body.
-        # `[annotated]` is a weaker signal: the chunk has user notes but the
-        # match itself came only from the source.
+        # "note" = user's voice, "source" = doc body; [annotated] means the chunk has notes but only the source matched.
         marker = ""
         if match.get("annotation_hit") and not match.get("source_hit"):
             marker = " [matched: note]"
@@ -267,7 +237,6 @@ class SearchHandler:
 
 
 async def _list_all_kbs(fs: VaultFS) -> str:
-    """List all knowledge bases for the user."""
     kbs = await fs.list_knowledge_bases()
     if not kbs:
         return "No knowledge bases found."

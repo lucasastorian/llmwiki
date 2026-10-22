@@ -10,7 +10,6 @@ import re
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
-import httpx  # noqa: F401 -- compatibility alias for existing transport tests
 from html_parser import Image
 from infra.safe_fetch import fetch_public_image
 
@@ -101,9 +100,7 @@ class _AssetByteBudget:
                     self._reserved += requested
                     return _ByteReservation(requested)
 
-                # Active fetches may return fewer bytes than they reserved.
-                # Wait for those reservations to settle before reducing the
-                # next fetch's size limit based on remaining capacity.
+                # In-flight fetches may use less than reserved; let them settle before shrinking this limit.
                 if self._reserved:
                     await self._condition.wait()
                     continue
@@ -242,10 +239,50 @@ async def materialize_webclip_assets(
 
 
 def _remove_markdown_image_ref(markdown: str, token: str) -> str:
-    escaped_token = re.escape(token)
-    image_pattern = re.compile(rf"!\[(?:\\.|[^\]])*\]\({escaped_token}\)")
-    markdown, count = image_pattern.subn("", markdown)
-    return markdown if count else markdown.replace(token, "")
+    """Drop each `![alt](token)` the parser emitted, finding its opener by a same-line backward scan from the exact reference."""
+    reference = f"]({token})"
+    parts: list[str] = []
+    cursor = 0
+    close = markdown.find(reference)
+    while close != -1:
+        end = close + len(reference)
+        opener = _image_opener(markdown, close)
+        if opener is None:
+            parts.append(markdown[cursor:close + 2])
+        else:
+            parts.append(markdown[cursor:opener])
+            parts.append(_image_gap(markdown, opener, end))
+        cursor = close + 2 if opener is None else end
+        close = markdown.find(reference, end)
+    parts.append(markdown[cursor:])
+    return "".join(parts).replace(token, "")
+
+
+def _image_opener(markdown: str, close: int) -> int | None:
+    """Index of the `![` whose alt ends at `close`; the parser escapes every `[`/`]` inside alt text."""
+    line_start = markdown.rfind("\n", 0, close) + 1
+    for index in range(close - 1, line_start - 1, -1):
+        char = markdown[index]
+        if char not in "[]" or _is_escaped(markdown, index, line_start):
+            continue
+        if char == "]" or index == line_start or markdown[index - 1] != "!":
+            return None
+        return index - 1
+    return None
+
+
+def _is_escaped(markdown: str, index: int, line_start: int) -> bool:
+    backslashes = 0
+    while index - backslashes - 1 >= line_start and markdown[index - backslashes - 1] == "\\":
+        backslashes += 1
+    return backslashes % 2 == 1
+
+
+def _image_gap(markdown: str, start: int, end: int) -> str:
+    """The parser writes images flush against neighbouring text; a space keeps those words apart."""
+    before = markdown[start - 1:start]
+    after = markdown[end:end + 1]
+    return " " if before.strip() and after.strip() else ""
 
 
 def _is_remote_url(url: str) -> bool:

@@ -50,7 +50,7 @@ export const useKBStore = create<KBState>((set, get) => ({
       method: 'POST',
       body: JSON.stringify({ name, description: description || undefined, kind: kind === 'course' ? kind : undefined }),
     })
-    // Dedupe: in local mode the backend returns the existing singleton
+    // Local mode returns the existing singleton KB.
     const existing = get().knowledgeBases
     if (existing.some((k) => k.id === kb.id)) {
       set({ knowledgeBases: existing.map((k) => k.id === kb.id ? kb : k) })

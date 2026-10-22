@@ -1,8 +1,5 @@
-"""Read tool — retrieve document content from the knowledge vault."""
-
 import base64
 import json
-import logging
 
 from vaultfs import VaultFS
 
@@ -18,8 +15,7 @@ from .helpers import (
     resolve_path,
 )
 from .references import get_backlinks_summary
-
-logger = logging.getLogger(__name__)
+from .types import BatchPages
 
 MAX_BATCH_CHARS = 120_000
 MAX_INLINE_IMAGES = 12
@@ -62,8 +58,7 @@ def _materialize_highlights(
         if not text:
             continue
         if pages is not None and page not in pages:
-            # Page-scoped reads should not leak unrelated PDF annotations or
-            # unplaceable legacy/text annotations into the selected excerpt.
+            # Page-scoped reads must not leak other pages' or unplaceable annotations.
             continue
         suffix = f" (p.{page})" if page else ""
         comment = clean_annotation_text(h.get("comment") or "")
@@ -104,12 +99,10 @@ def _materialize_replies(h: dict) -> list[str]:
 
 
 def _text(s: str) -> TextContent:
-    """Wrap a string in an MCP TextContent block."""
     return TextContent(type="text", text=s)
 
 
 def _image(data: bytes, fmt: str) -> ImageContent:
-    """Wrap image bytes in an MCP ImageContent block."""
     return ImageContent(
         type="image",
         data=base64.b64encode(data).decode(),
@@ -168,8 +161,6 @@ def _extract_sections(content: str, section_names: list[str]) -> str:
 
 
 class ReadHandler:
-    """Reads documents from the knowledge vault."""
-
     def __init__(self, fs: VaultFS, kb: dict):
         self.fs = fs
         self.kb = kb
@@ -183,7 +174,6 @@ class ReadHandler:
         return await self._read_single(path, pages, sections, include_images)
 
     async def _read_single(self, path: str, pages: str, sections: list[str] | None, include_images: bool) -> str | list:
-        """Read a single document by path."""
         doc = await self._fetch_document(path, metadata_only=True)
         if not doc:
             return f"Document '{path}' not found in {self.slug}."
@@ -200,8 +190,7 @@ class ReadHandler:
         if file_type in _SPREADSHEET_TYPES and not pages:
             return await self._read_spreadsheet_index(doc, header)
 
-        # Text reads and unpaged PDF/Office reads need the full materialized
-        # content. Paged and image paths above intentionally avoid hydrating it.
+        # Only now hydrate full content; paged and image paths above deliberately avoid it.
         doc = await self._fetch_document(path)
         if not doc:
             return f"Document '{path}' not found in {self.slug}."
@@ -260,16 +249,16 @@ class ReadHandler:
                 chars_used += len(content) + len(highlights_section)
 
             elif (doc.get("page_count") or 0) > 0:
-                page_text, doc_chars, pages_included, was_truncated = await self._read_batch_pages(doc, remaining)
-                if was_truncated:
+                batch_pages = await self._read_batch_pages(doc, remaining)
+                if batch_pages.is_truncated:
                     truncated_docs += 1
                 total_pages = doc["page_count"]
-                remaining_pages = total_pages - pages_included
+                remaining_pages = total_pages - batch_pages.pages_included
                 suffix = ""
                 if remaining_pages > 0:
-                    suffix = f"\n\n*({remaining_pages} more pages — use `pages=\"{pages_included+1}-{total_pages}\"` to continue)*"
-                parts.append(f"### [{doc['path']}{doc['filename']}]({link}) ({total_pages} pages)\n\n{page_text}{suffix}")
-                chars_used += doc_chars
+                    suffix = f"\n\n*({remaining_pages} more pages — use `pages=\"{batch_pages.pages_included+1}-{total_pages}\"` to continue)*"
+                parts.append(f"### [{doc['path']}{doc['filename']}]({link}) ({total_pages} pages)\n\n{batch_pages.text}{suffix}")
+                chars_used += batch_pages.chars
 
             else:
                 skipped_docs.append(doc)
@@ -389,10 +378,9 @@ class ReadHandler:
             blocks.append(_image(img_bytes, _image_format_from_asset(asset)))
         return blocks
 
-    async def _read_batch_pages(self, doc: dict, remaining: int) -> tuple[str, int, int, bool]:
-        """Read pages within a char budget. Returns (text, chars, pages_included, truncated)."""
-        # Reserve a bounded slice for annotations so page text cannot consume
-        # the entire batch budget and silently hide the user's notes.
+    async def _read_batch_pages(self, doc: dict, remaining: int) -> BatchPages:
+        """Read pages within a char budget."""
+        # Reserve a slice for annotations so page text cannot crowd out the user's notes.
         all_annotations = _materialize_highlights(doc)
         annotation_budget = min(len(all_annotations), remaining // 4)
         page_budget = remaining - annotation_budget
@@ -424,18 +412,14 @@ class ReadHandler:
             page_parts.append(rendered)
             doc_chars += len(rendered)
 
-        return "\n\n".join(page_parts), doc_chars, pages_included, truncated
+        return BatchPages("\n\n".join(page_parts), doc_chars, pages_included, truncated)
 
     async def _fetch_document(self, path: str, metadata_only: bool = False) -> dict | None:
         """Fetch document by exact path, with title/filename fallback."""
         dir_path, filename = resolve_path(path)
         if metadata_only:
-            exact = getattr(self.fs, "get_document_metadata", self.fs.get_document)
-            fallback = getattr(
-                self.fs,
-                "find_document_metadata_by_name",
-                self.fs.find_document_by_name,
-            )
+            exact = self.fs.get_document_metadata
+            fallback = self.fs.find_document_metadata_by_name
         else:
             exact = self.fs.get_document
             fallback = self.fs.find_document_by_name
@@ -446,7 +430,6 @@ class ReadHandler:
         return doc
 
     def _build_header(self, doc: dict) -> str:
-        """Build the metadata header for a document."""
         tags_str = ", ".join(doc["tags"]) if doc.get("tags") else "none"
         link = deep_link(self.slug, doc["path"], doc["filename"])
         file_type = doc.get("file_type") or ""

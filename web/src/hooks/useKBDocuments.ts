@@ -1,7 +1,6 @@
 'use client'
 
 import * as React from 'react'
-import { toast } from 'sonner'
 import { apiFetch, getDocumentsWsUrl } from '@/lib/api'
 import { refreshAccessToken } from '@/lib/auth-token'
 import { useUserStore } from '@/stores'
@@ -15,28 +14,26 @@ const WS_CLOSE_AUTH = 4001
 const WS_CLOSE_FORBIDDEN = 4003
 const DEBOUNCE_MS = 300
 
-// Fields whose change we want to *force* a re-render through identity churn.
-// `updated_at` is intentionally excluded — it bumps on every UPDATE (incl.
-// highlight-only writes) and would otherwise unmount the active viewer.
+// Rendered fields only: `updated_at` (and local-mode index bookkeeping) moves on every row write.
 const IDENTITY_FIELDS: ReadonlyArray<keyof DocumentListItem> = [
   'id', 'filename', 'title', 'path', 'file_type', 'status', 'archived',
-  'tags', 'date', 'metadata', 'version', 'document_number', 'error_message',
+  'tags', 'date', 'metadata', 'version', 'document_number', 'error_message', 'page_count',
 ]
 
+// Key-order-insensitive: jsonb re-sorts keys, so an optimistic metadata write echoes back reordered.
+function isJsonEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true
+  if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false
+  if (Array.isArray(a) !== Array.isArray(b)) return false
+  const aRecord = a as Record<string, unknown>
+  const bRecord = b as Record<string, unknown>
+  const aKeys = Object.keys(aRecord)
+  if (aKeys.length !== Object.keys(bRecord).length) return false
+  return aKeys.every((key) => key in bRecord && isJsonEqual(aRecord[key], bRecord[key]))
+}
+
 function shallowEqualForIdentity(a: DocumentListItem, b: DocumentListItem): boolean {
-  for (const k of IDENTITY_FIELDS) {
-    const av = a[k]
-    const bv = b[k]
-    if (av === bv) continue
-    // Arrays and dicts: fall back to JSON compare. Cheap for our row sizes
-    // and avoids pulling in a deep-equal dependency.
-    if (typeof av === 'object' || typeof bv === 'object') {
-      if (JSON.stringify(av) !== JSON.stringify(bv)) return false
-      continue
-    }
-    return false
-  }
-  return true
+  return IDENTITY_FIELDS.every((field) => isJsonEqual(a[field], b[field]))
 }
 
 function mergePreservingIdentity(
@@ -72,11 +69,6 @@ export function useKBDocuments(knowledgeBaseId: string) {
         `/v1/knowledge-bases/${knowledgeBaseId}/documents`,
         accessToken,
       )
-      // Preserve object identity for rows whose user-visible content hasn't
-      // actually changed. Highlight saves bump `updated_at` (via the row's
-      // UPDATE trigger) without changing any field we render in this list,
-      // so without this merge the WS-triggered refetch would churn references
-      // downstream and cause the active doc viewer to remount.
       setDocuments((prev) => mergePreservingIdentity(prev, data))
       setLoadError(null)
     } catch (err) {
@@ -85,10 +77,7 @@ export function useKBDocuments(knowledgeBaseId: string) {
     }
   }, [knowledgeBaseId, accessToken])
 
-  // Reset the blocking load state only when the selected wiki changes. Token
-  // refreshes are common when a background tab becomes active again; treating
-  // those as an initial load blanks the current wiki while the same documents
-  // are fetched again.
+  // Only a KB change resets `loading`; token refreshes revalidate in the background without blanking the wiki.
   React.useEffect(() => {
     if (!knowledgeBaseId) {
       setDocuments([])
@@ -101,9 +90,6 @@ export function useKBDocuments(knowledgeBaseId: string) {
     setLoading(true)
   }, [knowledgeBaseId])
 
-  // Fetch on first load and whenever credentials rotate. Credential-driven
-  // fetches deliberately leave `loading` unchanged so the existing wiki stays
-  // visible while it is revalidated in the background.
   React.useEffect(() => {
     if (!knowledgeBaseId || !accessToken) return
 
@@ -117,7 +103,6 @@ export function useKBDocuments(knowledgeBaseId: string) {
     }
   }, [knowledgeBaseId, accessToken, fetchDocs])
 
-  // Real-time updates: WebSocket (hosted) or polling (local)
   React.useEffect(() => {
     if (!knowledgeBaseId || !accessToken) return
 
@@ -126,7 +111,6 @@ export function useKBDocuments(knowledgeBaseId: string) {
       return () => clearInterval(interval)
     }
 
-    // Hosted mode — connect to API WebSocket
     let cancelled = false
 
     function connect() {
@@ -137,7 +121,7 @@ export function useKBDocuments(knowledgeBaseId: string) {
       wsRef.current = ws
 
       ws.onopen = () => {
-        // Send token as first message — keeps JWT out of URLs and logs
+        // Token as first message keeps the JWT out of URLs and logs.
         ws.send(accessToken!)
         reconnectDelay.current = WS_RECONNECT_BASE
       }
@@ -146,7 +130,7 @@ export function useKBDocuments(knowledgeBaseId: string) {
         if (process.env.NODE_ENV === 'development') {
           console.count(`documents ws message:${knowledgeBaseId}`)
         }
-        // Debounce refetches — OCR updates can fire many events in quick succession
+        // OCR updates can fire many events in quick succession.
         if (debounceTimer.current) clearTimeout(debounceTimer.current)
         debounceTimer.current = setTimeout(fetchDocs, DEBOUNCE_MS)
       }
@@ -154,9 +138,7 @@ export function useKBDocuments(knowledgeBaseId: string) {
       ws.onclose = (e) => {
         wsRef.current = null
         if (cancelled) return
-        // 4001 = auth failure. The common cause is a tab reconnecting with a
-        // token that expired while the page was open; ask Supabase to refresh
-        // and let the accessToken dependency recreate the socket.
+        // Usually a token that expired while the tab was open; the refreshed accessToken recreates the socket.
         if (e.code === WS_CLOSE_AUTH) {
           console.warn('WebSocket auth failed; refreshing token:', e.reason)
           refreshAccessToken(accessToken!).catch((err) => {
@@ -168,14 +150,13 @@ export function useKBDocuments(knowledgeBaseId: string) {
           console.warn('WebSocket subscription forbidden; stopping reconnect:', e.reason)
           return
         }
-        // Reconnect with exponential backoff
         const delay = reconnectDelay.current
         reconnectDelay.current = Math.min(delay * 2, WS_RECONNECT_MAX)
         reconnectTimer.current = setTimeout(connect, delay)
       }
 
       ws.onerror = () => {
-        // onclose will fire after this, which handles reconnection
+        // onclose follows and handles reconnection.
       }
     }
 

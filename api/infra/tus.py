@@ -14,8 +14,7 @@ from starlette.requests import ClientDisconnect
 
 logger = logging.getLogger(__name__)
 
-# Bytes buffered in memory before flushing a PATCH body to the temp file.
-FLUSH_SIZE = 1_048_576
+FLUSH_SIZE_BYTES = 1_048_576
 
 
 def _append_file(path: Path, data: bytes):
@@ -39,7 +38,7 @@ async def _drain_to_temp(request: Request, temp_path: Path, remaining: int) -> _
             if bytes_written + len(buf) + len(chunk) > remaining:
                 return _StreamResult(bytes_written, overflow=True, disconnected=False)
             buf.extend(chunk)
-            if len(buf) >= FLUSH_SIZE:
+            if len(buf) >= FLUSH_SIZE_BYTES:
                 await asyncio.to_thread(_append_file, temp_path, bytes(buf))
                 bytes_written += len(buf)
                 buf.clear()
@@ -58,25 +57,20 @@ async def _flush(temp_path: Path, buf: bytearray) -> int:
     return len(buf)
 
 
-# Magic-byte signatures we check at finalize time. We don't try to handle
-# every file type — just the major ones that downstream code routes by
-# extension. Office/OOXML files are ZIP containers, so they share a magic.
 _FILE_SIGNATURES: dict[str, tuple[tuple[bytes, ...], ...]] = {
     "pdf":  ((b"%PDF-",),),
     "png":  ((b"\x89PNG\r\n\x1a\n",),),
     "jpg":  ((b"\xff\xd8\xff",),),
     "jpeg": ((b"\xff\xd8\xff",),),
-    "webp": ((b"RIFF",),),    # also check "WEBP" further in but RIFF is enough
+    "webp": ((b"RIFF",),),
     "gif":  ((b"GIF87a", b"GIF89a"),),
-    # OOXML — pptx/docx/xlsx are ZIP containers (PK\x03\x04). Legacy
-    # ppt/doc/xls are CFB (Compound File Binary) starting with D0CF11E0.
+    # OOXML is a ZIP container; legacy Office is CFB (Compound File Binary).
     "pptx": ((b"PK\x03\x04",),),
     "docx": ((b"PK\x03\x04",),),
     "xlsx": ((b"PK\x03\x04",),),
     "ppt":  ((b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1",),),
     "doc":  ((b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1",),),
-    # CSV and HTML are text — no reliable magic bytes. Skip the strict check
-    # for these; the parser layer is more forgiving and they're low-risk.
+    # csv/html are text with no reliable magic bytes, so they're deliberately unchecked.
 }
 
 
@@ -90,7 +84,6 @@ def _validate_file_signature(temp_path: Path, ext: str) -> None:
             head = f.read(16)
     except OSError as e:
         raise HTTPException(status_code=400, detail=f"Could not read upload: {e}") from e
-    # WebP is a RIFF container; check both the RIFF magic and the WEBP fourcc.
     if ext == "webp":
         if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
             return
@@ -200,8 +193,6 @@ async def _finalize(upload: TusUpload, app_state) -> str:
     title = upload.filename.rsplit(".", 1)[0] if "." in upload.filename else upload.filename
     file_size = upload.upload_length
 
-    # Magic-byte + size checks. On mismatch we discard the temp file and pop
-    # the upload entry before raising so a rejected upload doesn't linger.
     try:
         _validate_file_signature(upload.temp_path, ext)
         actual_size = upload.temp_path.stat().st_size
@@ -225,9 +216,7 @@ async def _finalize(upload: TusUpload, app_state) -> str:
         conn = await pool.acquire()
         try:
             async with conn.transaction():
-                # Re-check quota under the same per-user lock used by text and
-                # URL-ingest writes. A note created while this TUS upload was
-                # in progress must not let finalization overspend the account.
+                # Same per-user lock as text/URL-ingest writes, so a concurrent note can't overspend quota.
                 await conn.execute(
                     "SELECT pg_advisory_xact_lock(hashtext($1::text))",
                     user_id,
@@ -404,7 +393,6 @@ async def tus_create(request: Request):
     temp_path = UPLOAD_DIR / upload_id
     temp_path.touch()
 
-    # Sanitize path: must start with /, no traversal, no double slashes
     raw_path = metadata.get("path", "/").strip() or "/"
     upload_path = "/" + raw_path.replace("\\", "/").strip("/") + "/"
     upload_path = re.sub(r"/\.\.(/|$)", "/", upload_path)  # strip traversal
@@ -461,12 +449,9 @@ async def tus_patch(upload_id: str, request: Request):
     except ValueError as e:
         raise HTTPException(status_code=400, detail="Invalid Upload-Offset") from e
 
-    # TUS offsets are compare-and-append state. Serialize the whole operation,
-    # including finalization, so concurrent PATCH requests cannot both pass the
-    # same offset check and append the declared length twice.
+    # Compare-and-append (incl. finalization) is serialized so concurrent PATCHes can't both pass the offset check.
     async with upload.lock:
-        # Another PATCH may have finalized and removed this upload while this
-        # request waited for the per-upload lock.
+        # A concurrent PATCH may have finalized and removed this upload while we waited.
         if _uploads.get(upload_id) is not upload:
             raise HTTPException(status_code=404, detail="Upload not found")
 
@@ -475,8 +460,6 @@ async def tus_patch(upload_id: str, request: Request):
 
         upload.last_activity = time.time()
 
-        # Hard ceiling on how many bytes this PATCH can write — never let the
-        # client exceed Upload-Length, regardless of streamed body size.
         remaining = upload.upload_length - upload.upload_offset
         result = await _drain_to_temp(request, upload.temp_path, remaining)
         upload.upload_offset += result.bytes_written
@@ -486,8 +469,7 @@ async def tus_patch(upload_id: str, request: Request):
             raise HTTPException(status_code=413, detail="Body exceeds declared Upload-Length")
 
         if result.disconnected:
-            # Client hung up mid-PATCH. Bytes received so far are persisted and the
-            # offset advanced, so the client resumes from HEAD + the next PATCH.
+            # Received bytes are persisted, so the client resumes from HEAD.
             return Response(
                 status_code=204,
                 headers=_tus_headers({"Upload-Offset": str(upload.upload_offset)}),

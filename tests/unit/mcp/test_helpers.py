@@ -209,6 +209,12 @@ async def test_read_webclip_returns_asset_images_when_requested():
         async def find_document_by_name(self, kb_id, name):
             return None
 
+        async def get_document_metadata(self, kb_id, filename, dir_path):
+            return await self.get_document(kb_id, filename, dir_path)
+
+        async def find_document_metadata_by_name(self, kb_id, name):
+            return None
+
         async def load_asset_bytes(self, asset_doc_id):
             assert asset_doc_id == "asset-1"
             return b"webp-bytes"

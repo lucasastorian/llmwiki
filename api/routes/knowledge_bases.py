@@ -14,14 +14,6 @@ async def list_knowledge_bases(service: Annotated[KBService, Depends(get_kb_serv
     return await service.list()
 
 
-@router.get("/{kb_id}")
-async def get_knowledge_base(kb_id: UUID, service: Annotated[KBService, Depends(get_kb_service)]):
-    row = await service.get(str(kb_id))
-    if not row:
-        raise HTTPException(status_code=404, detail="Knowledge base not found")
-    return row
-
-
 @router.post("", status_code=201)
 async def create_knowledge_base(body: CreateKB, service: Annotated[KBService, Depends(get_kb_service)]):
     return await service.create(body.name, body.description, body.kind)

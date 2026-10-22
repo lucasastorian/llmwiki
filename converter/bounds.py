@@ -1,5 +1,4 @@
-"""Size guards for untrusted extractor output — every stage that could amplify
-a crafted result into large Python objects or an oversized response is bounded."""
+"""Size guards on every stage where crafted extractor output could amplify into huge objects or responses."""
 
 import json
 from pathlib import Path

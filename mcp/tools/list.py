@@ -1,5 +1,3 @@
-"""Knowledge base tools — create and enumerate knowledge bases."""
-
 from config import settings
 
 from mcp.server.fastmcp import Context, FastMCP

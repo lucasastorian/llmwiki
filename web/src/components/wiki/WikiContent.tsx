@@ -10,7 +10,7 @@ import 'katex/dist/katex.min.css'
 import type { Components } from 'react-markdown'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { FileText, Copy, Check, CircleAlert, Network, ChevronLeft, ChevronRight, ArrowRight, Trash2 } from 'lucide-react'
-import { cn } from '@/lib/utils'
+import { cn, toDisplayTitle } from '@/lib/utils'
 import { apiFetch } from '@/lib/api'
 import { parsePlanTasks, type PlanSummary, type TaskStatus } from '@/lib/planTasks'
 import { decodeUnicodeEscapes } from '@/lib/text'
@@ -42,8 +42,7 @@ const QuizBlock = dynamic(() => import('./QuizBlock').then((mod) => mod.QuizBloc
   ),
 })
 
-// A fenced code block reaches the `pre` renderer as a single <code> child whose
-// className carries the fence language.
+// react-markdown hands `pre` a single <code> child whose className carries the fence language.
 function fenceInfo(child: React.ReactNode): { language: string; text: string } | null {
   if (!React.isValidElement(child)) return null
   const props = child.props
@@ -66,10 +65,7 @@ function displayHeadingText(text: string): string {
   return text.trim().toLowerCase() === 'checkpoint' ? 'Quiz' : text
 }
 
-// Older generated lessons wrapped the self-labeling widget in a redundant
-// "Checkpoint" section (often with this stock prompt). Remove only that exact
-// wrapper when it directly introduces a quiz; the fenced source stays byte-for-byte
-// unchanged so persisted question keys remain valid.
+// Strips only the legacy "Checkpoint" heading; the quiz fence stays byte-identical so question keys remain valid.
 export function stripLegacyQuizWrapper(md: string): string {
   return md.replace(
     /^#{2,3}[ \t]+Checkpoint[ \t]*\r?\n(?:[ \t]*\r?\n)*(?:Try to answer without looking back\.[ \t]*\r?\n(?:[ \t]*\r?\n)*)?(?=```quiz[ \t]*(?:\r?\n|$))/gim,
@@ -118,8 +114,6 @@ function parseFrontmatterField(content: string, field: string): string | null {
   return value ? decodeUnicodeEscapes(value) : null
 }
 
-// The page title is the body's leading H1; lift it into the chrome header so the eyebrow
-// can sit above it and the description below it, then drop it from the rendered body.
 function extractLeadingH1(body: string): { heading: string | null; rest: string } {
   const trimmed = body.replace(/^\s+/, '')
   const match = trimmed.match(/^#\s+(.+)\n?/)
@@ -141,21 +135,13 @@ function pathEyebrow(path: string | undefined): string | null {
   return parts.map(humanizeSegment).join(' · ')
 }
 
-// Title-case an all-lowercase page name ("transformer" -> "Transformer"); leave
-// intentional casing alone ("GRPO", "MAI-Base-1").
-function toDisplayTitle(title: string): string {
-  if (title !== title.toLowerCase()) return title
-  return title.replace(/\b\w/g, (c) => c.toUpperCase())
-}
-
 interface MdastLike {
   type: string
   value?: string
   children?: MdastLike[]
 }
 
-// remark-math only parses dollar delimiters; models routinely author \( \) and \[ \],
-// which markdown then eats as paren escapes. Convert to $ / $$ outside code fences and spans.
+// remark-math only parses $ delimiters; markdown would eat \( \) and \[ \] as escapes.
 function normalizeMathDelimiters(md: string): string {
   const segments = md.split(/(```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$)|`[^`\n]*`)/)
   return segments
@@ -169,9 +155,7 @@ function normalizeMathDelimiters(md: string): string {
     .join('')
 }
 
-// Currency ($100M) and inline math ($x_i$) share the $ delimiter, so remark-math
-// mathifies "worth $100M that produces $10M/year". A $ immediately followed by a
-// digit is currency — escape it — unless the span to its closing $ contains LaTeX syntax.
+// $ followed by a digit is currency ("$100M ... $10M") unless the span to its closing $ contains LaTeX syntax.
 const MATH_SYNTAX = /[\\^_{}=+]/
 
 function escapeCurrencyDollars(text: string): string {
@@ -211,10 +195,7 @@ function escapeCurrencyDollars(text: string): string {
   return out
 }
 
-// Models routinely double-escape LaTeX backslashes (\\log instead of \log) when authoring through tools;
-// KaTeX reads \\ as a line break and fails. Restore a single backslash before a command letter.
-// Genuine \\ line breaks are followed by whitespace or [, never a letter, so they are left intact.
-// Also escape bare % — in LaTeX it starts a comment and silently eats the rest of the formula.
+// Tools double-escape commands (\\log); real \\ breaks never precede a letter. Bare % would start a LaTeX comment.
 function remarkFixOverescapedMath() {
   const restore = (node: MdastLike): void => {
     if ((node.type === 'inlineMath' || node.type === 'math') && typeof node.value === 'string') {
@@ -234,9 +215,7 @@ interface TaskListItem extends MdastLike {
 
 const EXTENDED_TASK_MARKER_RE = /^\[([~!])\](?:[ \t]+|$)/
 
-// remark-gfm only parses [ ]/[x]; the plan convention adds [~] in-progress and
-// [!] blocked, which arrive as literal text. Tag every task item with data-task
-// so the li renderer draws one glyph vocabulary for all four states.
+// remark-gfm only parses [ ]/[x]; this adds the plan convention's [~] in-progress and [!] blocked.
 export function remarkTaskStatus() {
   const visit = (node: TaskListItem): void => {
     if (node.type === 'listItem') {
@@ -305,8 +284,7 @@ function PlanProgressHeader({ summary }: { summary: PlanSummary }) {
 function TableOfContents({ items }: { items: TocItem[] }) {
   const [activeIndex, setActiveIndex] = React.useState(0)
 
-  // Scroll-position spy on the real scroll container (the viewport-based
-  // IntersectionObserver never fired because content scrolls in a nested div).
+  // Content scrolls in a nested div, so a viewport IntersectionObserver never fires.
   React.useEffect(() => {
     if (items.length === 0) return
     const container = document.getElementById('wiki-scroll-container')
@@ -379,15 +357,12 @@ function TableOfContents({ items }: { items: TocItem[] }) {
 
 function parseFootnoteSources(content: string): Map<string, string> {
   const map = new Map<string, string>()
-  // Match footnote definitions: [^1]: full source text until end of line
   const regex = /\[\^(\d+)\]:\s*(.+)$/gm
   let m
   while ((m = regex.exec(content)) !== null) {
     const num = m[1]
     let source = m[2].trim()
-    // Strip surrounding bold markers
     source = source.replace(/^\*{1,2}/, '').replace(/\*{1,2}$/, '')
-    // Clean up markdown links
     const linkMatch = source.match(/\[([^\]]+)\]\([^)]*\)/)
     if (linkMatch) source = linkMatch[1]
     map.set(num, source)
@@ -423,7 +398,6 @@ function CitationBadge({
     }
   }, [])
 
-  // Parse source into filename and page reference
   const parts = source.match(/^(.+?)(?:,\s*p\.?\s*(.+))?$/)
   const filename = parts?.[1]?.trim() ?? source
   const pageRef = parts?.[2]?.trim()
@@ -495,18 +469,15 @@ function WikiImage({
   const [loading, setLoading] = React.useState(false)
 
   React.useEffect(() => {
-    // Stable renderer identities mean React reuses this component across page
-    // navigations — always drop the previous page's resolved image first.
+    // Stable renderer identities mean this instance is reused across page navigations.
     setSvgContent(null)
     setImageUrl(null)
     setLoading(false)
 
     const documents = documentsRef.current
     if (!src || !documents || !token) return
-    // Only resolve relative paths (not http:// or data: URIs)
     if (src.startsWith('http') || src.startsWith('data:')) return
 
-    // Resolve relative path: strip leading ./ and resolve against current wiki path
     const filename = src.replace(/^\.\//, '')
     const doc = documents.find((d) => {
       return d.filename === filename || d.filename === filename.split('/').pop()
@@ -523,29 +494,26 @@ function WikiImage({
     setLoading(true)
 
     if (isSvg || isTextAsset) {
-      // Text-based assets stored in the content column — fetch via API
       apiFetch<{ content: string }>(`/v1/documents/${doc.id}/content`, token)
         .then((res) => {
           if (cancelled) return
           if (isSvg && res.content) {
             setSvgContent(res.content)
           } else if (res.content) {
-            // For non-SVG text assets, render as data URI
             const blob = new Blob([res.content], { type: `image/${doc.file_type}+xml` })
             setImageUrl(URL.createObjectURL(blob))
           }
         })
-        .catch(() => { /* silent fail — image just won't render */ })
+        .catch(() => {})
         .finally(() => {
           if (!cancelled) setLoading(false)
         })
     } else {
-      // Binary images stored in S3 — use the /url endpoint
       apiFetch<{ url: string }>(`/v1/documents/${doc.id}/url`, token)
         .then((res) => {
           if (!cancelled) setImageUrl(res.url)
         })
-        .catch(() => { /* silent fail */ })
+        .catch(() => {})
         .finally(() => {
           if (!cancelled) setLoading(false)
         })
@@ -556,7 +524,6 @@ function WikiImage({
     }
   }, [src, documentsRef, token])
 
-  // Inline SVG rendering
   if (svgContent) {
     const dataUri = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svgContent)}`
     return (
@@ -571,7 +538,6 @@ function WikiImage({
     )
   }
 
-  // Resolved image URL (binary or data URI)
   if (imageUrl) {
     return (
       <ExpandableMedia content={imageUrl} type="img" alt={alt}>
@@ -585,7 +551,7 @@ function WikiImage({
     )
   }
 
-  // Still loading — use span to avoid div-inside-p hydration error
+  // span, not div: images render inside <p> and a div would break hydration.
   if (loading) {
     return (
       <span className="block my-5 flex justify-center">
@@ -594,7 +560,6 @@ function WikiImage({
     )
   }
 
-  // Fallback: render as a normal image tag (external URLs, unresolved paths)
   return (
     // eslint-disable-next-line @next/next/no-img-element
     <img
@@ -605,8 +570,7 @@ function WikiImage({
   )
 }
 
-// Parsing + KaTeX rendering are the expensive part of this page; memoized so
-// parent re-renders (documents churn over the websocket) never re-run them.
+// Memoized: KaTeX parsing is expensive and documents churn over the websocket.
 const MarkdownBody = React.memo(function MarkdownBody({
   content,
   components,
@@ -660,11 +624,7 @@ export function WikiContent({ content, title, path, documentId = null, onNavigat
   const remoteVersion = documents?.find((d) => d.id === documentId)?.version ?? null
   const highlightsApi = useWikiHighlights(documentId, remoteVersion)
 
-  // The markdown renderers must keep stable identities: new renderer functions
-  // are new element types to React, which tears down and remounts the whole
-  // rendered page (losing scroll, reloading images) on any documents churn.
-  // Callbacks and documents flow through refs so `components` never recomputes
-  // for identity-only changes.
+  // New renderer functions are new element types to React, remounting the whole page; hence refs.
   const onNavigateRef = React.useRef(onNavigate)
   onNavigateRef.current = onNavigate
   const onSourceClickRef = React.useRef(onSourceClick)
@@ -785,7 +745,7 @@ export function WikiContent({ content, title, path, documentId = null, onNavigat
         )
       },
       a({ href, children }) {
-        // Footnote back-references (↩ arrows) — hide entirely
+        // Hide footnote back-references (↩).
         if (href?.includes('fnref')) {
           return null
         }
@@ -804,7 +764,6 @@ export function WikiContent({ content, title, path, documentId = null, onNavigat
           )
         }
 
-        // Internal wiki links
         if (
           href &&
           !href.startsWith('http') &&
@@ -821,7 +780,6 @@ export function WikiContent({ content, title, path, documentId = null, onNavigat
           )
         }
 
-        // Anchor links (headings)
         if (href?.startsWith('#')) {
           return (
             <a
@@ -851,7 +809,6 @@ export function WikiContent({ content, title, path, documentId = null, onNavigat
         )
       },
       sup({ children, ...props }) {
-        // Detect footnote references like [^1] which render as <sup> with an <a> inside
         const child = React.Children.toArray(children)[0]
         const childProps = React.isValidElement(child) ? (child.props as Record<string, unknown>) : null
         const childHref = childProps && typeof childProps.href === 'string' ? childProps.href : null
@@ -933,7 +890,6 @@ export function WikiContent({ content, title, path, documentId = null, onNavigat
         )
       },
       li({ children, ...props }) {
-        // Style footnote list items (inside <section data-footnotes>)
         const id = (props as Record<string, unknown>).id
         if (typeof id === 'string' && (id.startsWith('fn-') || id.startsWith('user-content-fn-'))) {
           const text = childrenToText(children).replace(/↩.*$/, '').trim()
@@ -986,10 +942,9 @@ export function WikiContent({ content, title, path, documentId = null, onNavigat
         )
       },
       section({ children, ...props }) {
-        // Replace the auto-generated footnotes section with our own clean version
+        // Replace remark-gfm's footnotes section with one built from parsed sources.
         const dp = props as Record<string, unknown>
         if (dp['data-footnotes'] !== undefined || dp.dataFootnotes !== undefined || dp.className === 'footnotes') {
-          // Render our own clean footnotes from parsed sources
           const entries = Array.from(footnoteSources.entries())
           if (entries.length === 0) return null
           return (
@@ -1032,7 +987,6 @@ export function WikiContent({ content, title, path, documentId = null, onNavigat
         <div className={cn(
           hasToc && 'flex gap-8',
         )}>
-          {/* Main content */}
           <div className={cn(
             'min-w-0',
             hasToc ? 'flex-1 max-w-[720px]' : 'w-full',
@@ -1169,7 +1123,6 @@ export function WikiContent({ content, title, path, documentId = null, onNavigat
             )}
           </div>
 
-          {/* Right sidebar — "On this page" ToC */}
           {hasToc && (
             <aside className="hidden lg:block w-48 shrink-0">
               <div className="sticky top-10">

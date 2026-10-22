@@ -1,5 +1,4 @@
-// Session-wide union of completed question keys per document, so
-// multiple quiz blocks on one page never clobber each other's PATCH payloads.
+// Per-document union so multiple quiz blocks on a page never clobber each other's PATCH.
 const completedByDoc = new Map<string, Set<string>>()
 const saveQueueByDoc = new Map<string, Promise<void>>()
 

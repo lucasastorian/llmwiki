@@ -1,13 +1,4 @@
-"""Isolation + behavior tests for the wiki sharing feature.
-
-Threat model:
-- Cross-tenant ownership: User B cannot PATCH User A's KB sharing.
-- Anon-cannot-leak: GET /v1/public/wiki/{slug} only returns visibility='public'.
-- TOCTOU on revocation: visibility flip mid-request must not leak content.
-- Path-based publish surface: only /wiki/* docs are publicly accessible.
-- Cross-KB asset access: anon cannot retrieve KB-B assets via KB-A's slug.
-- Slug write-protection: non-public PATCH must not reserve a global slug.
-"""
+"""Wiki sharing isolation: ownership, public-only anon reads of /wiki/ docs, revocation TOCTOU, cross-KB assets, slug reservation."""
 
 import pytest
 
@@ -22,7 +13,6 @@ from tests.integration.isolation.conftest import (
     USER_B_ID,
 )
 
-# ─────────── Helpers ───────────
 
 async def publish_kb(pool, kb_id: str, slug: str) -> None:
     """Flip a KB to visibility='public' with the given slug, bypassing the API."""
@@ -72,15 +62,12 @@ class FakeS3:
 
 @pytest.fixture
 def fake_s3(client):
-    """Attach a FakeS3 to the app for the duration of the test."""
     from main import app
     fake = FakeS3()
     app.state.s3_service = fake
     yield fake
     app.state.s3_service = None
 
-
-# ─────────── PATCH /sharing — ownership + validation ───────────
 
 class TestSharingOwnership:
 
@@ -103,7 +90,6 @@ class TestSharingOwnership:
             json={"visibility": "public", "public_slug": "alice-grabs-bob"},
         )
         assert resp.status_code == 404
-        # Bob's KB should be untouched
         row = await pool.fetchrow(
             "SELECT visibility::text AS v, public_slug FROM knowledge_bases WHERE id = $1",
             KB_B_ID,
@@ -125,8 +111,6 @@ class TestSharingOwnership:
         assert row["v"] == "private"
         assert row["public_slug"] is None
 
-
-# ─────────── PATCH /sharing — slug semantics ───────────
 
 class TestSharingSlugSemantics:
 
@@ -160,8 +144,7 @@ class TestSharingSlugSemantics:
         assert resp.status_code == 200
         assert resp.json()["public_slug"] is None
 
-        # Bob can still publish with the same slug because Alice's PATCH was
-        # private — the CASE expression in the UPDATE leaves slug NULL.
+        # A private PATCH leaves the slug NULL (CASE in the UPDATE), so Bob can still claim it.
         resp = await client.patch(
             f"/v1/knowledge-bases/{KB_B_ID}/sharing",
             headers=auth_headers(USER_B_ID),
@@ -195,12 +178,9 @@ class TestSharingSlugSemantics:
             headers=auth_headers(USER_A_ID),
             json={"visibility": "public", "public_slug": bad},
         )
-        # 400 from server-side regex; 422 from Pydantic max_length=80.
-        # Both are correct "bad slug" rejections — not 500, not 200.
+        # 400 from the server-side regex, 422 from Pydantic max_length=80.
         assert resp.status_code in (400, 422)
 
-
-# ─────────── GET /public/wiki/{slug} — anon read isolation ───────────
 
 class TestPublicReadIsolation:
 
@@ -245,10 +225,7 @@ class TestPublicReadIsolation:
         assert resp.headers.get("cache-control") == "no-store, must-revalidate"
 
     async def test_public_read_excludes_other_public_kbs(self, client, pool):
-        """Both Alice and Bob have public wikis. Alice's read must NOT return
-        Bob's docs. Catches a regression where the docs JOIN drops the
-        kb.public_slug predicate.
-        """
+        """Guards the docs JOIN keeping its kb.public_slug predicate."""
         await publish_kb(pool, KB_A_ID, "alice-public")
         await publish_kb(pool, KB_B_ID, "bob-public")
 
@@ -257,15 +234,12 @@ class TestPublicReadIsolation:
         body = resp.json()
         assert body["kb"]["public_slug"] == "alice-public"
         assert body["kb"]["author_name"] == "Alice"
-        # Every doc returned must be Alice's. Bob's notes.md happens to have
-        # the same path/filename, so we assert by content instead.
+        # Bob's notes.md shares Alice's path/filename, so assert by content.
         for d in body["documents"]:
             assert "Bob" not in (d.get("content") or ""), (
                 f"Bob's content leaked into Alice's public wiki: {d}"
             )
 
-
-# ─────────── GET /public/wiki/{slug}/assets — surface boundary ───────────
 
 class TestPublicAssetIsolation:
 
@@ -273,8 +247,7 @@ class TestPublicAssetIsolation:
         await set_document_number(pool, DOC_A_ID, 7)
         await publish_kb(pool, KB_A_ID, "alice-assets")
 
-        # Doc A is at /wiki/notes.md and file_type='md' — key follows
-        # {user_id}/{doc_id}/source.md per HostedPublicWikiService.get_asset_key.
+        # Key follows {user_id}/{doc_id}/source.md per HostedPublicWikiService.get_asset_key.
         expected_key = f"{USER_A_ID}/{DOC_A_ID}/source.md"
         fake_s3.store[expected_key] = b"# Hello from Alice"
 
@@ -307,7 +280,7 @@ class TestPublicAssetIsolation:
 
         resp = await client.get("/v1/public/wiki/alice-no-sources/assets/8")
         assert resp.status_code == 404
-        assert fake_s3.calls == []  # never reached S3
+        assert fake_s3.calls == []
 
     async def test_asset_rejects_cross_kb_document(self, client, pool, fake_s3):
         await set_document_number(pool, DOC_A_ID, 9)
@@ -316,12 +289,10 @@ class TestPublicAssetIsolation:
         # Bob's KB is still private.
 
         resp = await client.get("/v1/public/wiki/alice-cross-kb/assets/9")
-        # No matter what status, Bob's S3 key must NEVER be requested.
         assert all(USER_B_ID not in k and DOC_B_ID not in k for k in fake_s3.calls), (
             f"Bob's S3 key leaked into a public Alice request: {fake_s3.calls}"
         )
-        # Resolution path should land on Alice's doc 9 (200 with Alice key) or
-        # 404 from S3 if the test object isn't stored.
+        # 404 is also fine when the fake S3 holds no object for Alice's doc 9.
         if resp.status_code == 200:
             assert all(USER_A_ID in k and DOC_A_ID in k for k in fake_s3.calls)
 
@@ -336,19 +307,10 @@ class TestPublicAssetIsolation:
         assert (await client.get("/v1/public/wiki/alice-revoke-asset/assets/11")).status_code == 404
 
 
-# ─────────── TOCTOU on revocation — deterministic ───────────
-
 class TestRevocationTOCTOU:
 
     async def test_revoke_between_request_arrival_and_query_blocks_response(self, client, pool):
-        """Flip visibility BEFORE the single-statement query runs.
-
-        The implementation reads KB metadata, author, and docs in one
-        statement gated on `visibility = 'public'`. A flip immediately
-        before the query sees the private state and returns no rows;
-        the service returns None and the route 404s. No KB metadata,
-        no author, no docs leak.
-        """
+        """KB metadata, author, and docs are read in one statement gated on visibility, so a flip just before it leaks nothing."""
         await publish_kb(pool, KB_A_ID, "toctou-test")
 
         class _RevokingPoolProxy:
@@ -385,11 +347,8 @@ class TestRevocationTOCTOU:
         )
 
 
-# ─────────── RLS defense-in-depth ───────────
-
 class TestRLSStillScopesPublicKBs:
-    """Even after a KB is publicly readable via the anon API, the authenticated
-    RLS path must NOT widen — User B's session cannot see User A's KB row."""
+    """Public anon reads must not widen authenticated RLS: User B still can't see User A's KB row."""
 
     async def test_user_b_rls_cannot_see_user_a_public_kb(self, pool, rls_session):
         await publish_kb(pool, KB_A_ID, "alice-rls-still-tight")

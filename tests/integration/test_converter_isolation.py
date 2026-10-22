@@ -1,8 +1,6 @@
 import asyncio
 import importlib
 import sys
-import tempfile
-import time
 import types
 from pathlib import Path
 from types import SimpleNamespace
@@ -105,7 +103,7 @@ async def test_s3_key_isolation_ignores_filename_and_path_metadata(monkeypatch, 
 
     tus._uploads.clear()
     temp_path = tmp_path / "upload.bin"
-    # 8 bytes, valid PDF magic — finalize now magic-byte-validates before upload.
+    # Valid PDF magic bytes, since finalize validates them before upload.
     temp_path.write_bytes(b"%PDF-1.4")
 
     upload = tus.TusUpload(
@@ -178,7 +176,7 @@ async def test_tus_finalize_rechecks_quota_and_cleans_uploaded_object(monkeypatc
 
 
 async def test_office_with_mistral_backend_and_converter_uses_extract(monkeypatch):
-    """PDF_BACKEND=mistral + CONVERTER_URL must route Office files through /extract — /convert no longer exists."""
+    """PDF_BACKEND=mistral + CONVERTER_URL must route Office files through /extract."""
     ocr = _import_ocr_module(monkeypatch)
     s3 = RecordingS3()
     service = ocr.OCRService(s3, pool=None)
@@ -284,8 +282,10 @@ async def test_converter_extract_retries_capacity_response(monkeypatch):
     assert sleeps == [0.0, 0.0]
 
 
-async def test_converter_extract_requests_are_bounded(monkeypatch):
+@pytest.mark.parametrize("max_concurrency", [1, 2])
+async def test_converter_extract_requests_are_bounded(monkeypatch, max_concurrency):
     ocr = _import_ocr_module(monkeypatch)
+    monkeypatch.setattr(ocr.settings, "CONVERTER_MAX_CONCURRENCY", max_concurrency)
     service = ocr.OCRService(RecordingS3(), pool=None)
     active = 0
     peak = 0
@@ -329,7 +329,7 @@ async def test_converter_extract_requests_are_bounded(monkeypatch):
         for i in range(5)
     ))
 
-    assert peak == converter_client.ConverterClient.MAX_CONCURRENT_REQUESTS == 2
+    assert peak == max_concurrency
 
 
 def test_tus_upload_namespace_isolation():
@@ -421,66 +421,5 @@ async def test_hosted_ocr_refuses_all_in_process_parser_fallbacks(monkeypatch):
         await service._process_office(
             "doc-a", "user-a", "kb-a", "user-a/doc-a/source.docx", "docx",
         )
-    with pytest.raises(RuntimeError, match="isolated converter"):
-        await service._convert_to_pdf_s3(
-            "doc-a", "user-a", "user-a/doc-a/source.docx", "docx",
-        )
 
     assert s3.download_to_file_calls == []
-
-
-async def test_process_opendataloader_uses_isolated_tempdirs_under_concurrency(monkeypatch):
-    ocr = _import_ocr_module(monkeypatch)
-    s3 = RecordingS3()
-    service = ocr.OCRService(s3, pool=None)
-    stored = []
-    created_dirs = []
-    seen_pdf_paths = []
-    real_tempdir = tempfile.TemporaryDirectory
-
-    class RecordingTemporaryDirectory:
-        def __init__(self, *args, **kwargs):
-            self._ctx = real_tempdir(*args, **kwargs)
-
-        def __enter__(self):
-            path = self._ctx.__enter__()
-            created_dirs.append(path)
-            return path
-
-        def __exit__(self, exc_type, exc, tb):
-            return self._ctx.__exit__(exc_type, exc, tb)
-
-    def fake_extract_pdf(pdf_path: str):
-        seen_pdf_paths.append(pdf_path)
-        assert Path(pdf_path).exists()
-        time.sleep(0.02)
-        return [(1, Path(pdf_path).read_text(encoding="utf-8"), [])]
-
-    async def fake_store_extracted_pages(document_id, user_id, kb_id, page_contents, parser, page_elements=None, assets=None):
-        stored.append((document_id, user_id, page_contents, parser))
-
-    async def fake_build_pdf_assets(document_id, pages_with_images):
-        return [], {}
-
-    async def fake_upload_assets(user_id, assets):
-        return None
-
-    monkeypatch.setattr(ocr.tempfile, "TemporaryDirectory", RecordingTemporaryDirectory)
-    monkeypatch.setattr(ocr, "_extract_pdf_in_process", fake_extract_pdf)
-    monkeypatch.setattr(service._pages, "store_extracted_pages", fake_store_extracted_pages)
-    monkeypatch.setattr(service._pages, "build_pdf_assets", fake_build_pdf_assets)
-    monkeypatch.setattr(service._pages, "upload_assets", fake_upload_assets)
-
-    await asyncio.gather(
-        service._process_opendataloader("doc-a", "user-a", "kb-a", "user-a/doc-a/source.pdf"),
-        service._process_opendataloader("doc-b", "user-b", "kb-b", "user-b/doc-b/source.pdf"),
-    )
-
-    assert len(created_dirs) == 2
-    assert len(set(created_dirs)) == 2
-    assert {str(Path(path).parent) for path in seen_pdf_paths} == set(created_dirs)
-    assert all(not Path(path).exists() for path in created_dirs)
-    assert sorted(stored) == [
-        ("doc-a", "user-a", [(1, "user-a/doc-a/source.pdf")], "opendataloader"),
-        ("doc-b", "user-b", [(1, "user-b/doc-b/source.pdf")], "opendataloader"),
-    ]

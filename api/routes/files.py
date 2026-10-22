@@ -1,8 +1,4 @@
-"""Local file serving route with Range support and path traversal protection.
-
-Only active in local mode. Serves files from .llmwiki/cache/ (derived artifacts)
-and from the workspace root (source files).
-"""
+"""Local-mode file serving (cache artifacts and workspace sources) with Range support and traversal protection."""
 
 import mimetypes
 from pathlib import Path

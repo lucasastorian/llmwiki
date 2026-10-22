@@ -2,7 +2,6 @@ import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { ThemeProvider } from "next-themes";
 import { Toaster } from "@/components/ui/sonner";
-import { OpenReplayTracker } from "@/components/OpenReplay";
 import { ServiceWorkerRegistration } from "@/components/pwa/ServiceWorkerRegistration";
 import "./globals.css";
 
@@ -22,6 +21,10 @@ export const metadata: Metadata = {
   metadataBase: new URL("https://llmwiki.app"),
   manifest: "/manifest.webmanifest",
   icons: {
+    icon: [
+      { url: "/icon.svg", type: "image/svg+xml" },
+      { url: "/icon-192x192.png", sizes: "192x192", type: "image/png" },
+    ],
     apple: [
       {
         url: "/apple-touch-icon.png",
@@ -49,9 +52,7 @@ export const metadata: Metadata = {
     description: "Free, open-source implementation of Karpathy's LLM Wiki. Upload documents and build a compounding wiki directly via Claude.",
     images: ["/og.png"],
   },
-  // Signal to the LLM Wiki Chrome extension that this IS the wiki app — the
-  // content script should bail out and let the in-app highlight UI run alone.
-  // Works for prod (llmwiki.app), dev (localhost), and any future host.
+  // Tells the Chrome extension's content script to stand down on any wiki host.
   other: {
     "llmwiki-app": "true",
   },
@@ -67,8 +68,7 @@ export const viewport: Viewport = {
   ],
 };
 
-// Script to prevent theme flash - runs before React hydrates
-// Must match the storageKey used by ThemeProvider (default is 'theme')
+// Runs before hydration to prevent a theme flash; storageKey must match ThemeProvider's.
 const themeScript = `
   (function() {
     try {
@@ -117,7 +117,6 @@ export default function RootLayout({
         >
           {children}
           <Toaster richColors />
-          <OpenReplayTracker />
           <ServiceWorkerRegistration />
         </ThemeProvider>
       </body>

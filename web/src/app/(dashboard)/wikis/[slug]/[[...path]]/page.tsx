@@ -20,7 +20,6 @@ export default function KBPage() {
     [knowledgeBases, params.slug],
   )
 
-  // ── Legacy ?page= redirect (old URL format) ─────────────────
   const legacyPage = searchParams.get('page')
   const needsDocLookup = !!legacyPage
   const { documents: legacyDocs, loading: legacyLoading } = useKBDocuments(
@@ -41,7 +40,6 @@ export default function KBPage() {
     }
   }, [legacyPage, kb, legacyLoading, legacyDocs, router])
 
-  // Show spinner while redirecting legacy params or loading KB list
   if (kbLoading || !user || legacyPage) {
     return (
       <div className="flex items-center justify-center h-full bg-background">

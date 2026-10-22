@@ -1,8 +1,4 @@
-"""Text chunker with header breadcrumb tracking.
-
-Splits document content into ~512 token chunks with ~128 token overlap.
-Tracks markdown headers to build breadcrumb context per chunk.
-"""
+"""Paragraph chunker with token overlap that tracks markdown headers as per-chunk breadcrumbs."""
 
 import hashlib
 import logging
@@ -101,14 +97,7 @@ def chunk_text(
 
 
 def _enforce_max_chars(chunks: list[Chunk]) -> list[Chunk]:
-    """Split any chunk whose content exceeds MAX_CHUNK_CHARS.
-
-    The paragraph-based chunker emits one chunk per paragraph when a single
-    paragraph is bigger than CHUNK_SIZE — fine for English wiki text, but CJK
-    paragraphs and long code blocks routinely exceed the 10k-char DB limit.
-    Split such chunks on sentence boundaries; fall back to fixed-size slices
-    if no sentence break is available.
-    """
+    """Split oversized chunks (CJK paragraphs, long code) on sentences, else hard slices."""
     if not any(len(c.content) > MAX_CHUNK_CHARS for c in chunks):
         return chunks
 
@@ -121,10 +110,7 @@ def _enforce_max_chars(chunks: list[Chunk]) -> list[Chunk]:
                 header_breadcrumb=c.header_breadcrumb,
             ))
             continue
-        # Each split piece gets its own start_char (base + cumulative offset)
-        # so downstream consumers (e.g. text-anchor highlight mapping) can
-        # derive each piece's end as start_char + len(content) without
-        # adjacent pieces appearing to start at the same paragraph offset.
+        # Distinct start_char per piece so consumers can derive its end as start_char + len(content).
         base = c.start_char or 0
         offset = 0
         for piece in _split_oversized(c.content):
@@ -151,7 +137,6 @@ def _split_oversized(text: str) -> list[str]:
             if len(part) <= MAX_CHUNK_CHARS:
                 current = part
             else:
-                # Sentence-split didn't help — hard-slice.
                 for i in range(0, len(part), MAX_CHUNK_CHARS):
                     pieces.append(part[i:i + MAX_CHUNK_CHARS])
                 current = ""
@@ -206,9 +191,7 @@ async def _store_chunks_on_conn(
     if not changed:
         return
 
-    # source_content seeds the immutable raw text; content starts identical
-    # but may diverge later when highlight CRUD writes annotations into the
-    # chunk via api/services/highlight_chunks.
+    # source_content is immutable; content diverges once highlight annotations are materialized.
     await conn.execute(
         "INSERT INTO document_chunks "
         "(document_id, user_id, knowledge_base_id, chunk_index, content, source_content, "

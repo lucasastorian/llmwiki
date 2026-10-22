@@ -1,8 +1,4 @@
-"""Reference parsing and graph building.
-
-Parses wiki page content for footnote citations ([^N]: filename.pdf, p.3)
-and internal links ([text](path.md)), stores edges in document_references.
-"""
+"""Parse wiki citations (`[^N]: file.pdf, p.3`) and links (`[text](path.md)`) into reference edges."""
 
 import logging
 import re
@@ -96,14 +92,10 @@ def extract_references(
     base_to_doc: dict[str, dict],
     wiki_path_to_doc: dict[str, dict],
 ) -> list[dict]:
-    """Parse content and return a list of reference edges.
-
-    Each edge is: {"target_id": str, "type": "cites"|"links_to", "page": int|None}
-    """
+    """Return edges as {"target_id": str, "type": "cites"|"links_to", "page": int|None}."""
     edges: list[dict] = []
     seen: set[tuple[str, str]] = set()
 
-    # Footnote citations: [^N]: filename.pdf, p.3
     for match in _CITATION_RE.finditer(content):
         filename, page = parse_citation_filename(match.group(1))
         fn_lower = filename.lower()
@@ -117,7 +109,6 @@ def extract_references(
                 seen.add(key)
                 edges.append({"target_id": target["id"], "type": "cites", "page": page})
 
-    # Wiki cross-references: [text](path.md)
     for link_path in parse_wiki_links(content, wiki_dir):
         target = wiki_path_to_doc.get(link_path.lower())
         if not target:

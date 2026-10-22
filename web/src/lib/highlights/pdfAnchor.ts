@@ -1,8 +1,4 @@
-// PDF highlight anchor helpers.
-//
-// Storage is in PDF user-space points (1/72"), zoom/rotation-independent.
-// Viewport rects are derived at render time from the page's current viewport
-// transform.
+// Stored in PDF user-space points (1/72"), independent of zoom and rotation.
 
 import type { PdfRect } from './types'
 
@@ -18,12 +14,7 @@ function normalizeWhitespace(value: string): string {
   return value.replace(/\s+/g, ' ').trim()
 }
 
-/**
- * Convert one viewport-pixel rect (e.g. from Range.getClientRects) into a PDF
- * user-space rect via the page's viewport transform. Caller is responsible
- * for translating viewport coords into the page-local container's coords
- * before calling (subtract the page element's bounding rect).
- */
+/** Expects page-container-relative coords (client rect minus the page element's rect). */
 function viewportRectToPdf(rect: { x: number; y: number; width: number; height: number }, viewport: PdfJsViewport): PdfRect {
   const [px1, py1] = viewport.convertToPdfPoint(rect.x, rect.y)
   const [px2, py2] = viewport.convertToPdfPoint(rect.x + rect.width, rect.y + rect.height)
@@ -41,10 +32,6 @@ interface ComputeAnchorArgs {
   pageText: string
 }
 
-/**
- * Compute a PDF-space anchor from a live DOM selection in the text layer.
- * Returns null if the selection is empty or has no client rects.
- */
 export function computePdfAnchor({ range, viewport, pageContainer, pageText }: ComputeAnchorArgs): {
   textStart: number | null
   textEnd: number | null
@@ -77,8 +64,7 @@ export function computePdfAnchor({ range, viewport, pageContainer, pageText }: C
   }
   if (rects.length === 0) return null
 
-  // Prefix/suffix from the page's full text layer string — best-effort, used
-  // only as a stability check, not for primary anchoring.
+  // Prefix/suffix are a best-effort stability check, not primary anchoring.
   const normalizedPageText = pageText.replace(/\s+/g, ' ')
   const target = textContent
   const idx = normalizedPageText.indexOf(target)
@@ -103,10 +89,7 @@ export interface ViewportRect {
   height: number
 }
 
-/**
- * Convert stored PDF rects → viewport-pixel rects for rendering. The
- * returned coords are page-container-relative (absolute-position friendly).
- */
+/** Returns page-container-relative pixel rects. */
 export function pdfRectsToViewport(rects: PdfRect[], viewport: PdfJsViewport): ViewportRect[] {
   const out: ViewportRect[] = []
   for (const r of rects) {

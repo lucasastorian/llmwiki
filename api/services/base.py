@@ -23,9 +23,6 @@ class KBService(ABC):
     async def list(self) -> list[dict]: ...
 
     @abstractmethod
-    async def get(self, kb_id: str) -> dict | None: ...
-
-    @abstractmethod
     async def create(self, name: str, description: str | None, kind: str | None = None) -> dict: ...
 
     @abstractmethod
@@ -78,12 +75,6 @@ class DocumentService(ABC):
 
     @abstractmethod
     async def get_highlights(self, doc_id: str) -> dict | None: ...
-
-    @abstractmethod
-    async def replace_highlights(
-        self, doc_id: str, highlights: list[dict],
-        expected_version: int | None = None,
-    ) -> dict | None: ...
 
     @abstractmethod
     async def upsert_highlight(

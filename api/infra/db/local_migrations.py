@@ -1,8 +1,4 @@
-"""Startup migration runner for the local SQLite index.
-
-Deliberately stdlib-only: the MCP local server and the llmwiki CLI load this
-module by file path, outside the api package.
-"""
+"""Local SQLite migration runner; stdlib-only because MCP and the llmwiki CLI load it by file path."""
 
 import re
 import sqlite3
@@ -40,8 +36,7 @@ def apply_migrations(db_path: str) -> None:
 
 
 def _apply_if_pending(conn: sqlite3.Connection, migration: Migration) -> None:
-    """Apply one migration atomically, planning under the write lock so racing
-    processes (api, MCP, CLI) serialize and the loser sees the stamped version."""
+    """Apply one migration, planning under BEGIN IMMEDIATE so racing api/MCP/CLI processes serialize."""
     conn.execute("BEGIN IMMEDIATE")
     try:
         version = conn.execute("PRAGMA user_version").fetchone()[0]
@@ -66,13 +61,7 @@ def _is_pre_versioning_db(conn: sqlite3.Connection) -> bool:
 
 
 def _plan_legacy_reconcile(conn: sqlite3.Connection, baseline: Migration) -> list[str]:
-    """Converge a pre-versioning DB onto the baseline.
-
-    Old DBs were built with CREATE TABLE IF NOT EXISTS, so existing tables can
-    be missing any column added since their creation. Diff every table against
-    the baseline and ALTER in what is absent; triggers are dropped first so
-    backfills don't fire them, then recreated by the baseline statements.
-    """
+    """ALTER missing baseline columns into a pre-versioning DB, dropping triggers first so backfills don't fire."""
     target = sqlite3.connect(":memory:")
     target.executescript(baseline.sql)
     statements = [f"DROP TRIGGER IF EXISTS {name}" for name in _trigger_names(target)]
@@ -98,8 +87,7 @@ def _column_ddl(table: str, name: str, col_type: str, notnull: int, default: str
         raise ValueError(
             f"cannot reconcile {table}.{name}: NOT NULL without a default is not addable via ALTER",
         )
-    # PRAGMA table_info strips parentheses from expression defaults, and
-    # SQLite forbids non-constant defaults in ADD COLUMN anyway.
+    # table_info strips parens from expression defaults, and ADD COLUMN forbids non-constant ones anyway.
     if default is not None and not _CONSTANT_DEFAULT.match(default.strip()):
         raise ValueError(
             f"cannot reconcile {table}.{name}: non-constant default {default!r} needs an explicit migration",

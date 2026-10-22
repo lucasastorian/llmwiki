@@ -1,11 +1,4 @@
-"""Tier 2: Application-layer-only isolation tests.
-
-These tests run through the full HTTP/FastAPI stack but with RLS DISABLED
-(no SET LOCAL ROLE, no JWT claims on the connection). Only the application-
-level WHERE user_id clauses protect data access.
-
-If isolation holds here, the application layer works independently of RLS.
-"""
+"""Full HTTP stack with RLS disabled, so only application-level user_id filters protect data."""
 
 
 from tests.helpers.jwt import auth_headers
@@ -14,7 +7,6 @@ from tests.integration.isolation.conftest import (
     DOC_B_ID,
     KB_A_ID,
     KB_B_ID,
-    KEY_B_ID,
     USER_A_ID,
     USER_B_ID,
 )
@@ -30,7 +22,6 @@ class TestSanityCheck:
 
 
 class TestReadIsolationWithoutRLS:
-    """Read routes should block cross-tenant access via WHERE user_id alone."""
 
     async def test_list_kbs_only_returns_own(self, client_no_rls):
         resp = await client_no_rls.get(
@@ -40,12 +31,6 @@ class TestReadIsolationWithoutRLS:
         slugs = [kb["slug"] for kb in resp.json()]
         assert "alice-kb" in slugs
         assert "bob-kb" not in slugs
-
-    async def test_get_kb_cross_tenant_returns_404(self, client_no_rls):
-        resp = await client_no_rls.get(
-            f"/v1/knowledge-bases/{KB_B_ID}", headers=auth_headers(USER_A_ID),
-        )
-        assert resp.status_code == 404
 
     async def test_list_documents_cross_tenant_returns_empty(self, client_no_rls):
         resp = await client_no_rls.get(
@@ -74,11 +59,9 @@ class TestReadIsolationWithoutRLS:
         assert resp.status_code == 404
 
     async def test_own_data_accessible(self, client_no_rls):
-        resp = await client_no_rls.get(
-            f"/v1/knowledge-bases/{KB_A_ID}", headers=auth_headers(USER_A_ID),
-        )
+        resp = await client_no_rls.get("/v1/knowledge-bases", headers=auth_headers(USER_A_ID))
         assert resp.status_code == 200
-        assert resp.json()["slug"] == "alice-kb"
+        assert [kb["slug"] for kb in resp.json()] == ["alice-kb"]
 
         resp = await client_no_rls.get(
             f"/v1/documents/{DOC_A_ID}", headers=auth_headers(USER_A_ID),
@@ -94,7 +77,6 @@ class TestReadIsolationWithoutRLS:
 
 
 class TestEventIsolationWithoutRLS:
-    """The event endpoint must isolate tenants using application filters alone."""
 
     async def test_fixture_contains_both_event_streams(self, pool):
         rows = await pool.fetch(
@@ -143,7 +125,6 @@ class TestEventIsolationWithoutRLS:
 
 
 class TestWriteIsolationWithoutRLS:
-    """Write routes should block cross-tenant access via WHERE user_id alone."""
 
     async def test_create_note_in_other_kb_returns_404(self, client_no_rls):
         resp = await client_no_rls.post(
@@ -250,9 +231,7 @@ class TestWriteIsolationWithoutRLS:
 
 
 class TestHighlightIsolationWithoutRLS:
-    """Granular highlight + move endpoints rely on the explicit WHERE user_id
-    filter in HostedDocumentService. With RLS disabled this proves the
-    application layer alone is sufficient to keep tenants separated."""
+    """Highlight and move endpoints rely on HostedDocumentService's explicit user_id filter alone."""
 
     def _new_highlight(self, hid="alice-injected"):
         return {
@@ -296,30 +275,6 @@ class TestHighlightIsolationWithoutRLS:
             headers=auth_headers(USER_A_ID),
         )
         assert resp.status_code == 404
-
-    async def test_replace_highlights_cross_tenant_returns_404(self, client_no_rls):
-        resp = await client_no_rls.patch(
-            f"/v1/documents/{DOC_B_ID}/highlights",
-            headers=auth_headers(USER_A_ID),
-            json={"highlights": [self._new_highlight()]},
-        )
-        assert resp.status_code == 404
-
-    async def test_replace_highlights_does_not_modify(self, client_no_rls, pool):
-        import json
-        await self._seed_highlight(pool, DOC_B_ID, "bob-keep")
-        await client_no_rls.patch(
-            f"/v1/documents/{DOC_B_ID}/highlights",
-            headers=auth_headers(USER_A_ID),
-            json={"highlights": [self._new_highlight()]},
-        )
-        row = await pool.fetchrow(
-            "SELECT highlights FROM documents WHERE id = $1", DOC_B_ID,
-        )
-        highlights = row["highlights"]
-        if isinstance(highlights, str):
-            highlights = json.loads(highlights)
-        assert [h.get("id") for h in highlights] == ["bob-keep"]
 
     async def test_upsert_highlight_cross_tenant_returns_404(self, client_no_rls):
         resp = await client_no_rls.post(
@@ -408,12 +363,6 @@ class TestHighlightIsolationWithoutRLS:
 
 class TestBidirectionalWithoutRLS:
 
-    async def test_bob_cannot_access_alice_kb(self, client_no_rls):
-        resp = await client_no_rls.get(
-            f"/v1/knowledge-bases/{KB_A_ID}", headers=auth_headers(USER_B_ID),
-        )
-        assert resp.status_code == 404
-
     async def test_bob_cannot_access_alice_document(self, client_no_rls):
         resp = await client_no_rls.get(
             f"/v1/documents/{DOC_A_ID}", headers=auth_headers(USER_B_ID),
@@ -425,24 +374,6 @@ class TestBidirectionalWithoutRLS:
             f"/v1/documents/{DOC_A_ID}/content",
             headers=auth_headers(USER_B_ID),
             json={"content": "overwritten by bob"},
-        )
-        assert resp.status_code == 404
-
-
-class TestAPIKeyIsolationWithoutRLS:
-    """API key list uses ScopedDB — tests app-layer WHERE with RLS disabled."""
-
-    async def test_list_api_keys_only_returns_own(self, client_no_rls):
-        resp = await client_no_rls.get("/v1/api-keys", headers=auth_headers(USER_A_ID))
-        assert resp.status_code == 200
-        names = [k["name"] for k in resp.json()]
-        assert "Alice Key" in names
-        assert "Bob Key" not in names
-
-    async def test_revoke_api_key_cross_tenant_returns_404(self, client_no_rls):
-        resp = await client_no_rls.delete(
-            f"/v1/api-keys/{KEY_B_ID}",
-            headers=auth_headers(USER_A_ID),
         )
         assert resp.status_code == 404
 
@@ -470,7 +401,6 @@ class TestGraphIsolationWithoutRLS:
         assert data["nodes"] == []
 
     async def test_rebuild_graph_cross_tenant_does_not_delete_refs(self, client_no_rls, pool):
-        """Alice rebuilding Bob's KB should not delete Bob's references."""
         before = await pool.fetchval(
             "SELECT COUNT(*) FROM document_references WHERE knowledge_base_id = $1", KB_B_ID,
         )

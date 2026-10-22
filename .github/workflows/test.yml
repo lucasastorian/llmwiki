@@ -78,6 +78,10 @@ jobs:
           tests/unit/test_ocr_routing.py
           tests/unit/test_local_file_serving.py
           tests/unit/test_html_parser_tables.py
+          tests/unit/test_ts_parity.py
+          tests/unit/test_real_page_goldens.py
+          tests/unit/test_parser_invariants.py
+          tests/unit/test_html_parser_hardening.py
           tests/unit/test_local_content_writes.py
           tests/integration/test_converter_isolation.py
           tests/integration/test_converter_service.py

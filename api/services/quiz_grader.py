@@ -73,8 +73,7 @@ class QuizGrader:
             ],
             "response_format": {"type": "json_schema", "json_schema": GRADE_SCHEMA},
             "max_completion_tokens": MAX_COMPLETION_TOKENS,
-            # Gemma 4 enables thinking with a chat-template control token. Keep
-            # grading fast and predictable by explicitly disabling that path.
+            # Gemma 4 thinks by default via a chat-template flag; off keeps grading fast and predictable.
             "chat_template_kwargs": {"enable_thinking": False},
         }
         if user_id:
@@ -148,8 +147,7 @@ class QuizGrader:
                 logger.warning("Workers AI grading call unsuccessful: %s", body.get("errors"))
                 raise HTTPException(status_code=502, detail="Grading service unavailable")
             body = body.get("result", {})
-        # Models on the legacy runtime answer {"response": ...}; vLLM-served
-        # models (Gemma 4 included) answer in OpenAI chat.completion shape.
+        # Legacy-runtime models answer {"response": ...}; vLLM-served ones (Gemma 4) use chat.completion shape.
         if isinstance(body, dict) and "response" in body:
             return body["response"]
         try:

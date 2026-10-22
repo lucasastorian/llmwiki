@@ -39,18 +39,19 @@ async def test_stream_upload_writes_chunks_and_hashes(monkeypatch, tmp_path):
     upload = ChunkedUpload(payload)
     dest = tmp_path / "nested" / "document.bin"
 
-    size, digest = await local_upload._stream_upload_to_path(
+    staged = await local_upload._stream_upload_to_temp(
         upload,
         dest,
         max_bytes=100,
     )
 
-    assert dest.read_bytes() == payload
-    assert size == len(payload)
-    assert digest == hashlib.sha256(payload).hexdigest()
+    assert staged.path.parent == dest.parent
+    assert staged.path.read_bytes() == payload
+    assert staged.size == len(payload)
+    assert staged.digest == hashlib.sha256(payload).hexdigest()
     assert len(upload.read_sizes) > 2
     assert set(upload.read_sizes) == {4}
-    assert not list(dest.parent.glob("*.upload"))
+    assert not dest.exists()
 
 
 async def test_stream_upload_rejects_oversize_without_replacing_existing_file(tmp_path):
@@ -58,7 +59,7 @@ async def test_stream_upload_rejects_oversize_without_replacing_existing_file(tm
     dest.write_bytes(b"existing")
 
     with pytest.raises(HTTPException) as exc:
-        await local_upload._stream_upload_to_path(
+        await local_upload._stream_upload_to_temp(
             ChunkedUpload(b"too-large"),
             dest,
             max_bytes=4,
@@ -83,35 +84,7 @@ async def test_cancellation_waits_for_active_write_before_cleanup(monkeypatch, t
     monkeypatch.setattr(local_upload, "_write_chunk", blocking_write)
     dest = tmp_path / "document.bin"
     task = asyncio.create_task(
-        local_upload._stream_upload_to_path(ChunkedUpload(b"abcdefgh"), dest)
-    )
-
-    assert await asyncio.to_thread(started.wait, 2)
-    task.cancel()
-    await asyncio.sleep(0)
-    assert not task.done()
-    release.set()
-
-    with pytest.raises(asyncio.CancelledError):
-        await task
-    assert not dest.exists()
-    assert not list(tmp_path.glob(".*.upload"))
-
-
-async def test_cancellation_waits_for_active_rename_before_cleanup(monkeypatch, tmp_path):
-    started = threading.Event()
-    release = threading.Event()
-    real_replace = local_upload._replace_path
-
-    def blocking_replace(source, destination):
-        started.set()
-        assert release.wait(timeout=5)
-        real_replace(source, destination)
-
-    monkeypatch.setattr(local_upload, "_replace_path", blocking_replace)
-    dest = tmp_path / "document.bin"
-    task = asyncio.create_task(
-        local_upload._stream_upload_to_path(ChunkedUpload(b"payload"), dest)
+        local_upload._stream_upload_to_temp(ChunkedUpload(b"abcdefgh"), dest)
     )
 
     assert await asyncio.to_thread(started.wait, 2)
@@ -286,3 +259,51 @@ async def test_cancellation_during_commit_leaves_text_fully_indexed(monkeypatch,
             with pytest.raises(asyncio.CancelledError):
                 await task
         await db.close()
+
+
+async def test_cancellation_during_publish_completes_upload_then_cancels(monkeypatch, tmp_path):
+    monkeypatch.setattr(local_upload.settings, "WORKSPACE_PATH", str(tmp_path))
+    request, db = await _request_with_db(tmp_path)
+    rename_started = threading.Event()
+    release_rename = threading.Event()
+    real_replace = local_upload._replace_path
+
+    def blocking_replace(source, destination):
+        rename_started.set()
+        assert release_rename.wait(timeout=5)
+        real_replace(source, destination)
+
+    monkeypatch.setattr(local_upload, "_replace_path", blocking_replace)
+    payload = ("Words that should end up searchable. " * 100).encode()
+    task = asyncio.create_task(
+        local_upload.upload_file(
+            ChunkedUpload(payload, "published.md"),
+            path="/",
+            user_id="local-user",
+            request=request,
+        )
+    )
+    try:
+        assert await asyncio.to_thread(rename_started.wait, 2)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        release_rename.set()
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        cursor = await db.execute("SELECT content FROM documents WHERE relative_path = 'published.md'")
+        document = await cursor.fetchone()
+        assert document is not None
+        assert document[0] == payload.decode()
+        assert (tmp_path / "published.md").read_bytes() == payload
+        assert not list(tmp_path.glob(".*.upload"))
+    finally:
+        release_rename.set()
+        if not task.done():
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        await db.close()
+

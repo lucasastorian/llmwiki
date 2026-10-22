@@ -1,5 +1,3 @@
-"""Reply tool — respond to a user's highlight or comment on a document."""
-
 import uuid
 from datetime import UTC, datetime
 
@@ -12,14 +10,11 @@ from .helpers import resolve_path
 
 MAX_REPLY_CHARS = 4000
 MAX_LISTED_HIGHLIGHTS = 20
-# Must not exceed the API's Highlight.replies max_length, or web edits of the
-# highlight would fail validation after the thread grows past it.
+# Must not exceed the API's Highlight.replies max_length or web edits of the highlight fail validation.
 MAX_THREAD_REPLIES = 50
 
 
 class ReplyHandler:
-    """Appends agent replies to highlight comment threads."""
-
     def __init__(self, fs: VaultFS, kb: dict):
         self.fs = fs
         self.kb = kb

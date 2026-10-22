@@ -2,8 +2,7 @@ import { locateTextAnchor, normalizeAnchorText } from './locator'
 import type { DomPlaintext } from './domPlaintext'
 import type { Highlight } from './types'
 
-// Trusts the saved textAnchor offsets while they still verify against the
-// rendered plaintext; falls back to context search when the markdown drifted.
+// Saved offsets win while they verify; drifted markdown falls back to context search.
 export function resolveHighlightOffsets(
   h: Highlight,
   dp: DomPlaintext,

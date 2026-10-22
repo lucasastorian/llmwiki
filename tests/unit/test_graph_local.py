@@ -1,5 +1,4 @@
-"""rebuild_local must rebuild the reference graph atomically — a mid-rebuild
-failure rolls back so the graph is never left wiped."""
+"""rebuild_local is atomic: a mid-rebuild failure rolls back instead of leaving the graph wiped."""
 
 import uuid
 from pathlib import Path
@@ -90,7 +89,6 @@ async def test_rebuild_local_rolls_back_on_failure(monkeypatch):
     with pytest.raises(RuntimeError):
         await rebuild_local(db, USER_ID)
 
-    # Without the rollback the DELETE would have wiped the graph.
     assert await _ref_count(db) == 1
 
     await db.close()

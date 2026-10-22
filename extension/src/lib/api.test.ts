@@ -119,8 +119,8 @@ describe("PDF API helpers", () => {
     ).resolves.toEqual({ id: "hosted-doc", status: "pending" });
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(fetchMock.mock.calls[0][0]).toBe(`${API_URL}/v1/uploads`);
-    expect(fetchMock.mock.calls[0][1]).toMatchObject({
+    expect(fetchMock.mock.calls[0]![0]).toBe(`${API_URL}/v1/uploads`);
+    expect(fetchMock.mock.calls[0]![1]).toMatchObject({
       method: "POST",
       headers: expect.objectContaining({
         Authorization: `Bearer ${ACCESS_TOKEN}`,

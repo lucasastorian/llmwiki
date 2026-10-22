@@ -1,10 +1,4 @@
-"""Auth-bypass guard: hosted mode never wires a local (always-allow) auth provider.
-
-The invariant that matters for tenancy safety: in hosted mode deps.get_user_id
-must fall through to JWKS/JWT verification (and reject an unauthenticated
-request), never to the fixed local user. In local mode it resolves to a
-LocalAuthProvider returning that single user.
-"""
+"""Hosted mode must verify JWTs and never wire the always-allow local auth provider."""
 
 import uuid
 from pathlib import Path
@@ -48,7 +42,6 @@ async def test_local_mode_wires_local_auth_provider(tmp_path):
     app, db = await _run_local_lifespan_inner(tmp_path)
     try:
         assert isinstance(app.state.auth_provider, LocalAuthProvider)
-        # deps.get_user_id resolves to the single fixed local user, no header needed.
         user_id = await deps.get_user_id(_request(app))
         assert user_id == LOCAL_USER_ID
     finally:
@@ -56,8 +49,6 @@ async def test_local_mode_wires_local_auth_provider(tmp_path):
 
 
 async def test_hosted_mode_never_uses_local_user():
-    """Hosted wiring: auth_provider is None, so get_user_id verifies a JWT and
-    rejects an unauthenticated request rather than returning the local user."""
     import deps
 
     app = SimpleNamespace(state=SimpleNamespace(auth_provider=None))

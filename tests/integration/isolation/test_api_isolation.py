@@ -1,9 +1,4 @@
-"""API tenant isolation tests.
-
-Every test here proves that User A cannot access User B's data,
-and vice versa. Both read routes (RLS-enforced via ScopedDB) and
-write routes (service-role with explicit user_id checks) are covered.
-"""
+"""User A can never reach User B's data via RLS-scoped read routes or user_id-checked write routes."""
 
 import time
 
@@ -17,7 +12,6 @@ from tests.integration.isolation.conftest import (
     DOC_B_ID,
     KB_A_ID,
     KB_B_ID,
-    KEY_B_ID,
     USER_A_EMAIL,
     USER_A_ID,
     USER_B_ID,
@@ -46,10 +40,6 @@ class TestReadIsolation:
         slugs = [kb["slug"] for kb in resp.json()]
         assert "alice-kb" in slugs
         assert "bob-kb" not in slugs
-
-    async def test_get_kb_cross_tenant_returns_404(self, client):
-        resp = await client.get(f"/v1/knowledge-bases/{KB_B_ID}", headers=auth_headers(USER_A_ID))
-        assert resp.status_code == 404
 
     async def test_list_documents_cross_tenant_returns_empty(self, client):
         resp = await client.get(
@@ -115,9 +105,9 @@ class TestReadIsolation:
         assert resp.status_code == 404
 
     async def test_own_data_accessible(self, client):
-        resp = await client.get(f"/v1/knowledge-bases/{KB_A_ID}", headers=auth_headers(USER_A_ID))
+        resp = await client.get("/v1/knowledge-bases", headers=auth_headers(USER_A_ID))
         assert resp.status_code == 200
-        assert resp.json()["slug"] == "alice-kb"
+        assert [kb["slug"] for kb in resp.json()] == ["alice-kb"]
 
         resp = await client.get(f"/v1/documents/{DOC_A_ID}", headers=auth_headers(USER_A_ID))
         assert resp.status_code == 200
@@ -251,10 +241,7 @@ class TestWriteIsolation:
 
 
 class TestHighlightIsolation:
-    """Granular highlight + move isolation. New endpoints added in V2:
-    POST/PATCH /v1/documents/{id}/highlights,
-    DELETE /v1/documents/{id}/highlights/{hid},
-    PATCH /v1/documents/{id} body knowledge_base_id."""
+    """Granular highlight CRUD and cross-KB move isolation."""
 
     async def _seed_highlight(self, pool, doc_id, hid="seed-1"):
         import json
@@ -301,30 +288,6 @@ class TestHighlightIsolation:
             headers=auth_headers(USER_A_ID),
         )
         assert resp.status_code == 404
-
-    async def test_replace_highlights_cross_tenant_returns_404(self, client):
-        resp = await client.patch(
-            f"/v1/documents/{DOC_B_ID}/highlights",
-            headers=auth_headers(USER_A_ID),
-            json={"highlights": [self._new_highlight()]},
-        )
-        assert resp.status_code == 404
-
-    async def test_replace_highlights_cross_tenant_does_not_modify(self, client, pool):
-        await self._seed_highlight(pool, DOC_B_ID, hid="bob-keep")
-        await client.patch(
-            f"/v1/documents/{DOC_B_ID}/highlights",
-            headers=auth_headers(USER_A_ID),
-            json={"highlights": [self._new_highlight()]},
-        )
-        row = await pool.fetchrow(
-            "SELECT highlights FROM documents WHERE id = $1", DOC_B_ID,
-        )
-        import json
-        highlights = row["highlights"]
-        if isinstance(highlights, str):
-            highlights = json.loads(highlights)
-        assert [h.get("id") for h in highlights] == ["bob-keep"]
 
     async def test_upsert_highlight_cross_tenant_returns_404(self, client):
         resp = await client.post(
@@ -413,11 +376,6 @@ class TestHighlightIsolation:
 
 
 class TestBidirectionalIsolation:
-    """Verify isolation works in both directions."""
-
-    async def test_bob_cannot_access_alice_kb(self, client):
-        resp = await client.get(f"/v1/knowledge-bases/{KB_A_ID}", headers=auth_headers(USER_B_ID))
-        assert resp.status_code == 404
 
     async def test_bob_cannot_access_alice_document(self, client):
         resp = await client.get(f"/v1/documents/{DOC_A_ID}", headers=auth_headers(USER_B_ID))
@@ -448,7 +406,6 @@ class TestBidirectionalIsolation:
 
 
 class TestUserRouteIsolation:
-    """User profile and onboarding routes."""
 
     async def test_get_me_returns_own_profile(self, client):
         resp = await client.get("/v1/me", headers=auth_headers(USER_A_ID))
@@ -473,7 +430,6 @@ class TestUserRouteIsolation:
 
 
 class TestUsageIsolation:
-    """Usage stats only reflect the authenticated user's documents."""
 
     async def test_usage_returns_own_totals_only(self, client):
         resp = await client.get("/v1/usage", headers=auth_headers(USER_A_ID))
@@ -490,40 +446,6 @@ class TestUsageIsolation:
         # Bob has 10 pages, 5000 bytes — should not appear in Alice's usage
         assert data["total_pages"] != 13  # 3 + 10
         assert data["total_storage_bytes"] != 6024  # 1024 + 5000
-
-
-class TestAPIKeyIsolation:
-    """API key CRUD routes."""
-
-    async def test_list_api_keys_only_returns_own(self, client):
-        resp = await client.get("/v1/api-keys", headers=auth_headers(USER_A_ID))
-        assert resp.status_code == 200
-        names = [k["name"] for k in resp.json()]
-        assert "Alice Key" in names
-        assert "Bob Key" not in names
-
-    async def test_create_api_key_belongs_to_authenticated_user(self, client, pool):
-        resp = await client.post(
-            "/v1/api-keys",
-            headers=auth_headers(USER_A_ID),
-            json={"name": "New Key"},
-        )
-        assert resp.status_code == 201
-        key_id = resp.json()["id"]
-        row = await pool.fetchrow("SELECT user_id::text FROM api_keys WHERE id = $1", key_id)
-        assert row["user_id"] == USER_A_ID
-
-    async def test_revoke_api_key_cross_tenant_returns_404(self, client):
-        resp = await client.delete(
-            f"/v1/api-keys/{KEY_B_ID}",
-            headers=auth_headers(USER_A_ID),
-        )
-        assert resp.status_code == 404
-
-    async def test_revoke_api_key_cross_tenant_does_not_revoke(self, client, pool):
-        await client.delete(f"/v1/api-keys/{KEY_B_ID}", headers=auth_headers(USER_A_ID))
-        row = await pool.fetchrow("SELECT revoked_at FROM api_keys WHERE id = $1", KEY_B_ID)
-        assert row["revoked_at"] is None
 
 
 class TestGraphIsolation:
@@ -552,7 +474,6 @@ class TestGraphIsolation:
         assert data["edges"] == []
 
     async def test_rebuild_graph_cross_tenant_does_not_delete_refs(self, client, pool):
-        """Alice rebuilding Bob's KB should not delete Bob's references."""
         before = await pool.fetchval(
             "SELECT COUNT(*) FROM document_references WHERE knowledge_base_id = $1", KB_B_ID,
         )
@@ -606,8 +527,6 @@ class TestTUSUploadIsolation:
         assert "Location" in resp.headers
 
     async def test_head_other_users_upload_returns_404(self, client):
-        """Alice creates an upload, Bob tries to HEAD it."""
-        # Alice creates an upload
         resp = await client.post(
             "/v1/uploads",
             headers=self._tus_headers(USER_A_ID, {
@@ -618,12 +537,10 @@ class TestTUSUploadIsolation:
         assert resp.status_code == 201
         location = resp.headers["Location"]
 
-        # Bob tries to check Alice's upload
         resp = await client.head(location, headers=self._tus_headers(USER_B_ID))
         assert resp.status_code == 404
 
     async def test_patch_other_users_upload_returns_404(self, client):
-        """Alice creates an upload, Bob tries to PATCH it."""
         resp = await client.post(
             "/v1/uploads",
             headers=self._tus_headers(USER_A_ID, {
@@ -634,7 +551,6 @@ class TestTUSUploadIsolation:
         assert resp.status_code == 201
         location = resp.headers["Location"]
 
-        # Bob tries to write to Alice's upload
         resp = await client.patch(
             location,
             headers=self._tus_headers(USER_B_ID, {
@@ -696,7 +612,6 @@ class TestAuthBoundary:
         await self._assert_rejected(client, token)
 
     async def test_alg_none_token_returns_401(self, client):
-        """An unsigned (alg=none) token must never authenticate."""
         token = pyjwt.encode(
             _claims(USER_A_ID), "", algorithm="none",
             headers={"kid": jwt_helper.TEST_KID},
@@ -704,10 +619,7 @@ class TestAuthBoundary:
         await self._assert_rejected(client, token)
 
     async def test_hs256_algorithm_confusion_returns_401(self, client):
-        """alg-confusion: forge an HS256 JWS using the EC public key as the HMAC
-        secret. PyJWT refuses to *encode* this, so we craft the wire form by hand
-        the way an attacker would. verify_token pins algorithms=['ES256'], so it
-        must reject before ever treating the public key as a secret."""
+        """Hand-forge an HS256 JWS keyed with the EC public key (PyJWT refuses); ES256 pinning must reject it."""
         import base64
         import hashlib
         import hmac

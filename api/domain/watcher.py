@@ -1,13 +1,4 @@
-"""Filesystem watcher for local mode.
-
-Watches the workspace for file changes and updates the SQLite index.
-Uses watchfiles for efficient cross-platform filesystem monitoring.
-
-Key design rules:
-- App-initiated writes register in _recently_written to prevent re-indexing loops
-- Hidden dirs (.llmwiki, .git, node_modules, etc.) are ignored
-- File identity is by path — rename = delete old + create new
-"""
+"""Local-mode filesystem watcher; file identity is by path, so a rename is delete + create."""
 
 import asyncio
 import contextlib
@@ -47,7 +38,7 @@ def _load_ignore_patterns(workspace: Path) -> list[str]:
                 line = line.strip()
                 if line and not line.startswith("#"):
                     patterns.append(line)
-            break  # Use first found, don't merge
+            break
     _ignore_patterns = patterns
     return patterns
 
@@ -61,13 +52,12 @@ def _matches_ignore_pattern(relative: str, patterns: list[str]) -> bool:
             return True
         if fnmatch(relative, f"**/{pattern}"):
             return True
-        # Check if any path component matches a directory pattern
         for part in relative.split("/"):
             if fnmatch(part, pattern):
                 return True
     return False
 
-# Paths written by the app — skip re-indexing for these
+# App-initiated writes, skipped by the watcher to avoid re-indexing loops.
 _recently_written: dict[str, float] = {}
 
 
@@ -99,12 +89,10 @@ def _should_ignore(
     relative_str = relative.as_posix()
     parts = relative.parts
 
-    # Built-in ignores
     for part in parts:
         if part in IGNORE_DIRS or part.startswith("."):
             return True
 
-    # User-configured ignore patterns
     if patterns is None:
         patterns = _load_ignore_patterns(workspace)
     return bool(patterns and _matches_ignore_pattern(relative_str, patterns))
@@ -143,7 +131,6 @@ def _read_file_snapshot(file_path: Path, include_content: bool):
 
 
 async def _index_file(db: aiosqlite.Connection, workspace: Path, file_path: Path) -> None:
-    """Index or re-index a single file."""
     relative = _workspace_relative(file_path, workspace)
     filename = file_path.name
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
@@ -156,7 +143,6 @@ async def _index_file(db: aiosqlite.Connection, workspace: Path, file_path: Path
 
     source_kind = _get_source_kind(relative)
 
-    # Derive title
     stem = filename.rsplit(".", 1)[0] if "." in filename else filename
     title = stem.replace("-", " ").replace("_", " ").strip().title()
 
@@ -166,7 +152,6 @@ async def _index_file(db: aiosqlite.Connection, workspace: Path, file_path: Path
         ext in SIMPLE_TEXT_TYPES,
     )
 
-    # Check if document already exists at this path
     cursor = await db.execute(
         "SELECT id, content_hash, file_size, mtime_ns FROM documents WHERE relative_path = ?",
         (relative,),
@@ -182,8 +167,7 @@ async def _index_file(db: aiosqlite.Connection, workspace: Path, file_path: Path
             and old_mtime_ns == int(stat.st_mtime_ns)
         )
         if hash_matches or metadata_matches:
-            return  # No change
-        # Update existing
+            return
         await db.execute(
             "UPDATE documents SET content = ?, file_size = ?, content_hash = ?, "
             "mtime_ns = ?, last_indexed_at = datetime('now'), "
@@ -206,9 +190,7 @@ async def _index_file(db: aiosqlite.Connection, workspace: Path, file_path: Path
             from domain.local_processor import chunk_text_document
             await chunk_text_document(db, doc_id, content)
         else:
-            # Unknown binary formats are still valid workspace artifacts, but
-            # no extractor can make them searchable. Finalize them directly
-            # instead of creating a background job that only flips the status.
+            # No extractor can make unknown binaries searchable; finalize without a background job.
             await db.execute(
                 "UPDATE documents SET status = 'ready', parser = 'native', "
                 "error_message = NULL, updated_at = datetime('now') WHERE id = ?",
@@ -217,7 +199,6 @@ async def _index_file(db: aiosqlite.Connection, workspace: Path, file_path: Path
             await db.commit()
         return
 
-    # Create new
     doc_id = str(uuid.uuid4())
     cursor = await db.execute(
         "SELECT COALESCE(MAX(document_number), 0) + 1 FROM documents",
@@ -239,8 +220,7 @@ async def _index_file(db: aiosqlite.Connection, workspace: Path, file_path: Path
          int(stat.st_mtime_ns), doc_number, parser),
     )
     logger.info("Indexed (new): %s", relative)
-    # The processor opens a separate SQLite connection. Publish the row
-    # before spawning it so the claim cannot race an uncommitted INSERT.
+    # Commit before spawning: the processor's own connection must see the row to claim it.
     await db.commit()
     if status == "pending":
         from domain.local_processor import process_document_isolated
@@ -252,7 +232,6 @@ async def _index_file(db: aiosqlite.Connection, workspace: Path, file_path: Path
 
 
 async def _remove_file(db: aiosqlite.Connection, workspace: Path, file_path: Path) -> None:
-    """Remove a file from the index."""
     try:
         relative = _workspace_relative(file_path, workspace)
     except ValueError:
@@ -267,10 +246,7 @@ async def _remove_file(db: aiosqlite.Connection, workspace: Path, file_path: Pat
 
 
 async def watch_workspace(db: aiosqlite.Connection, workspace: Path) -> None:
-    """Watch the workspace for file changes and update the SQLite index.
-
-    Runs indefinitely as an async task. Cancel to stop.
-    """
+    """Sync workspace file changes into the SQLite index until cancelled."""
     from watchfiles import Change, awatch
 
     logger.info("File watcher started: %s", workspace)
@@ -302,7 +278,6 @@ async def watch_workspace(db: aiosqlite.Connection, workspace: Path) -> None:
             except Exception as e:  # noqa: BLE001 -- watcher must survive per-file failures
                 logger.warning("Watcher error for %s: %s", path_str, e)
 
-        # Clean up expired entries from _recently_written
         now = time.monotonic()
         expired = [k for k, v in _recently_written.items() if now - v > COOLDOWN_SECONDS * 2]
         for k in expired:

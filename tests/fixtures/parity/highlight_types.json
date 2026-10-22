@@ -1,0 +1,33 @@
+{
+  "about": "Field names of the `documents.highlights` JSONB models in api/services/types.py and their TypeScript interfaces in web/src/lib/highlights/types.ts (named by `ts`), plus the allowed values of their literal fields.",
+  "models": {
+    "Highlight": {
+      "ts": "Highlight",
+      "fields": ["id", "type", "anchor", "textAnchor", "pdfAnchor", "comment", "replies", "color", "createdAt"]
+    },
+    "HighlightAnchor": {
+      "ts": "DomAnchor",
+      "fields": ["xpath", "endXPath", "startOffset", "endOffset", "textContent", "prefix", "suffix"]
+    },
+    "TextAnchor": {
+      "ts": "TextAnchor",
+      "fields": ["textStart", "textEnd", "textContent", "prefix", "suffix"]
+    },
+    "PdfAnchor": {
+      "ts": "PdfAnchor",
+      "fields": ["page", "textStart", "textEnd", "textContent", "prefix", "suffix", "rects"]
+    },
+    "PdfRect": {
+      "ts": "PdfRect",
+      "fields": ["x", "y", "width", "height"]
+    },
+    "HighlightReply": {
+      "ts": "HighlightReply",
+      "fields": ["id", "author", "text", "createdAt"]
+    }
+  },
+  "literals": {
+    "Highlight.type": ["text", "pdf"],
+    "HighlightReply.author": ["user", "agent"]
+  }
+}

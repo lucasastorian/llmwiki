@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import AuthGate from "./components/AuthGate";
 import SaveForm from "./components/SaveForm";
 import Settings from "./components/Settings";
+import { EyeIcon, EyeOffIcon } from "./components/EyeIcons";
 import {
   checkLocalHealth,
   getMode,
@@ -42,8 +43,6 @@ export default function App() {
     void startInit();
     void detectCurrentHost();
     return () => {
-      // Invalidate any startup promise before its deadline/error handler can
-      // attempt to update an unmounted popup.
       startupAttempt.current += 1;
       mounted.current = false;
     };
@@ -61,8 +60,7 @@ export default function App() {
       );
     } catch (error) {
       if (attempt !== startupAttempt.current) return;
-      // Prevent a timed-out initializer from overwriting the recoverable state
-      // if an unhealthy Chrome API unexpectedly resolves later.
+      // Stops a timed-out init that resolves late from overwriting the error state.
       startupAttempt.current += 1;
       const message = error instanceof Error ? error.message : "The extension could not start.";
       setAuth({ status: "error", message });
@@ -89,7 +87,7 @@ export default function App() {
       if (!mounted.current) return;
       setHostDisabled(disabled);
     } catch {
-      // Restricted page or no permissions; the toggle button stays hidden.
+      // Restricted page; the toggle stays hidden.
     }
   }
 
@@ -141,8 +139,7 @@ export default function App() {
   }
 
   async function checkSession(startupAttemptId?: number) {
-    // MV3 service worker may be cold; sendMessage can reject or resolve
-    // undefined until it wakes, so retry instead of hanging on "loading".
+    // A cold MV3 service worker can reject or resolve undefined until it wakes.
     let response: { accessToken?: string | null; error?: string } | undefined;
     let lastError: unknown = new Error("The extension background did not respond");
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -275,7 +272,6 @@ export default function App() {
 
   return (
     <div className="w-full overflow-hidden rounded-lg border border-zinc-200 bg-zinc-50 p-4 font-sans text-zinc-950 shadow-[0_8px_30px_rgba(15,23,42,0.14),0_1px_2px_rgba(15,23,42,0.08)] ring-1 ring-white/80">
-      {/* Header — source chip (left) + actions (right) */}
       <div className="mb-3 flex items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-2 text-xs text-zinc-500">
           {currentHost && (
@@ -294,21 +290,7 @@ export default function App() {
               title={`${hostDisabled ? "Enable" : "Disable"} on ${currentHost}`}
               className="rounded-md p-1.5 text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-900"
             >
-              {hostDisabled ? (
-                /* eye-off */
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M9.88 9.88a3 3 0 1 0 4.24 4.24" />
-                  <path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68" />
-                  <path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61" />
-                  <line x1="2" y1="2" x2="22" y2="22" />
-                </svg>
-              ) : (
-                /* eye */
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z" />
-                  <circle cx="12" cy="12" r="3" />
-                </svg>
-              )}
+              {hostDisabled ? <EyeOffIcon /> : <EyeIcon />}
             </button>
           )}
           <button
@@ -326,7 +308,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Body */}
       {authError && auth.status !== "loading" && (
         <div className="mb-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
           {authError}

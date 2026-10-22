@@ -10,6 +10,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "mcp"))
 
 from tools.delete import DeleteConfirmation, DeleteHandler, register  # noqa: E402, I001
 
+from mcp.server.elicitation import (  # noqa: E402
+    AcceptedElicitation,
+    CancelledElicitation,
+    DeclinedElicitation,
+)
+from mcp.types import ClientCapabilities  # noqa: E402
 
 KB = {"id": "kb-1", "slug": "test-vault"}
 
@@ -53,7 +59,7 @@ class FakeSession:
     def __init__(self, supports_elicitation: bool):
         self.supports_elicitation = supports_elicitation
 
-    def check_client_capability(self, capability) -> bool:
+    def check_client_capability(self, capability: ClientCapabilities) -> bool:
         assert capability.elicitation is not None
         return self.supports_elicitation
 
@@ -67,14 +73,15 @@ class FakeContext:
             session=FakeSession(supports_elicitation)
         )
 
-    async def elicit(self, message: str, schema: type):
+    async def elicit(
+        self, message: str, schema: type[DeleteConfirmation]
+    ) -> AcceptedElicitation[DeleteConfirmation] | DeclinedElicitation | CancelledElicitation:
         self.elicit_calls.append((message, schema))
         if self.action == "accept":
-            return SimpleNamespace(
-                action="accept",
-                data=SimpleNamespace(confirm=self.confirm),
-            )
-        return SimpleNamespace(action=self.action)
+            return AcceptedElicitation(data=schema(confirm=self.confirm))
+        if self.action == "decline":
+            return DeclinedElicitation()
+        return CancelledElicitation()
 
 
 def _mixed_docs() -> list[dict]:

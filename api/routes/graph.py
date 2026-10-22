@@ -11,10 +11,7 @@ from services.graph import get_graph_hosted, rebuild_hosted
 
 router = APIRouter(tags=["graph"])
 
-# Per-KB cooldown + lock for graph rebuild. Rebuild is O(all docs * all wiki
-# pages) and writes to document_references — running it in a loop hammers
-# Postgres. Cooldown is generous because rebuilds are normal after batches
-# of writes; the lock prevents two concurrent rebuilds for the same KB.
+# Rebuild is O(docs × wiki pages) and rewrites document_references, so throttle and serialize it per KB.
 _REBUILD_COOLDOWN_SECONDS = 5 * 60
 _rebuild_locks: dict[str, asyncio.Lock] = {}
 _rebuild_last_run: dict[str, float] = {}

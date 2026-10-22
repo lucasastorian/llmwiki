@@ -41,12 +41,9 @@ export default defineBackground(() => {
 
   chrome.runtime.onMessage.addListener(
     (message: Message, sender, sendResponse) => {
-      // Only our own contexts (popup, injected content scripts) may drive these
-      // privileged handlers. Without externally_connectable no web page can
-      // reach here, but reject foreign senders as defense in depth.
+      // Defense in depth: no externally_connectable, but still reject foreign senders.
       if (sender.id !== chrome.runtime.id) return false;
-      // These messages are owned by the offscreen document. Returning false
-      // lets that context be the sole responder.
+      // Offscreen document owns these; returning false leaves it the sole responder.
       if (message.type === START_PDF_SAVE || message.type === GET_PDF_SAVE_STATUS) {
         return false;
       }
@@ -55,7 +52,7 @@ export default defineBackground(() => {
         .catch((err: unknown) => {
           sendResponse({ error: err instanceof Error ? err.message : "Background error" });
         });
-      return true; // will respond asynchronously
+      return true; // keeps the channel open for the async sendResponse
     },
   );
 
@@ -80,15 +77,7 @@ export default defineBackground(() => {
     }
   }
 
-  // ── API fetch proxy ─────────────────────────────────────
-  //
-  // Content scripts in MV3 fetch from the page's origin, which means most
-  // sites (Substack, console.cloud.google.com, NYT, etc.) block our calls
-  // via CORS or strict CSP. The background service worker has the privileged
-  // chrome-extension origin and the required host_permission for the API
-  // origin, so it can make the request and forward the result. The target is
-  // gated to the configured API origin by isAllowedApiFetchUrl.
-
+  // MV3 content-script fetches use the page origin and hit CORS/CSP; the worker's extension origin does not.
   async function apiFetchProxy(
     msg: {
       url: string;
@@ -130,34 +119,8 @@ export default defineBackground(() => {
     }
   }
 
-  // ── Google OAuth via Supabase as the broker ─────────────
-  //
-  // The extension does NOT talk to Google's token endpoint directly. Reasons:
-  //   - Web app OAuth clients require a client_secret on token exchange.
-  //     Embedding a client_secret in the extension is unsafe.
-  //   - Google rejects launchWebAuthFlow with chromiumapp.org as the direct
-  //     Google redirect URI ("browser may not be secure") on many clients.
-  //
-  // Instead we route through Supabase Auth, which already has the Google
-  // client_secret stored server-side:
-  //   1. Ask Supabase to build a Google OAuth URL with `redirectTo` = our
-  //      chromiumapp.org/auth/callback. `skipBrowserRedirect: true` keeps us
-  //      from auto-redirecting in this context — we just want the URL.
-  //   2. Open Supabase's URL with launchWebAuthFlow. Google sees Supabase's
-  //      callback as the redirect target (a normal https URL, so no
-  //      "browser may not be secure" complaints).
-  //   3. Google → Supabase's hosted callback → Supabase exchanges code →
-  //      Supabase redirects to chromiumapp.org/auth/callback?code=<supabase>
-  //      with its OWN single-use code, not Google's.
-  //   4. We pull `code` and call `supabase.auth.exchangeCodeForSession(code)`
-  //      to materialize a session in chrome.storage.
-  //
-  // Required Supabase Auth Settings → URL Configuration → Redirect URLs:
-  //   https://<extension-id>.chromiumapp.org/auth/callback
-  //
-  // Google Cloud OAuth client just needs Supabase's callback as before:
-  //   https://iaosaklvjwtviaadjbul.supabase.co/auth/v1/callback
-
+  // Supabase brokers Google OAuth: a bundled client_secret is unsafe and Google rejects chromiumapp.org redirects.
+  // Supabase Redirect URLs must allow https://<extension-id>.chromiumapp.org/auth/callback.
   async function signInWithGoogle(): Promise<{
     success: boolean;
     error?: string;
@@ -165,7 +128,6 @@ export default defineBackground(() => {
     try {
       const redirectTo = chrome.identity.getRedirectURL("auth/callback");
 
-      // Step 1: ask Supabase for the Google OAuth URL.
       const { data, error } = await supabase.auth.signInWithOAuth({
         provider: "google",
         options: {
@@ -181,9 +143,6 @@ export default defineBackground(() => {
         return { success: false, error: "Supabase returned no OAuth URL" };
       }
 
-      // Step 2-3: open Google's auth via Supabase's URL. Supabase handles the
-      // Google code exchange server-side and redirects to redirectTo with a
-      // Supabase auth code.
       const callbackUrl = await chrome.identity.launchWebAuthFlow({
         url: data.url,
         interactive: true,
@@ -203,7 +162,6 @@ export default defineBackground(() => {
         return { success: false, error: "No auth code in callback URL" };
       }
 
-      // Step 4: trade Supabase's code for an actual session.
       const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(code);
       if (exchangeError) {
         return { success: false, error: exchangeError.message };
@@ -276,8 +234,7 @@ export default defineBackground(() => {
   }
 
   async function hasPdfSaveContext(): Promise<boolean> {
-    // runtime.getContexts arrived in Chrome 116. For Chrome 109-115, inspect
-    // the service worker's controlled clients as recommended by Chrome.
+    // runtime.getContexts is Chrome 116+; 109-115 fall back to the worker's clients.
     if ("getContexts" in chrome.runtime) {
       const contexts = await new Promise<chrome.runtime.ExtensionContext[]>((resolve) => {
         chrome.runtime.getContexts({

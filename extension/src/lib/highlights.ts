@@ -1,7 +1,3 @@
-// Highlight anchoring + DOM operations.
-// Strategy: XPath relative to nearest <article>/<main> for stable scoping,
-// plus text fallback (exact textContent + 32-char prefix/suffix).
-
 import type { Highlight, HighlightAnchor } from "./api";
 
 export const HIGHLIGHT_CLASS = "llmwiki-hl";
@@ -13,10 +9,7 @@ const SCAN_SKIP_TAGS = new Set([
 ]);
 const ROOT_LANDMARK_SELECTOR = "main, [role=main], article";
 
-// The page's main content root. We pick the landmark with the most text rather
-// than the first match: some sites (e.g. HuggingFace) render unrelated card
-// components as <article>, so "first <article>" can land on a sidebar card that
-// doesn't contain the post — breaking both capture and resolve.
+// Largest landmark, not the first: some sites (e.g. HuggingFace) render sidebar cards as <article>.
 function findRoot(): Element {
   let best: Element | null = null;
   let bestLen = 0;
@@ -29,8 +22,6 @@ function findRoot(): Element {
   }
   return best ?? document.body;
 }
-
-// ── Anchor computation ──
 
 export function captureAnchor(range: Range): HighlightAnchor | null {
   const text = range.toString();
@@ -57,8 +48,6 @@ export function captureAnchor(range: Range): HighlightAnchor | null {
   };
 }
 
-// XPath for a node relative to root, using indexed steps.
-// For text nodes, the path includes a final text() step with index.
 function computeXPath(node: Node, root: Element): string | null {
   if (node === root) return ".";
   const segments: string[] = [];
@@ -91,15 +80,6 @@ function computeXPath(node: Node, root: Element): string | null {
   return "./" + segments.join("/");
 }
 
-function textOffsetWithinXpath(range: Range, root: Element): number {
-  // We persist endOffset relative to its own text node — same-text-node case.
-  // Multi-node ranges fall back to text matching on resolve.
-  if (range.startContainer === range.endContainer) {
-    return range.endOffset;
-  }
-  return range.toString().length + range.startOffset;
-}
-
 function surroundingContext(range: Range, len: number): { prefix: string; suffix: string } {
   const root = findRoot();
   const fullText = root.textContent ?? "";
@@ -111,15 +91,10 @@ function surroundingContext(range: Range, len: number): { prefix: string; suffix
   return { prefix, suffix };
 }
 
-// ── Anchor resolution ──
-
 export function resolveAnchor(anchor: HighlightAnchor): Range | null {
   const root = findRoot();
-  // Try XPath first
   const xpathResult = tryXPath(anchor, root);
   if (xpathResult) return xpathResult;
-
-  // Fall back to text scan within root
   return tryTextScan(anchor, root);
 }
 
@@ -143,7 +118,6 @@ function tryXPath(anchor: HighlightAnchor, root: Element): Range | null {
   const endNode = anchor.endXPath ? evalXPath(anchor.endXPath, root) : startNode;
   if (!startNode || !endNode) return null;
 
-  // Multi-node range: start and end resolved to different text nodes.
   if (startNode !== endNode) {
     if (startNode.nodeType !== Node.TEXT_NODE || endNode.nodeType !== Node.TEXT_NODE) {
       return null;
@@ -156,11 +130,9 @@ function tryXPath(anchor: HighlightAnchor, root: Element): Range | null {
       return null;
     }
     if (range.toString() === anchor.textContent) return range;
-    // Anchor offsets drifted — caller will fall back to text scan.
     return null;
   }
 
-  // Single-node range
   const node = startNode;
   if (node.nodeType !== Node.TEXT_NODE) return null;
   const text = node.textContent ?? "";
@@ -172,7 +144,6 @@ function tryXPath(anchor: HighlightAnchor, root: Element): Range | null {
     range.setEnd(node, start + target.length);
     return range;
   }
-  // Same node, offset shifted — search within node text
   const idx = text.indexOf(target);
   if (idx >= 0) {
     const range = document.createRange();
@@ -203,7 +174,6 @@ function tryTextScan(anchor: HighlightAnchor, root: Element): Range | null {
     const text = node.textContent ?? "";
     const idx = text.indexOf(target);
     if (idx >= 0) {
-      // If we have a prefix/suffix and they match, prefer that match
       const prefixOk = !anchor.prefix || idx === 0 ||
         text.slice(Math.max(0, idx - anchor.prefix.length), idx).endsWith(anchor.prefix);
       if (prefixOk) {
@@ -218,12 +188,7 @@ function tryTextScan(anchor: HighlightAnchor, root: Element): Range | null {
   return null;
 }
 
-// ── DOM mark wrapping ──
-
-// Wrap every text node intersected by `range` in its own <mark>. Each mark
-// shares the same data-id so they collectively represent one highlight, even
-// if it crosses paragraph boundaries, nested inline tags, or skips over
-// non-text elements (images, etc.).
+// One <mark> per intersected text node, all sharing the highlight id, so a highlight can span elements.
 export function wrapRange(range: Range, highlightId: string): boolean {
   if (range.collapsed) return false;
 
@@ -312,13 +277,6 @@ export function unwrapMark(mark: HTMLElement): void {
   parent.normalize();
 }
 
-export function unwrapAllMarks(): void {
-  const marks = Array.from(document.querySelectorAll(`mark.${HIGHLIGHT_CLASS}`));
-  for (const mark of marks) {
-    unwrapMark(mark as HTMLElement);
-  }
-}
-
 export function unwrapById(highlightId: string): void {
   for (const mark of findAllMarks(highlightId)) {
     unwrapMark(mark);
@@ -326,11 +284,8 @@ export function unwrapById(highlightId: string): void {
 }
 
 function cssEscape(s: string): string {
-  // Minimal escape for attribute selectors
   return s.replace(/["\\]/g, "\\$&");
 }
-
-// ── Highlight list management ──
 
 export function newId(): string {
   return crypto.randomUUID();

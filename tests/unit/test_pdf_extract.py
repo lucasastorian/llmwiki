@@ -1,5 +1,3 @@
-"""Unit tests for the PDF extraction module (opendataloader-pdf integration)."""
-
 import subprocess
 
 import pytest

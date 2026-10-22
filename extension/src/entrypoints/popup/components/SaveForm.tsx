@@ -23,24 +23,6 @@ import KBPicker from "./KBPicker";
 import StatusFeedback, { type Status } from "./StatusFeedback";
 import { canonicalize } from "@/lib/url";
 
-function safeHost(href: string): string {
-  try {
-    return new URL(href).hostname.replace(/^www\./, "");
-  } catch {
-    return href;
-  }
-}
-
-function slugifyFilename(value: string): string {
-  return value
-    .toLowerCase()
-    .replace(/[^\w\s.-]/g, "")
-    .replace(/\s+/g, "-")
-    .replace(/-+/g, "-")
-    .slice(0, 80)
-    .replace(/^[-_.]+|[-_.]+$/g, "") || "web-clip";
-}
-
 interface Props {
   apiUrl: string;
   accessToken: string | null;
@@ -59,7 +41,6 @@ export default function SaveForm({ apiUrl, accessToken }: Props) {
   const [knowledgeBaseId, setKnowledgeBaseId] = useState<string | null>(null);
   const [selectionReady, setSelectionReady] = useState(false);
   const [folderPath, setFolderPath] = useState("/webclipper/");
-  const [showMore, setShowMore] = useState(false);
   const [existingDoc, setExistingDoc] = useState<DocumentByUrl | null>(null);
   const [checkingExisting, setCheckingExisting] = useState(false);
   const [status, setStatus] = useState<Status>({ type: "idle" });
@@ -152,8 +133,6 @@ export default function SaveForm({ apiUrl, accessToken }: Props) {
     setPage(result);
     setTitle(activeTab.title);
 
-    // Inject the highlighter under the activeTab grant so saved highlights
-    // overlay and the user can annotate. No-op on PDFs / restricted pages.
     if (!activeTab.isPdf) {
       chrome.scripting
         .executeScript({ target: { tabId: activeTab.tabId }, files: ["content-scripts/content.js"] })
@@ -182,7 +161,7 @@ export default function SaveForm({ apiUrl, accessToken }: Props) {
 
     let html: string;
     try {
-      const [{ result }] = await withDeadline(
+      const [injection] = await withDeadline(
         chrome.scripting.executeScript({
           target: { tabId: tab.tabId },
           func: capturePageHtml,
@@ -190,6 +169,7 @@ export default function SaveForm({ apiUrl, accessToken }: Props) {
         15_000,
         "Page extraction did not finish",
       );
+      const result = injection?.result;
       if (typeof result !== "string" || !result) {
         throw new Error("The page returned no content.");
       }
@@ -210,7 +190,7 @@ export default function SaveForm({ apiUrl, accessToken }: Props) {
         highlights = reply.highlights as Highlight[];
       }
     } catch {
-      // Content script may not be present (e.g. PDF, restricted page). Ignore.
+      // No content script on PDFs or restricted pages.
     }
 
     setStatus({ type: "saving", message: "Saving to LLM Wiki..." });
@@ -226,8 +206,6 @@ export default function SaveForm({ apiUrl, accessToken }: Props) {
       highlights: highlights.length ? highlights : undefined,
     });
 
-    // Saving is already complete. Do not hold the popup open for this
-    // best-effort content-script refresh.
     void tabMessageWithDeadline(
       tab.tabId,
       {
@@ -236,7 +214,7 @@ export default function SaveForm({ apiUrl, accessToken }: Props) {
       },
       1_500,
     ).catch(() => {
-      // Page might be closed or content script unavailable — fine.
+      // Page closed or content script unavailable.
     });
 
     setExistingDoc({
@@ -260,8 +238,7 @@ export default function SaveForm({ apiUrl, accessToken }: Props) {
     const sourceUrl = normalizePdfSourceUrl(tab.url);
     setStatus({ type: "saving", message: "Saving PDF..." });
 
-    // The offscreen document survives popup focus changes. Only this small job
-    // request and its status cross runtime messaging; the PDF stays a Blob.
+    // Offscreen document survives the popup closing; the PDF never crosses runtime messaging.
     const saved: SaveResult = await runPdfSaveJob({
       url: sourceUrl,
       apiUrl,
@@ -287,8 +264,6 @@ export default function SaveForm({ apiUrl, accessToken }: Props) {
   async function handleKnowledgeBaseChange(id: string) {
     setKnowledgeBaseId(id);
     setSelectedKnowledgeBaseId(id).catch(() => {});
-    // If the page is already saved (instant-save just ran), changing the KB
-    // moves the document rather than selecting a target for a future save.
     if (existingDoc && existingDoc.knowledge_base_id !== id) {
       try {
         await moveDocument(apiUrl, accessToken, existingDoc.id, id);
@@ -334,7 +309,6 @@ export default function SaveForm({ apiUrl, accessToken }: Props) {
 
   return (
     <div className="space-y-3">
-      {/* Title */}
       <div>
         <label className="mb-1.5 block text-xs font-medium text-zinc-700">Title</label>
         <input
@@ -348,7 +322,6 @@ export default function SaveForm({ apiUrl, accessToken }: Props) {
         />
       </div>
 
-      {/* KB picker */}
       {selectionReady ? (
         <KBPicker
           apiUrl={apiUrl}
@@ -360,45 +333,6 @@ export default function SaveForm({ apiUrl, accessToken }: Props) {
         <div className="py-1 text-xs text-zinc-500">Loading saved destination...</div>
       )}
 
-      {/* Folder/More section disabled for v0 — re-enable when folder picker is ready.
-      <div className="rounded-md border border-zinc-200 bg-zinc-50/60">
-        <button
-          type="button"
-          onClick={() => setShowMore((v) => !v)}
-          className="flex h-8 w-full items-center justify-between px-3 text-xs font-medium text-zinc-600 transition-colors hover:text-zinc-950"
-        >
-          <span>More</span>
-          <span className="text-zinc-400">{showMore ? "-" : "+"}</span>
-        </button>
-        {showMore && (
-          <div className="space-y-2 border-t border-zinc-200 px-3 py-3">
-            <div>
-              <label className="mb-1.5 block text-xs font-medium text-zinc-700">Folder</label>
-              <input
-                list="llmwiki-folder-suggestions"
-                value={folderPath}
-                onChange={(e) => setFolderPath(e.target.value)}
-                onBlur={() => setFolderPath(normalizeFolderPath(folderPath))}
-                className="h-8 w-full rounded-md border border-zinc-200 bg-white px-2.5 text-xs text-zinc-950 shadow-sm outline-none transition-colors placeholder:text-zinc-400 focus:border-zinc-400 focus:ring-2 focus:ring-zinc-950/10"
-                placeholder="/webclipper/"
-              />
-              <datalist id="llmwiki-folder-suggestions">
-                <option value="/webclipper/" />
-                <option value="/articles/" />
-                <option value="/research/" />
-                <option value="/inbox/" />
-              </datalist>
-            </div>
-            <div className="min-w-0 text-[11px] text-zinc-500">
-              <span className="font-medium text-zinc-600">Filename</span>{" "}
-              <span className="break-all">{normalizedFolderPath}{filenamePreview}</span>
-            </div>
-          </div>
-        )}
-      </div>
-      */}
-
-      {/* Save button — hidden when the page is already saved */}
       {!isAlreadySaved && (
         <button
           onClick={handleSave}

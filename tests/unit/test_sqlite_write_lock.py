@@ -1,5 +1,4 @@
-"""Concurrent writes on the shared local connection must serialize — two
-interleaved highlight upserts must not collide or lose an update."""
+"""Concurrent writes on the shared local connection must serialize without losing an update."""
 
 import asyncio
 import uuid
@@ -33,8 +32,7 @@ async def test_concurrent_highlight_upserts_serialize(tmp_path):
     h1 = {"id": "h1", "text": "first", "textAnchor": {"exact": "a"}}
     h2 = {"id": "h2", "text": "second", "textAnchor": {"exact": "b"}}
 
-    # Both fired on the SAME connection — without the write lock the two
-    # BEGIN IMMEDIATE spans collide and one update is lost.
+    # Same connection: without the write lock the two BEGIN IMMEDIATE spans collide.
     await asyncio.gather(
         repo.upsert_highlight(doc_id, USER_ID, h1),
         repo.upsert_highlight(doc_id, USER_ID, h2),

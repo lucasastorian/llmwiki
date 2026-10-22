@@ -1,11 +1,4 @@
-// TypeScript port of api/html_parser/parser.py:_locate_highlight.
-// Used by the wiki viewer when:
-//   1. A V1 highlight has no `textAnchor` (DOM-only) — search by textContent
-//   2. A V2 highlight's textAnchor verifies stale (markdown changed since save)
-//
-// The algorithm matches the server: normalize whitespace via a normalize+
-// index-map, search the normalized haystack, score multi-occurrences via
-// prefix/suffix context, refuse short ambiguous matches without context.
+// Parity with the server's Parser._locate_highlight is enforced by tests/fixtures/parity/highlight_locator.json.
 
 const MIN_AUTO_LOCATE_LEN = 4
 const MAX_OCCURRENCES = 500
@@ -27,24 +20,17 @@ export function normalizeAnchorText(s: string): string {
 
 interface NormalizedHaystack {
   text: string
-  /** indexMap[i] = original-text position of normalized[i]; the last entry is
-   *  the original-text length (so end-exclusive offsets have a mapping). */
+  /** indexMap[i] = original position of normalized[i]; a trailing entry maps end-exclusive offsets. */
   indexMap: number[]
 }
 
+// Same set WS_RE collapses in the needle (JS \s), so haystack and needle normalize alike.
 function isWhitespace(ch: string): boolean {
-  return (
-    ch === ' ' ||
-    ch === '\t' ||
-    ch === '\n' ||
-    ch === '\r' ||
-    ch === ' ' /* nbsp */
-  )
+  return /\s/.test(ch)
 }
 
 function isZeroWidth(ch: string): boolean {
-  // Match the chars stripped by normalizeAnchorText so the haystack and the
-  // needle agree on character composition.
+  // Must match the chars normalizeAnchorText strips from the needle.
   return ch === '​' || ch === '﻿'
 }
 
@@ -55,7 +41,6 @@ function normalizeWithIndexMap(plaintext: string): NormalizedHaystack {
   for (let i = 0; i < plaintext.length; i++) {
     const ch = plaintext[i]
     if (isZeroWidth(ch)) {
-      // Drop entirely — matches normalizeAnchorText behavior on the needle.
       continue
     }
     if (isWhitespace(ch)) {
@@ -70,7 +55,6 @@ function normalizeWithIndexMap(plaintext: string): NormalizedHaystack {
     indexMap.push(i)
     prevWasWs = false
   }
-  // Trailing entry so end-exclusive offsets have a mapping.
   indexMap.push(plaintext.length)
   let normalized = out.join('')
   if (normalized.endsWith(' ')) {

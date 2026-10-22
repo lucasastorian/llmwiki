@@ -11,9 +11,7 @@ async function performRefresh(staleToken?: string): Promise<string | null> {
   const userStore = useUserStore.getState()
   const currentToken = userStore.accessToken
 
-  // Supabase may have refreshed the session while the failed request was in
-  // flight. Prefer that newer token instead of rotating the refresh token
-  // again.
+  // Prefer a token refreshed mid-flight over rotating the refresh token again.
   if (staleToken && currentToken && currentToken !== staleToken) {
     return currentToken
   }
@@ -26,9 +24,7 @@ async function performRefresh(staleToken?: string): Promise<string | null> {
     return token
   }
 
-  // A browser-client auto refresh can win the race with refreshSession(). In
-  // that case the stored Supabase session is usable, but never hand the caller
-  // the same token that the API just rejected.
+  // An auto refresh can win the race with refreshSession(); never return the token the API just rejected.
   const { data: current } = await supabase.auth.getSession()
   const token = current.session?.access_token ?? null
   if (token && (!staleToken || token !== staleToken)) {

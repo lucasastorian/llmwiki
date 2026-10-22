@@ -4,10 +4,7 @@ export interface PageCaptureOptions {
   maxImages?: number;
 }
 
-/**
- * Build a bounded, inert HTML snapshot. This function is deliberately
- * self-contained because Chrome serializes it when passed to executeScript.
- */
+/** Self-contained (nested helpers, no imports) because executeScript serializes the function. */
 export function capturePageHtml(options: PageCaptureOptions = {}): string {
   const maxBytes = positiveInteger(options.maxBytes, 2 * 1024 * 1024);
   const maxNodes = positiveInteger(options.maxNodes, 60_000);
@@ -61,7 +58,7 @@ export function capturePageHtml(options: PageCaptureOptions = {}): string {
   }> = [];
 
   while (frames.length) {
-    const frame = frames[frames.length - 1];
+    const frame = frames[frames.length - 1]!;
     const child = frame.nextChild;
     if (!child) {
       frames.pop();
@@ -96,8 +93,7 @@ export function capturePageHtml(options: PageCaptureOptions = {}): string {
       consumeSerializedString(value, "text");
       frame.target.appendChild(document.createTextNode(value));
     }
-    // Comments and other inert nodes are omitted, but still count toward the
-    // traversal limit so a comment-heavy page cannot force unbounded work.
+    // Skipped nodes still count toward maxNodes so comment-heavy pages stay bounded.
   }
 
   for (const candidate of imageCandidates) {
@@ -110,9 +106,7 @@ export function capturePageHtml(options: PageCaptureOptions = {}): string {
     }
   }
 
-  // The conservative running estimate is checked before every clone/string
-  // allocation. outerHTML is therefore bounded before this final allocation;
-  // the allocation-free scan below protects against serializer edge cases.
+  // The running estimate already bounds outerHTML; this rescan guards serializer edge cases.
   const html = clone.outerHTML;
   const actualBytes = boundedUtf8Length(html, maxBytes);
   if (actualBytes > maxBytes) throw tooLargeError();
@@ -147,8 +141,7 @@ export function capturePageHtml(options: PageCaptureOptions = {}): string {
     value: string,
     context: "raw" | "text" | "attribute",
   ): void {
-    // Every UTF-16 code unit requires at least one output byte. This cheap
-    // preflight rejects giant strings before a full scan or clone occurs.
+    // Each UTF-16 unit is at least one byte, so this rejects giant strings before scanning.
     if (value.length > maxBytes - estimatedBytes) throw tooLargeError();
 
     for (let index = 0; index < value.length; index += 1) {
@@ -186,8 +179,7 @@ export function capturePageHtml(options: PageCaptureOptions = {}): string {
 
   function cloneElementWithinBudget(element: Element): Element {
     const tagName = element.localName || element.tagName.toLowerCase();
-    // <tag></tag>; counting a closing tag for void elements is deliberately
-    // conservative and keeps the final serialization below the budget.
+    // <tag></tag>, counted even for void elements to stay conservative.
     consumeBytes(5);
     consumeSerializedString(tagName, "raw");
     consumeSerializedString(tagName, "raw");
@@ -202,9 +194,7 @@ export function capturePageHtml(options: PageCaptureOptions = {}): string {
       consumeSerializedString(attribute.value, "attribute");
     }
 
-    // Non-image attributes have now been preflighted, so a shallow clone can
-    // allocate at most the remaining bounded budget. Images are copied
-    // manually to avoid momentarily cloning giant source/data URLs we discard.
+    // Images are copied manually to avoid briefly cloning giant src/data URLs we discard.
     if (!stripsSources) return element.cloneNode(false) as Element;
 
     const qualifiedName = element.prefix
@@ -256,7 +246,7 @@ export function capturePageHtml(options: PageCaptureOptions = {}): string {
     let position = 0;
     while (
       position < imageCandidates.length
-      && imageCandidates[position].score >= candidate.score
+      && imageCandidates[position]!.score >= candidate.score
     ) position += 1;
     if (position >= maxImages) return;
     imageCandidates.splice(position, 0, candidate);

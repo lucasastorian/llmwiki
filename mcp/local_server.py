@@ -1,11 +1,4 @@
-"""Local MCP server for stdio (Claude Desktop / Claude Code / Cursor).
-
-One workspace = one MCP server. Filesystem is truth. SQLite is the index.
-
-Usage:
-    python -m local_server --workspace ~/research
-    python -m local_server ~/research
-"""
+"""Local stdio MCP server for one workspace: the filesystem is truth, SQLite is the index."""
 
 import argparse
 import asyncio

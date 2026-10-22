@@ -62,7 +62,7 @@ describe("capturePageHtml", () => {
     const images = Array.from(captured.querySelectorAll("img"));
 
     expect(images.filter((image) => image.hasAttribute("src"))).toHaveLength(1);
-    expect(images[0].getAttribute("src")).toBe("https://example.com/hero.jpg");
+    expect(images[0]!.getAttribute("src")).toBe("https://example.com/hero.jpg");
     expect(captured.querySelector("picture source")?.hasAttribute("srcset")).toBe(false);
     expect(html).not.toContain("data:image");
     expect(html).not.toContain("lazy-second.jpg");

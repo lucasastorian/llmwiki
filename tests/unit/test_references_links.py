@@ -29,7 +29,6 @@ def _wiki_path_map(docs: list[dict]) -> dict[str, dict]:
     return out
 
 
-# Targets used across the table tests.
 _ABS = _doc("abs-1", "/wiki/", "abs.md")
 _SIBLING = _doc("sib-1", "/wiki/notes/", "sibling.md")
 _PARENT = _doc("par-1", "/wiki/", "parent.md")
@@ -72,7 +71,6 @@ def test_self_reference_is_excluded():
     extract_references = _references_module().extract_references
     wiki_map = _wiki_path_map([_ABS])
 
-    # The current doc IS abs.md — a link to itself must not produce an edge.
     edges = extract_references("[me](/wiki/abs.md)", "abs-1", "", {}, {}, wiki_map)
 
     assert edges == []
@@ -80,8 +78,7 @@ def test_self_reference_is_excluded():
 
 def test_non_wiki_and_image_links_are_skipped():
     extract_references = _references_module().extract_references
-    # Every target below would resolve if it were a wiki link, proving the
-    # skip happens on the href shape, not on a missing map entry.
+    # These targets would resolve as wiki links, so the skip must come from the href shape.
     img = _doc("img-1", "/wiki/", "diagram.png")
     wiki_map = _wiki_path_map([_ABS, img])
 

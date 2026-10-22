@@ -8,8 +8,7 @@ from converter.bounds import bounded_utf8_size, ensure_bounded_json, read_bounde
 from converter.config import OPENDATALOADER_ENGINE, ConverterConfig
 from converter.markdown_renderer import MarkdownRenderer
 
-# The extractor runs in a child process group (not an in-process library call)
-# so a timeout can kill the JVM instead of orphaning it.
+# A child process group, not an in-process call, so a timeout can kill the JVM instead of orphaning it.
 _WORKER_SCRIPT = (
     "import sys, opendataloader_pdf\n"
     "opendataloader_pdf.convert(input_path=sys.argv[1], output_dir=sys.argv[2], format='json', quiet=True)\n"

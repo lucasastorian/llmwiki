@@ -1,13 +1,3 @@
-"""Unit tests for granular highlight upsert/delete on the SQLite repository.
-
-Covers:
-- upsert appends when id is new
-- upsert replaces when id exists (idempotent)
-- delete removes by id and bumps version
-- delete on absent id is a no-op (does NOT bump version)
-- expectedVersion mismatch returns {"conflict": True}
-"""
-
 from __future__ import annotations
 
 import contextlib
@@ -44,7 +34,6 @@ async def repo():
     db = await create_pool(path)
     repo = SQLiteDocumentRepository(db)
     user_id = "u1"
-    # Workspace + doc fixture
     await db.execute(
         "INSERT INTO workspace (id, name, user_id) VALUES ('w1', 'Test', ?)",
         (user_id,),
@@ -82,7 +71,6 @@ async def test_upsert_replaces_when_id_exists(repo: SQLiteDocumentRepository):
     h2["color"] = "blue"
     res = await repo.upsert_highlight("d1", "u1", h2)
     assert res is not None
-    # Two upserts → version 2
     assert res["version"] == 2
     assert len(res["highlights"]) == 1
     assert res["highlights"][0]["color"] == "blue"
@@ -118,7 +106,7 @@ async def test_delete_absent_id_is_noop_keeps_version(repo: SQLiteDocumentReposi
     await repo.upsert_highlight("d1", "u1", _hl("a", "hello"))
     res = await repo.delete_highlight("d1", "u1", "does-not-exist")
     assert res is not None
-    assert res["version"] == 1  # unchanged
+    assert res["version"] == 1
     assert len(res["highlights"]) == 1
 
 
@@ -127,7 +115,7 @@ async def test_delete_idempotent_double_delete(repo: SQLiteDocumentRepository):
     await repo.upsert_highlight("d1", "u1", _hl("a", "hello"))
     res1 = await repo.delete_highlight("d1", "u1", "a")
     res2 = await repo.delete_highlight("d1", "u1", "a")
-    # First delete bumps version; second is a no-op (id no longer present).
+    # The second delete is a no-op because the id is already gone.
     assert res1["version"] == 2
     assert res2["version"] == 2
     assert res2["highlights"] == []

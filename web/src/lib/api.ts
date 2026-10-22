@@ -5,8 +5,6 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 const WS_URL = API_URL.replace(/^http/, 'ws')
 const isLocal = process.env.NEXT_PUBLIC_MODE === 'local'
 
-/** Thrown by apiFetch on non-2xx responses. Callers can branch on `.status`
- *  for clean retry logic (e.g. 409 conflict reconciliation). */
 export class ApiError extends Error {
   status: number
   detail: unknown
@@ -61,7 +59,6 @@ export async function apiFetch<T>(
     const headers = new Headers(fetchOptions.headers)
     if (!headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
 
-    // In local mode, skip Authorization header (API doesn't check it)
     if (!isLocal && requestToken) {
       headers.set('Authorization', `Bearer ${requestToken}`)
     }
@@ -74,8 +71,7 @@ export async function apiFetch<T>(
   }
 
   try {
-    // A component may have captured an older token just before Supabase's
-    // TOKEN_REFRESHED event updated the store.
+    // A component may have captured a token just before TOKEN_REFRESHED updated the store.
     let requestToken = token
     const storedToken = useUserStore.getState().accessToken
     if (!isLocal && storedToken && storedToken !== requestToken) {
@@ -84,9 +80,7 @@ export async function apiFetch<T>(
 
     let res = await request(requestToken)
 
-    // Tabs can resume before Supabase's background auto-refresh runs. Refresh
-    // once on an actual authentication failure, then replay the request with
-    // the new access token. Authorization failures (403) are not retried.
+    // Resumed tabs can beat Supabase's auto-refresh; refresh once on 401 (never 403) and replay.
     if (!isLocal && res.status === 401) {
       const refreshedToken = await refreshAccessToken(requestToken).catch(() => null)
       if (refreshedToken && refreshedToken !== requestToken) {
@@ -111,6 +105,11 @@ export async function apiFetch<T>(
   } finally {
     timeout.cleanup()
   }
+}
+
+/** Deletes documents in one request: wiki pages archive, sources hard-delete; the server caps it at 100 ids. */
+export function bulkDeleteDocuments(ids: string[], token: string): Promise<void> {
+  return apiFetch<void>('/v1/documents/bulk-delete', token, { method: 'POST', body: JSON.stringify({ ids }) })
 }
 
 export function getDocumentsWsUrl(kbId: string): string {

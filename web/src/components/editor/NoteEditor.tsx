@@ -17,7 +17,7 @@ import { cn, sanitizeTitle } from '@/lib/utils'
 import { NoteToolbar } from './NoteToolbar'
 import {
   sanitizeUrl, defaultValue, migrateProperties,
-  PropertyValueEditor, TagsRow, PropertyRow, AddPropertyButton,
+  TagsRow, PropertyRow, AddPropertyButton,
 } from './PropertyEditors'
 import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover'
 import { Calendar } from '@/components/ui/calendar'
@@ -64,11 +64,9 @@ interface NoteEditorProps {
   backLabel?: string
   onBack?: () => void
   embedded?: boolean
-  /** Hide the built-in toolbar (when the parent provides its own) */
   hideToolbar?: boolean
-  /** Called when the tiptap editor is ready — lets the parent render formatting buttons externally */
   onEditorReady?: (editor: import('@tiptap/react').Editor) => void
-  /** Register a callback ref that the parent can call to update the title from outside (e.g. breadcrumb input) */
+  /** Filled with a setter the parent calls to change the title. */
   titleChangeRef?: React.MutableRefObject<((title: string) => void) | null>
 }
 
@@ -161,7 +159,6 @@ export function NoteEditor({
     },
   })
 
-  // Expose editor to parent for external toolbar rendering
   React.useEffect(() => {
     if (editor && onEditorReady) onEditorReady(editor)
   }, [editor, onEditorReady])
@@ -268,7 +265,6 @@ export function NoteEditor({
     saveTimerRef.current = setTimeout(save, AUTOSAVE_DELAY)
   }, [save])
 
-  // Expose title change handler so parent toolbar can update the title
   React.useEffect(() => {
     if (!titleChangeRef) return
     titleChangeRef.current = (val: string) => {

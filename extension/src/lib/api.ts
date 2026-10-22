@@ -113,20 +113,9 @@ function utf8Base64(value: string): string {
   return btoa(binary);
 }
 
-// ── smartFetch ──────────────────────────────────────────────
-//
-// MV3 content scripts make `fetch` calls from the page's origin. Most sites
-// (Substack, Medium, console.cloud.google.com, anywhere with strict CSP) will
-// block our API calls via CORS or CSP. The background service worker runs on
-// the extension origin and holds the required host permission for the API
-// origin — fetches there succeed. So when we're inside a content script we
-// proxy through the background via chrome.runtime.sendMessage. In the popup
-// (which loads on chrome-extension://...) direct fetch already works, so we
-// use it.
-
+// MV3 content scripts fetch from the page origin and hit CORS/CSP, so they proxy through the background.
 function isContentScriptContext(): boolean {
   if (typeof window === "undefined") return false;
-  // popup/background pages have chrome-extension:// origin
   return window.location.protocol !== "chrome-extension:";
 }
 
@@ -274,31 +263,6 @@ export async function getHighlights(
   return res.data as HighlightsResponse;
 }
 
-export async function replaceHighlights(
-  apiUrl: string,
-  accessToken: string | null,
-  documentId: string,
-  highlights: Highlight[],
-  expectedVersion?: number,
-): Promise<HighlightsResponse> {
-  const res = await smartFetch(
-    `${apiUrl}/v1/documents/${documentId}/highlights`,
-    {
-      method: "PATCH",
-      headers: jsonHeaders(accessToken),
-      body: JSON.stringify({ highlights, expectedVersion }),
-      timeoutMs: API_WRITE_TIMEOUT_MS,
-    },
-  );
-  if (res.status === 409) {
-    throw Object.assign(new Error("Version conflict"), { conflict: true });
-  }
-  if (!res.ok) {
-    throw new Error(`Save highlights failed (${res.status}): ${res.text}`);
-  }
-  return res.data as HighlightsResponse;
-}
-
 export async function moveDocument(
   apiUrl: string,
   accessToken: string | null,
@@ -420,7 +384,7 @@ export async function uploadPdfBlob(
   knowledgeBaseId: string,
   path = "/webclipper/",
 ): Promise<SaveResult> {
-  // Local mode: use multipart upload
+  // No token means local mode, which takes multipart instead of TUS.
   if (!accessToken) {
     const form = new FormData();
     form.append("file", pdf, filename);
@@ -437,7 +401,6 @@ export async function uploadPdfBlob(
     }, PDF_UPLOAD_TIMEOUT_MS, "PDF upload timed out");
   }
 
-  // Cloud mode: TUS upload
   const metadata = [
     `filename ${utf8Base64(filename)}`,
     `knowledge_base_id ${utf8Base64(knowledgeBaseId)}`,

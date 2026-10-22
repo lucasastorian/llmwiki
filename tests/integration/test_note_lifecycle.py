@@ -1,5 +1,3 @@
-"""Integration tests for note (document) CRUD lifecycle."""
-
 import asyncio
 import json
 import uuid
@@ -391,11 +389,44 @@ class TestUpdateMetadata:
         )
         assert resp.status_code == 400
 
+    async def test_move_to_another_kb_renumbers_and_applies_other_fields(self, client, pool):
+        headers = auth_headers(USER_ID)
+        target_kb_id = "22222222-2222-2222-2222-222222222222"
+        await pool.execute(
+            "INSERT INTO knowledge_bases (id, user_id, name, slug) VALUES ($1, $2, 'Target', 'target')",
+            target_kb_id, USER_ID,
+        )
+        resident = (await client.post(
+            f"/v1/knowledge-bases/{target_kb_id}/documents/note",
+            headers=headers, json={"filename": "resident.md", "content": "x " * 70},
+        )).json()
+        mover = (await client.post(
+            f"/v1/knowledge-bases/{KB_ID}/documents/note",
+            headers=headers, json={"filename": "mover.md", "content": "y " * 70},
+        )).json()
+
+        resp = await client.patch(
+            f"/v1/documents/{mover['id']}",
+            headers=headers,
+            json={"knowledge_base_id": target_kb_id, "title": "Moved", "tags": ["moved"]},
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["knowledge_base_id"] == target_kb_id
+        assert body["title"] == "Moved"
+        assert body["tags"] == ["moved"]
+        assert body["document_number"] == resident["document_number"] + 1
+        chunk_kbs = await pool.fetch(
+            "SELECT DISTINCT knowledge_base_id::text AS kb FROM document_chunks WHERE document_id = $1",
+            mover["id"],
+        )
+        assert [r["kb"] for r in chunk_kbs] == [target_kb_id]
+
 
 class TestDeleteDocument:
 
     async def test_delete_wiki_page_archives(self, client, pool):
-        """Wiki pages (path=/wiki/) are archived, not hard-deleted."""
         headers = auth_headers(USER_ID)
         create_resp = await client.post(
             f"/v1/knowledge-bases/{KB_ID}/documents/note",
@@ -412,7 +443,6 @@ class TestDeleteDocument:
         assert row["archived"] is True
 
     async def test_delete_source_doc_hard_deletes(self, client, pool):
-        """Source documents (non-wiki path) are hard-deleted from the database."""
         headers = auth_headers(USER_ID)
         create_resp = await client.post(
             f"/v1/knowledge-bases/{KB_ID}/documents/note",
@@ -445,7 +475,6 @@ class TestDeleteDocument:
         assert doc_id not in doc_ids
 
     async def test_bulk_delete_wiki_archives(self, client, pool):
-        """Bulk delete archives wiki pages."""
         headers = auth_headers(USER_ID)
         ids = []
         for i in range(3):
@@ -469,7 +498,6 @@ class TestDeleteDocument:
             assert row["archived"] is True
 
     async def test_bulk_delete_source_hard_deletes(self, client, pool):
-        """Bulk delete hard-deletes source documents."""
         headers = auth_headers(USER_ID)
         ids = []
         for i in range(3):
@@ -565,7 +593,6 @@ class TestWebClipReclip:
         assert metadata["course"] == {"status": "complete"}
         assert metadata["source_url"] == "https://example.com/reclip"
 
-        # Old asset cleared, new one inserted — exactly one asset doc remains.
         asset_count = await pool.fetchval(
             "SELECT COUNT(*) FROM documents WHERE knowledge_base_id = $1 "
             "AND COALESCE(metadata->>'asset', 'false') = 'true'",

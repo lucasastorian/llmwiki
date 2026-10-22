@@ -25,8 +25,6 @@ class PageQuota:
         """Quota check — uses an advisory lock when given a transaction connection so concurrent jobs serialize."""
         executor = conn or self._pool
         if conn is not None:
-            # pg_advisory_xact_lock serializes concurrent OCR jobs for the same
-            # user inside this transaction; releases on commit/rollback.
             await conn.execute(
                 "SELECT pg_advisory_xact_lock(hashtext($1::text))", user_id,
             )

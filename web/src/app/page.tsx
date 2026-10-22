@@ -43,7 +43,6 @@ export default function LandingPage() {
         dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
       />
 
-      {/* Nav */}
       <nav className="fixed top-0 inset-x-0 z-50 flex items-center justify-between px-6 lg:px-10 h-14 bg-background/80 backdrop-blur-sm">
         <span className="flex items-center gap-2.5 text-sm font-semibold tracking-tight">
           <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 32 32">
@@ -74,7 +73,6 @@ export default function LandingPage() {
         </div>
       </nav>
 
-      {/* Hero */}
       <section className="pt-32 pb-20 px-6 lg:px-10">
         <div className="max-w-2xl mx-auto text-center">
           <MotionDiv
@@ -131,7 +129,6 @@ export default function LandingPage() {
         </div>
       </section>
 
-      {/* Product Preview */}
       <section className="px-6 lg:px-10 pb-28">
         <MotionDiv
           initial={{ opacity: 0, y: 30 }}
@@ -156,7 +153,6 @@ export default function LandingPage() {
             </div>
 
             <div className="flex min-h-[400px]">
-              {/* Sidebar */}
               <div className="w-52 shrink-0 border-r border-border p-3 hidden sm:block">
                 <div className="flex items-center gap-2 px-2 py-1.5 mb-2">
                   <Search className="size-3 text-muted-foreground/30" />
@@ -186,7 +182,6 @@ export default function LandingPage() {
                 </div>
               </div>
 
-              {/* Content */}
               <div className="flex-1 p-8 sm:p-10">
                 <div className="max-w-xl">
                   <p className="mb-2 text-[9px] font-semibold uppercase tracking-[0.1em] text-muted-foreground/50">
@@ -226,10 +221,8 @@ export default function LandingPage() {
         </MotionDiv>
       </section>
 
-      {/* Divider */}
       <div className="max-w-5xl mx-auto border-t border-border" />
 
-      {/* Three Layers */}
       <section className="px-6 lg:px-10 py-24">
         <div className="max-w-5xl mx-auto">
           <MotionDiv
@@ -280,10 +273,8 @@ export default function LandingPage() {
         </div>
       </section>
 
-      {/* Divider */}
       <div className="max-w-5xl mx-auto border-t border-border" />
 
-      {/* How It Works */}
       <section className="px-6 lg:px-10 py-24">
         <div className="max-w-5xl mx-auto">
           <MotionDiv
@@ -330,10 +321,8 @@ export default function LandingPage() {
         </div>
       </section>
 
-      {/* Divider */}
       <div className="max-w-5xl mx-auto border-t border-border" />
 
-      {/* Quote */}
       <section className="px-6 lg:px-10 py-24">
         <MotionDiv
           initial={{ opacity: 0 }}
@@ -351,10 +340,8 @@ export default function LandingPage() {
         </MotionDiv>
       </section>
 
-      {/* Divider */}
       <div className="max-w-5xl mx-auto border-t border-border" />
 
-      {/* CTA */}
       <section className="px-6 lg:px-10 py-24">
         <MotionDiv
           initial={{ opacity: 0, y: 16 }}
@@ -377,7 +364,6 @@ export default function LandingPage() {
         </MotionDiv>
       </section>
 
-      {/* Footer */}
       <footer className="border-t border-border px-6 lg:px-10 py-6 flex items-center justify-between text-xs text-muted-foreground/50">
         <span>LLM Wiki</span>
         <div className="flex items-center gap-4">

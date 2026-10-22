@@ -1,5 +1,3 @@
-"""Postgres + S3 implementation of VaultFS."""
-
 import logging
 import re
 from datetime import date
@@ -10,7 +8,6 @@ from config import settings
 from db import (
     get_pool,
     scoped_connection,
-    scoped_execute,
     scoped_query,
     scoped_queryrow,
     service_execute,
@@ -50,14 +47,10 @@ No sources ingested yet - add your first source to get started.\
 """
 
 
-def _get_s3_session():
+def _get_s3_session() -> aioboto3.Session | None:
     global _s3_session
-    if _s3_session is None and settings.AWS_ACCESS_KEY_ID:
-        _s3_session = aioboto3.Session(
-            aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
-            aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
-            region_name=settings.AWS_REGION,
-        )
+    if _s3_session is None and settings.S3_BUCKET:
+        _s3_session = aioboto3.Session(region_name=settings.AWS_REGION)
     return _s3_session
 
 
@@ -70,7 +63,6 @@ def _slugify(name: str) -> str:
 
 class PostgresVaultFS(VaultFS):
     """Postgres + S3 vault."""
-
     def __init__(self, user_id: str):
         self.user_id = user_id
 
@@ -111,9 +103,7 @@ class PostgresVaultFS(VaultFS):
         return row
 
     async def update_knowledge_base(self, kb_id: str, name: str | None = None, description: str | None = None, kind: str | None = None) -> dict | None:
-        # knowledge_bases has no RLS write policy; writes go through the
-        # service role with the explicit user_id filter, like every other KB write.
-        # Renaming regenerates the slug, matching the web API's semantics.
+        # No RLS write policy on knowledge_bases, so writes use the service role with an explicit user_id filter.
         if name is not None:
             slug = await self._unique_slug(name, exclude_kb_id=kb_id)
             return await service_queryrow(
@@ -191,8 +181,7 @@ class PostgresVaultFS(VaultFS):
                     content_size, tags, date, _json.dumps(metadata) if metadata else None,
                 )
             except asyncpg.UniqueViolationError as e:
-                # Only re-raise as DuplicateDocumentError for the path/filename index.
-                # Any other unique violation is a different bug worth surfacing.
+                # Any other unique violation is a different bug and must surface.
                 if e.constraint_name == "idx_documents_unique_active":
                     raise DuplicateDocumentError(dir_path, filename) from e
                 raise
@@ -427,15 +416,10 @@ class PostgresVaultFS(VaultFS):
         elif path_filter == "sources":
             path_clause = " AND d.path NOT LIKE '/wiki/%'"
 
-        # Always match against `content` — that's where the PGroonga index
-        # lives, and `content` already contains source + annotations
-        # materialized together. The per-side booleans below label *which
-        # side* matched so callers can post-filter by scope cheaply.
+        # Match on `content` (PGroonga-indexed source + annotations); the per-side booleans label which side matched.
         annotated_clause = " AND dc.has_highlight = true" if annotated_only else ""
 
-        # Push scope into SQL so the LIMIT counts only rows the user asked
-        # for. The earlier Python-side post-filter could return zero results
-        # for narrow scopes even when valid matches existed past the top-N.
+        # Scope lives in SQL so LIMIT counts only in-scope rows.
         if scope == "annotations":
             scope_clause = (
                 " AND dc.annotations_text IS NOT NULL "
@@ -505,27 +489,6 @@ class PostgresVaultFS(VaultFS):
     def delete_from_disk(self, docs: list[dict]) -> None:
         pass
 
-
-    async def delete_references(self, source_doc_id: str) -> None:
-        await scoped_execute(
-            self.user_id,
-            "DELETE FROM document_references WHERE source_document_id = $1",
-            source_doc_id,
-        )
-
-    async def upsert_reference(self, source_id: str, target_id: str, kb_id: str, ref_type: str, page: int | None) -> None:
-        try:
-            await scoped_execute(
-                self.user_id,
-                "INSERT INTO document_references "
-                "(source_document_id, target_document_id, knowledge_base_id, reference_type, page) "
-                "VALUES ($1, $2, $3, $4, $5) "
-                "ON CONFLICT (source_document_id, target_document_id, reference_type) DO UPDATE "
-                "SET page = EXCLUDED.page, created_at = now()",
-                source_id, target_id, kb_id, ref_type, page,
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.warning("Failed to insert reference %s -> %s: %s", source_id[:8], target_id[:8], e)
 
     async def replace_references(
         self,

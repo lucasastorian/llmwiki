@@ -1,5 +1,3 @@
-"""SQLite + local filesystem implementation of VaultFS."""
-
 import asyncio
 import contextlib
 import importlib.util
@@ -24,8 +22,7 @@ _MIGRATION_RUNNER_PATH = Path(__file__).parent.parent.parent / "api" / "infra" /
 
 
 def _load_migration_runner() -> ModuleType:
-    """Load the api migration runner by file path — loaded lazily because the
-    hosted MCP image ships without the api/ tree."""
+    """Load the api migration runner lazily by path; the hosted MCP image ships without api/."""
     spec = importlib.util.spec_from_file_location("local_migrations", _MIGRATION_RUNNER_PATH)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -83,8 +80,6 @@ def _rows_to_dicts(cursor: aiosqlite.Cursor, rows: list[tuple]) -> list[dict]:
 
 
 class SqliteVaultFS(VaultFS):
-    """SQLite + local filesystem vault."""
-
     def __init__(self, user_id: str):
         self.user_id = user_id
 
@@ -456,38 +451,10 @@ class SqliteVaultFS(VaultFS):
         fts_query = _fts5_keywords(query)
         if not fts_query:
             return []
-        db = self._db_or_raise()
-        # SQLite's chunks_fts only indexes `content` (which already includes
-        # annotations after sync). Scope filtering is a Python-side
-        # substring check; to avoid scope filters returning fewer rows than
-        # requested, over-fetch by 3x when scope narrows the set, then
-        # slice to the requested limit. Acceptable at personal scale;
-        # production hosted-mode uses Postgres + PGroonga per-column matches.
+        # chunks_fts indexes only `content`, so scope filters run in Python; over-fetch 3x so narrow scopes still fill `limit`.
         sql_limit = limit if scope == "all" else limit * 3
-        sql = (
-            "SELECT dc.content, dc.source_content, dc.annotations_text, "
-            "dc.has_highlight, dc.page, dc.header_breadcrumb, dc.chunk_index, "
-            "d.filename, d.title, d.path, d.file_type, d.tags, "
-            "rank as score "
-            "FROM document_chunks dc "
-            "JOIN chunks_fts fts ON dc.rowid = fts.rowid "
-            "JOIN documents d ON dc.document_id = d.id "
-            "WHERE chunks_fts MATCH ? AND d.status != 'failed' "
-        )
-        params: list = [fts_query]
-        if annotated_only:
-            sql += "AND dc.has_highlight = 1 "
-        if path_filter == "wiki":
-            sql += "AND d.source_kind = 'wiki' "
-        elif path_filter == "sources":
-            sql += "AND d.source_kind != 'wiki' "
-        sql += "ORDER BY rank LIMIT ?"
-        params.append(sql_limit)
+        rows = await self._select_chunk_matches(fts_query, path_filter, annotated_only, sql_limit)
 
-        cursor = await db.execute(sql, params)
-        rows = _rows_to_dicts(cursor, await cursor.fetchall())
-
-        # Label each row + apply scope filter, then slice to `limit`.
         q_lower = query.lower()
         labeled: list[dict] = []
         for r in rows:
@@ -566,24 +533,6 @@ class SqliteVaultFS(VaultFS):
         path = self._resolve_path(dir_path.lstrip("/") + filename)
         return path is not None and path.exists()
 
-
-    async def delete_references(self, source_doc_id: str) -> None:
-        db = self._db_or_raise()
-        await db.execute("DELETE FROM document_references WHERE source_document_id = ?", (source_doc_id,))
-        await db.commit()
-
-    async def upsert_reference(self, source_id: str, target_id: str, kb_id: str, ref_type: str, page: int | None) -> None:
-        db = self._db_or_raise()
-        try:
-            await db.execute(
-                "INSERT OR REPLACE INTO document_references "
-                "(source_document_id, target_document_id, reference_type, page) "
-                "VALUES (?, ?, ?, ?)",
-                (source_id, target_id, ref_type, page),
-            )
-            await db.commit()
-        except Exception as e:  # noqa: BLE001
-            logger.warning("Failed to insert reference %s -> %s: %s", source_id[:8], target_id[:8], e)
 
     async def replace_references(
         self,
@@ -679,7 +628,6 @@ class SqliteVaultFS(VaultFS):
 
 
     async def get_workspace(self) -> dict | None:
-        """Get the workspace record, if it exists."""
         return await self.resolve_kb("")
 
     async def ensure_workspace(self, workspace_name: str) -> str:
@@ -708,3 +656,29 @@ class SqliteVaultFS(VaultFS):
                 metadata={"description": f"Research hub for {name}."},
             )
             self.write_to_disk("/wiki/", "overview.md", overview)
+
+    async def _select_chunk_matches(
+        self, fts_query: str, path_filter: str | None, annotated_only: bool, limit: int,
+    ) -> list[dict]:
+        db = self._db_or_raise()
+        sql = (
+            "SELECT dc.content, dc.source_content, dc.annotations_text, "
+            "dc.has_highlight, dc.page, dc.header_breadcrumb, dc.chunk_index, "
+            "d.filename, d.title, d.path, d.file_type, d.tags, "
+            "rank as score "
+            "FROM document_chunks dc "
+            "JOIN chunks_fts fts ON dc.rowid = fts.rowid "
+            "JOIN documents d ON dc.document_id = d.id "
+            "WHERE chunks_fts MATCH ? AND d.status != 'failed' "
+        )
+        params: list = [fts_query]
+        if annotated_only:
+            sql += "AND dc.has_highlight = 1 "
+        if path_filter == "wiki":
+            sql += "AND d.source_kind = 'wiki' "
+        elif path_filter == "sources":
+            sql += "AND d.source_kind != 'wiki' "
+        sql += "ORDER BY rank LIMIT ?"
+        params.append(limit)
+        cursor = await db.execute(sql, params)
+        return _rows_to_dicts(cursor, await cursor.fetchall())

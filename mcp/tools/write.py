@@ -1,5 +1,3 @@
-"""Write tools — create, edit, and append wiki pages and notes."""
-
 import re
 from datetime import date
 
@@ -146,12 +144,7 @@ def _is_footnote_suffix_line(line: str) -> bool:
 
 
 def _split_trailing_footnotes(content: str) -> tuple[str, str]:
-    """Split a markdown document into body and final footnote-definition block.
-
-    Footnote definitions conventionally live at EOF. Appending new sections
-    after them strands citations mid-document, so append inserts before the
-    final definition block when one exists.
-    """
+    """Split markdown into body and the trailing footnote-definition block, which conventionally lives at EOF."""
     stripped = content.rstrip()
     if not stripped:
         return "", ""
@@ -211,8 +204,6 @@ def _renumber_colliding_footnotes(existing: str, addition: str) -> str:
 
 
 class WriteHandler:
-    """Executes create, edit, and append operations on documents."""
-
     def __init__(self, fs: VaultFS, kb: dict):
         self.fs = fs
         self.kb = kb
@@ -258,7 +249,6 @@ class WriteHandler:
         if not written:
             return f"Error: invalid path `{dir_path.lstrip('/') + filename}` (hidden folders and paths outside the workspace are not writable)"
 
-        # Extract date + description from frontmatter
         meta = _parse_frontmatter(content)
         fm_date, fm_metadata = _extract_metadata(meta)
         saved_date = _effective_date(content, date_str)
@@ -470,7 +460,6 @@ class WriteHandler:
         return None
 
     def _format_create_response(self, title: str, tags: list[str], dir_path: str, filename: str, file_type: str, date_str: str | None) -> str:
-        """Build the response message for a create operation."""
         link = deep_link(self.kb["slug"], dir_path, filename)
         note_date = date_str or date.today().isoformat()
         suffix = self._embed_hint(title, filename, dir_path, file_type)
@@ -481,7 +470,6 @@ class WriteHandler:
         )
 
     def _format_edit_response(self, path: str, dir_path: str, filename: str, snippet: str) -> str:
-        """Build the response message for an edit operation."""
         link = deep_link(self.kb["slug"], dir_path, filename)
         return (
             f"Edited `{path}`. Replaced 1 occurrence.\n[View]({link})\n\n"
@@ -489,7 +477,6 @@ class WriteHandler:
         )
 
     def _format_append_response(self, path: str, dir_path: str, filename: str) -> str:
-        """Build the response message for an append operation."""
         link = deep_link(self.kb["slug"], dir_path, filename)
         return f"Appended to `{path}`.\n[View]({link})"
 
@@ -513,7 +500,6 @@ class WriteHandler:
         return prefix + "\n".join(lines[ctx_start:ctx_end]) + suffix
 
     def _char_offset_to_line(self, lines: list[str], offset: int) -> int:
-        """Map a character offset to its line number."""
         char_count = 0
         for i, line in enumerate(lines):
             if char_count + len(line) >= offset:

@@ -1,8 +1,4 @@
-"""WebSocket endpoint for real-time document change notifications.
-
-Replaces Supabase Realtime. The API listens to Postgres NOTIFY on the
-'document_changes' channel and pushes events to connected clients.
-"""
+"""WebSocket push of Postgres NOTIFY 'document_changes' events to connected clients."""
 
 import asyncio
 import json
@@ -62,9 +58,7 @@ class DocumentWSManager:
 
 manager = DocumentWSManager()
 
-# Ping the LISTEN connection on this interval. Short enough that the pooler
-# never idle-kills the socket, and so a dead socket is noticed within seconds
-# instead of silently swallowing every NOTIFY until the next reconnect.
+# Short enough that the pooler never idle-kills LISTEN and a dead socket surfaces within seconds.
 KEEPALIVE_SECONDS = 30
 RECONNECT_DELAY_SECONDS = 5
 
@@ -146,8 +140,7 @@ async def _kb_owned_by_user(websocket: WebSocket, user_id: str, kb_id: str) -> b
 async def document_ws(websocket: WebSocket, kb_id: str):
     await websocket.accept()
 
-    # First-message auth: client sends the token, we verify before registering.
-    # Keeps the JWT out of URLs and logs.
+    # Token arrives as the first message to keep the JWT out of URLs and logs.
     try:
         token = await asyncio.wait_for(websocket.receive_text(), timeout=5)
     except (TimeoutError, WebSocketDisconnect):

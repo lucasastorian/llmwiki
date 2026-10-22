@@ -1,5 +1,3 @@
-"""Shared helpers for the documents.highlights JSON list."""
-
 import json
 
 
@@ -17,7 +15,6 @@ def parse_highlights_value(value) -> list[dict]:
 
 
 def find_highlight(highlights: list, highlight_id: str) -> dict | None:
-    """Return the highlight entry with the given id, if any."""
     for h in highlights:
         if isinstance(h, dict) and h.get("id") == highlight_id:
             return h

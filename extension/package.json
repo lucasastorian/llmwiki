@@ -28,38 +28,24 @@
     "postcss": "8.5.26",
     "tailwindcss": "4.1.18",
     "typescript": "5.9.3",
-    "vitest": "4.1.11",
-    "wxt": "0.19.29"
+    "vite": "6.4.4",
+    "vitest": "4.1.12",
+    "wxt": "0.21.4"
   },
   "overrides": {
-    "vite": "6.4.3",
-    "wxt": {
-      "vite": "6.4.3"
-    },
+    "vite": "6.4.4",
     "esbuild": "0.28.1",
-    "shell-quote": "1.12.0",
     "@babel/core": "7.29.7",
     "rollup": "4.59.0",
-    "tar": "7.5.21",
-    "node-forge": "1.4.0",
     "defu": "6.1.5",
     "postcss": "8.5.26",
     "ws": "8.21.0",
-    "tmp": "0.2.7",
-    "uuid": "14.0.0",
-    "minimatch": "10.2.6",
-    "multimatch": "8.0.0",
-    "adm-zip": "0.6.1",
-    "brace-expansion": "5.0.12",
     "browserslist": "4.29.3",
     "baseline-browser-mapping": "2.11.27",
     "source-map-js": "1.2.2",
     "nanoid": "3.3.20",
     "picomatch": "4.0.4",
     "@aklinker1/rollup-plugin-visualizer": {
-      "picomatch": "2.3.2"
-    },
-    "micromatch": {
       "picomatch": "2.3.2"
     }
   }

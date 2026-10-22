@@ -251,7 +251,7 @@ class TestQuizLintTool:
         instance, kb_id = fs
         from tools.lint import LintHandler
 
-        # Seed directly through VaultFS — write tools now reject this content.
+        # Seed through VaultFS because the write tools reject this content.
         bad_page = FRONTMATTER + _quiz_fence("questions:\n  - prompt: Q?\n    options: [a]\n    answer: 0")
         await instance.create_document(kb_id, "bad-quiz.md", "Bad Quiz", "/wiki/", "md", bad_page, ["a", "b"])
 

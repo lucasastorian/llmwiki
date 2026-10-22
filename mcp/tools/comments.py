@@ -1,5 +1,3 @@
-"""Comments tool — list highlight comment threads across the vault."""
-
 from datetime import UTC, datetime
 
 from vaultfs import VaultFS

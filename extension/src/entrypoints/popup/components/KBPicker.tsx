@@ -42,8 +42,9 @@ export default function KBPicker({ apiUrl, accessToken, value, onChange }: Props
       setKbs(list);
       const selected = valueRef.current;
       const selectionValid = selected !== null && list.some((kb) => kb.id === selected);
-      if (!selectionValid && list.length > 0) {
-        onChangeRef.current(list[0].id);
+      const firstKb = list[0];
+      if (!selectionValid && firstKb) {
+        onChangeRef.current(firstKb.id);
       }
     } catch {
       if (!isCancelled()) setError("Failed to load knowledge bases");

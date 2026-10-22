@@ -16,12 +16,7 @@ class QuizGradeQuota:
     window: timedelta = timedelta(hours=24)
 
     async def consume(self, pool: asyncpg.Pool, user_id: str) -> None:
-        """Reserve one grading attempt before starting paid inference.
-
-        The advisory transaction lock makes the count-and-insert atomic across
-        processes and replicas. The transaction ends before the model request,
-        so a slow inference never holds a database connection or user lock.
-        """
+        """Reserve one grading attempt under an advisory lock released before the paid inference starts."""
         async with pool.acquire() as conn, conn.transaction():
             await conn.execute(
                 "SELECT pg_advisory_xact_lock(hashtext($1))",

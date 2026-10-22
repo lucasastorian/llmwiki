@@ -8,8 +8,7 @@ import type { DocumentListItem } from '@/lib/types'
 
 type LessonStatus = 'complete' | 'not_started'
 
-// Persists per-lesson completion in the doc's metadata.course (reuses the existing
-// PATCH /v1/documents/{id} merge — no course-specific backend). Optimistic; a refetch reconciles.
+// Stored in metadata.course via the generic document PATCH merge; a refetch reconciles optimistic state.
 export function useCourseProgress(
   setDocuments: React.Dispatch<React.SetStateAction<DocumentListItem[]>>,
 ) {

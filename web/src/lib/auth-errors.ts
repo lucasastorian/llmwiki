@@ -49,8 +49,7 @@ function isRejection(error: { status?: number } | null): boolean {
 
 type UserVerification = ReturnType<SupabaseClient['auth']['getUser']>
 
-// Session first (local, may refresh), then server verification. A slow or failing auth
-// server must never sign the user out; only an explicit rejection does, even a late one.
+// A slow or failing auth server never signs the user out; only an explicit rejection does, even a late one.
 export async function checkAuth(supabase: SupabaseClient, onLateRejection: () => void): Promise<AuthCheck> {
   let session: Session | null
   try {

@@ -1,13 +1,7 @@
-"""Local document processor — runs extraction without S3 or Postgres.
-
-Processes files directly from the workspace filesystem and updates SQLite.
-Respects PDF_BACKEND config and optional Mistral/LibreOffice backends.
-"""
+"""Local document processor: extracts workspace files into SQLite without S3 or Postgres."""
 
 import asyncio
 import contextlib
-import contextvars
-import functools
 import json
 import logging
 import os
@@ -32,49 +26,14 @@ from domain.file_types import (
 )
 from domain.watcher import mark_written
 from infra.db.sqlite import SQLiteDocumentRepository, create_pool
+from infra.threads import to_thread_joined
 from services.extracted_assets import build_pdf_image_assets
 
 logger = logging.getLogger(__name__)
 
-# Cap concurrent fire-and-forget extractions so a burst of dropped files can't
-# spawn one LibreOffice/OCR job (and connection) per file at once.
+# A burst of dropped files must not spawn one LibreOffice/OCR job (and connection) per file.
 PROCESS_CONCURRENCY = 4
 _process_semaphore = asyncio.Semaphore(PROCESS_CONCURRENCY)
-
-
-async def _to_thread_joined(func, /, *args, **kwargs):
-    """Run blocking work in a thread and join it before propagating cancellation.
-
-    `asyncio.to_thread()` cancels only its asyncio waiter, not the underlying
-    thread. This helper keeps the executor future alive under cancellation and
-    waits for the real worker to finish before cleanup/status transitions run.
-    """
-    loop = asyncio.get_running_loop()
-    context = contextvars.copy_context()
-    call = functools.partial(context.run, func, *args, **kwargs)
-    worker = loop.run_in_executor(None, call)
-
-    try:
-        return await asyncio.shield(worker)
-    except asyncio.CancelledError:
-        # A shutdown may send more than one cancellation. Keep shielding until
-        # the executor future is actually done; it is a Future rather than an
-        # asyncio Task, so loop-wide task cancellation cannot cancel it behind
-        # our back while its thread continues running.
-        while not worker.done():
-            try:
-                await asyncio.shield(worker)
-            except asyncio.CancelledError:
-                continue
-            except BaseException:  # noqa: BLE001
-                break
-
-        # Retrieve a post-cancellation worker exception so it is not reported
-        # as unobserved. The request/task cancellation remains authoritative.
-        if worker.done():
-            with contextlib.suppress(BaseException):
-                worker.result()
-        raise
 
 
 def _write_bytes_file(path: Path, content: bytes) -> None:
@@ -154,15 +113,10 @@ def _extract_spreadsheet_content(file_path: Path) -> list[tuple[str, str]]:
 
 
 def _extract_html_content(file_path: Path) -> str:
+    from html_parser import Parser
+
     raw_html = file_path.read_text(encoding="utf-8", errors="replace")
-
-    try:
-        from html_parser import Parser
-
-        parser = Parser(raw_html, content_only=True)
-        return parser.parse().content
-    except Exception:  # noqa: BLE001
-        return raw_html
+    return Parser(raw_html, content_only=True).parse().content
 
 
 async def process_document(db: aiosqlite.Connection, doc_id: str, workspace: Path) -> None:
@@ -202,7 +156,7 @@ async def process_document(db: aiosqlite.Connection, doc_id: str, workspace: Pat
         file_type = doc["file_type"] or ""
         file_path = workspace / doc["relative_path"]
 
-        if not await _to_thread_joined(file_path.is_file):
+        if not await to_thread_joined(file_path.is_file):
             await db.execute(
                 "UPDATE documents SET status = 'failed', error_message = 'File not found', "
                 "updated_at = datetime('now') WHERE id = ?",
@@ -231,8 +185,7 @@ async def process_document(db: aiosqlite.Connection, doc_id: str, workspace: Pat
         logger.info("Processed %s: %s", filename, file_type)
 
     except asyncio.CancelledError:
-        # A shutdown can cancel extraction after the pending -> processing
-        # claim. Make the document retryable before propagating cancellation.
+        # Cancelled after the pending -> processing claim: make it retryable.
         try:
             await _restore_cancelled_claim(db, doc_id)
         except Exception:
@@ -271,8 +224,7 @@ async def _restore_cancelled_claim(db: aiosqlite.Connection, doc_id: str) -> Non
 
 
 async def process_document_isolated(workspace: Path, doc_id: str) -> None:
-    """Process a document on its own connection so fire-and-forget tasks can't
-    flush another writer's open transaction on a shared connection."""
+    """Process on a dedicated connection so a background commit can't flush another writer's transaction."""
     try:
         async with _process_semaphore:
             db = await create_pool(str(workspace / ".llmwiki" / "index.db"), init_schema=False)
@@ -283,9 +235,7 @@ async def process_document_isolated(workspace: Path, doc_id: str) -> None:
     except asyncio.CancelledError:
         raise
     except Exception:
-        # This coroutine is intentionally spawned as a background task. Keep
-        # unexpected connection/setup failures from becoming unobserved task
-        # exceptions; pending documents remain eligible for reconciliation.
+        # Background task: log rather than leak an unobserved exception; reconcile retries pending docs.
         logger.exception("Isolated processing task failed for %s", doc_id[:8])
 
 
@@ -293,10 +243,9 @@ async def chunk_text_document(db: aiosqlite.Connection, doc_id: str, content: st
     """Chunk an already-extracted text document so it becomes full-text searchable."""
     from services.chunker import chunk_text
 
-    chunks = await _to_thread_joined(chunk_text, content or "")
+    chunks = await to_thread_joined(chunk_text, content or "")
     await _store_chunks(db, doc_id, chunks)
-    # `parser` doubles as the chunked-marker so reconcile skips docs that
-    # legitimately produce zero chunks (empty/short) instead of retrying them.
+    # `parser` doubles as the chunked marker so reconcile skips docs that legitimately yield zero chunks.
     await db.execute(
         "UPDATE documents SET parser = 'text', updated_at = datetime('now') WHERE id = ?",
         (doc_id,),
@@ -305,15 +254,8 @@ async def chunk_text_document(db: aiosqlite.Connection, doc_id: str, content: st
 
 
 def reconcile_workspace(db: aiosqlite.Connection, workspace: Path):
-    """Process documents that were indexed but never extracted or chunked.
-
-    `llmwiki init` lists existing files into the index without extracting PDFs
-    or building search chunks; this backfills both so a folder pointed at on
-    first run is actually readable and searchable.
-    """
-    # This function intentionally captures the cutoff before returning its
-    # coroutine. Main creates the reconcile task before the watcher task, so
-    # extractions claimed after startup cannot be mistaken for stale work.
+    """Backfill extraction and chunking for docs `llmwiki init` indexed but never processed."""
+    # Sync on purpose: the cutoff is taken before main starts the watcher, so its claims never look stale.
     recovery_cutoff = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
     return _reconcile_workspace(db, workspace, recovery_cutoff)
 
@@ -363,8 +305,6 @@ async def _store_chunks(db: aiosqlite.Connection, doc_id: str, chunks: list) -> 
         )
 
 
-# ── PDF extraction ────────────────────────────────────────────────────────
-
 async def _save_local_images(
     db: aiosqlite.Connection, doc_id: str, workspace: Path,
     pages_with_images: list[tuple[int, str, list[dict]]],
@@ -375,7 +315,7 @@ async def _save_local_images(
     if not doc:
         return {}
 
-    assets, page_elements = await _to_thread_joined(
+    assets, page_elements = await to_thread_joined(
         build_pdf_image_assets,
         doc_id,
         doc["filename"],
@@ -396,7 +336,7 @@ async def _save_local_images(
         relative_asset = (asset.path.rstrip("/") + "/" + asset.filename).lstrip("/")
         local_asset = workspace / relative_asset
         mark_written(str(local_asset))
-        await _to_thread_joined(_write_bytes_file, local_asset, asset.data)
+        await to_thread_joined(_write_bytes_file, local_asset, asset.data)
         await repo.create_asset(
             asset.document_id,
             doc["user_id"],
@@ -433,7 +373,7 @@ async def _store_page_contents(
     full_content = "\n\n---\n\n".join(md for _, md in page_contents)
 
     from services.chunker import chunk_pages
-    chunks = await _to_thread_joined(chunk_pages, page_contents)
+    chunks = await to_thread_joined(chunk_pages, page_contents)
     await _store_chunks(db, doc_id, chunks)
 
     await db.execute(
@@ -447,20 +387,18 @@ async def _store_page_contents(
 async def _process_pdf(db: aiosqlite.Connection, doc_id: str, file_path: Path, workspace: Path) -> None:
     """Extract PDF text. Uses opendataloader by default, Mistral if configured."""
     if settings.PDF_BACKEND == "mistral" and settings.MISTRAL_API_KEY:
-        await _process_pdf_mistral(db, doc_id, file_path, workspace)
+        await _process_pdf_mistral(db, doc_id, file_path)
     else:
         from services.pdf_extract import extract_pdf
-        pages_with_images = await _to_thread_joined(extract_pdf, str(file_path))
+        pages_with_images = await to_thread_joined(extract_pdf, str(file_path))
         page_elements = await _save_local_images(db, doc_id, workspace, pages_with_images)
         page_contents = [(num, md) for num, md, _ in pages_with_images]
         await _store_page_contents(db, doc_id, page_contents, "opendataloader", page_elements)
 
 
-# ── Office processing ─────────────────────────────────────────────────────
-
 async def _process_office(db: aiosqlite.Connection, doc_id: str, file_path: Path, workspace: Path) -> None:
     """Convert Office docs to PDF via local LibreOffice, then extract text."""
-    lo = await _to_thread_joined(_find_libreoffice)
+    lo = await to_thread_joined(_find_libreoffice)
     if not lo:
         await db.execute(
             "UPDATE documents SET status = 'failed', "
@@ -471,9 +409,9 @@ async def _process_office(db: aiosqlite.Connection, doc_id: str, file_path: Path
         await db.commit()
         return
 
-    tmpdir = Path(await _to_thread_joined(tempfile.mkdtemp))
+    tmpdir = Path(await to_thread_joined(tempfile.mkdtemp))
     try:
-        result = await _to_thread_joined(
+        result = await to_thread_joined(
             _run_process_group,
             [
                 lo,
@@ -492,36 +430,33 @@ async def _process_office(db: aiosqlite.Connection, doc_id: str, file_path: Path
         if result.returncode != 0:
             raise RuntimeError(f"LibreOffice conversion failed: {result.stderr.decode()[:300]}")
 
-        pdf_files = await _to_thread_joined(_list_pdf_files, tmpdir)
+        pdf_files = await to_thread_joined(_list_pdf_files, tmpdir)
         if not pdf_files:
             raise RuntimeError("LibreOffice produced no PDF output")
 
         converted_pdf = pdf_files[0]
 
-        # Store converted PDF in cache for the viewer
         cache_dir = workspace / ".llmwiki" / "cache" / "local" / doc_id
-        await _to_thread_joined(
+        await to_thread_joined(
             _copy_file,
             converted_pdf,
             cache_dir / "converted.pdf",
         )
 
         from services.pdf_extract import extract_pdf
-        pages_with_images = await _to_thread_joined(extract_pdf, str(converted_pdf))
+        pages_with_images = await to_thread_joined(extract_pdf, str(converted_pdf))
         page_elements = await _save_local_images(db, doc_id, workspace, pages_with_images)
         page_contents = [(num, md) for num, md, _ in pages_with_images]
         await _store_page_contents(db, doc_id, page_contents, "libreoffice+opendataloader", page_elements)
     finally:
-        await _to_thread_joined(shutil.rmtree, tmpdir, True)
+        await to_thread_joined(shutil.rmtree, tmpdir, True)
 
 
-# ── Mistral OCR ───────────────────────────────────────────────────────────
-
-async def _process_pdf_mistral(db: aiosqlite.Connection, doc_id: str, file_path: Path, workspace: Path) -> None:
+async def _process_pdf_mistral(db: aiosqlite.Connection, doc_id: str, file_path: Path) -> None:
     """Extract PDF via Mistral OCR API (better tables/layout, requires API key)."""
     import httpx
 
-    pdf_b64 = await _to_thread_joined(_encode_file_base64, file_path)
+    pdf_b64 = await to_thread_joined(_encode_file_base64, file_path)
 
     async with httpx.AsyncClient(timeout=120) as client:
         resp = await client.post(
@@ -540,11 +475,9 @@ async def _process_pdf_mistral(db: aiosqlite.Connection, doc_id: str, file_path:
     await _store_page_contents(db, doc_id, page_contents, "mistral")
 
 
-# ── Spreadsheet processing ────────────────────────────────────────────────
-
 async def _process_spreadsheet(db: aiosqlite.Connection, doc_id: str, file_path: Path) -> None:
     """Extract spreadsheet data via openpyxl. Stores pages AND chunks for search."""
-    sheets = await _to_thread_joined(_extract_spreadsheet_content, file_path)
+    sheets = await to_thread_joined(_extract_spreadsheet_content, file_path)
 
     await db.execute("DELETE FROM document_pages WHERE document_id = ?", (doc_id,))
 
@@ -565,7 +498,7 @@ async def _process_spreadsheet(db: aiosqlite.Connection, doc_id: str, file_path:
     full_content = "\n\n".join(all_content)
 
     from services.chunker import chunk_pages
-    chunks = await _to_thread_joined(chunk_pages, page_contents)
+    chunks = await to_thread_joined(chunk_pages, page_contents)
     await _store_chunks(db, doc_id, chunks)
 
     await db.execute(
@@ -575,8 +508,6 @@ async def _process_spreadsheet(db: aiosqlite.Connection, doc_id: str, file_path:
     )
     await db.commit()
 
-
-# ── Image / HTML processing ──────────────────────────────────────────────
 
 async def _process_image(db: aiosqlite.Connection, doc_id: str) -> None:
     """Images are stored as-is — just mark ready."""
@@ -590,10 +521,10 @@ async def _process_image(db: aiosqlite.Connection, doc_id: str) -> None:
 
 async def _process_html(db: aiosqlite.Connection, doc_id: str, file_path: Path) -> None:
     """Extract HTML content via webmd parser."""
-    content = await _to_thread_joined(_extract_html_content, file_path)
+    content = await to_thread_joined(_extract_html_content, file_path)
 
     from services.chunker import chunk_text
-    chunks = await _to_thread_joined(chunk_text, content)
+    chunks = await to_thread_joined(chunk_text, content)
     await _store_chunks(db, doc_id, chunks)
 
     await db.execute(
@@ -603,8 +534,6 @@ async def _process_html(db: aiosqlite.Connection, doc_id: str, file_path: Path) 
     )
     await db.commit()
 
-
-# ── Reconciliation queries ────────────────────────────────────────────────
 
 async def _recover_interrupted_documents(
     db: aiosqlite.Connection,
@@ -639,10 +568,7 @@ async def _recover_interrupted_documents(
 
 
 async def _unchunked_extractable_ids(db: aiosqlite.Connection) -> list[str]:
-    """IDs of documents still needing local background processing.
-
-    Excludes 'processing' so reconcile never reclaims a doc an isolated task is mid-extracting.
-    """
+    """IDs still needing background processing; skips 'processing' so reconcile never reclaims in-flight docs."""
     placeholders = ",".join("?" for _ in PROCESSING_TYPES)
     cursor = await db.execute(
         f"SELECT id FROM documents WHERE status NOT IN ('failed', 'processing') AND source_kind != 'asset' "

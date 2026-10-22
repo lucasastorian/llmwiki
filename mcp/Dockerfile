@@ -8,9 +8,7 @@ COPY requirements.lock .
 RUN uv pip install --system --require-hashes -r requirements.lock
 RUN pip-audit -r requirements.lock --strict --desc
 
-# ---------------------------------------------------------------------------
-# Runtime — only ships if deps are clean
-# ---------------------------------------------------------------------------
+# Runtime only builds if the pip-audit above passed.
 FROM base AS runtime
 
 COPY . .

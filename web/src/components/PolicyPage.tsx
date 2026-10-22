@@ -7,7 +7,6 @@ import Link from 'next/link'
 export function PolicyPage({ content }: { content: string }) {
   return (
     <div className="min-h-svh bg-background text-foreground">
-      {/* Nav */}
       <nav className="fixed top-0 inset-x-0 z-50 flex items-center justify-between px-6 lg:px-10 h-14 bg-background/80 backdrop-blur-sm border-b border-border">
         <Link href="/" className="flex items-center gap-2.5 text-sm font-semibold tracking-tight">
           <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 32 32">
@@ -32,7 +31,6 @@ export function PolicyPage({ content }: { content: string }) {
         </div>
       </nav>
 
-      {/* Content */}
       <article className="max-w-2xl mx-auto px-6 pt-28 pb-20">
         <div className="policy-prose">
           <ReactMarkdown
@@ -62,7 +60,6 @@ export function PolicyPage({ content }: { content: string }) {
         </div>
       </article>
 
-      {/* Footer */}
       <footer className="border-t border-border px-6 lg:px-10 py-6 flex items-center justify-between text-xs text-muted-foreground/50">
         <span>LLM Wiki</span>
         <div className="flex items-center gap-4">

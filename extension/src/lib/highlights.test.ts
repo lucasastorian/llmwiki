@@ -61,6 +61,7 @@ describe("highlight DOM helpers", () => {
 
     expect(result).toEqual({ applied: 1, failed: 0 });
     const [mark] = findAllMarks("comment-1");
+    if (!mark) throw new Error("expected a mark");
     expect(mark.textContent).toBe("note");
     expect(mark.getAttribute("data-llmwiki-comment")).toBe("1");
     expect(mark.getAttribute("data-llmwiki-comment-text")).toBe("Remember this");

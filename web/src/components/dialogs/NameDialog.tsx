@@ -18,8 +18,7 @@ interface NameDialogProps {
   onSubmit: () => void
   placeholder?: string
   submitDisabled?: boolean
-  /** Dialogs open from menus/popovers that unmount, so Radix's default focus
-   *  restore lands on <body> — every consumer must name a stable target. */
+  /** Required: the opening menu has unmounted, so Radix would restore focus to <body>. */
   onCloseAutoFocus: (event: Event) => void
 }
 

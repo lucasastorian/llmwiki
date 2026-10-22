@@ -88,8 +88,7 @@ async def test_large_file_modification_is_not_skipped_when_hash_is_none(
     )
     await db.commit()
 
-    # Treat this tiny fixture as an over-limit file so snapshots intentionally
-    # omit content_hash without allocating a 100 MB test file.
+    # Treat the fixture as over the hash limit so snapshots omit content_hash without a 100 MB file.
     monkeypatch.setattr(watcher, "MAX_HASH_SIZE_BYTES", 1)
     await watcher._index_file(db, workspace, source)
 
@@ -110,8 +109,7 @@ async def test_large_file_modification_is_not_skipped_when_hash_is_none(
     assert content_hash is None
     assert version == 1
 
-    # A duplicate event with identical size/mtime should use the metadata
-    # fallback and avoid an unnecessary re-index.
+    # Identical size/mtime takes the metadata fallback and skips re-indexing.
     await watcher._index_file(db, workspace, source)
     cursor = await db.execute(
         "SELECT version FROM documents WHERE relative_path = ?",

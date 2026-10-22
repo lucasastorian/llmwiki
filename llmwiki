@@ -1,14 +1,5 @@
 #!/usr/bin/env python3
-"""LLM Wiki — local-first knowledge workspace CLI.
-
-Usage:
-    llmwiki open <workspace>         Init if needed + serve + open browser
-    llmwiki init <workspace>         Create .llmwiki/ + wiki/, index files
-    llmwiki serve <workspace>        Start API + web on localhost
-    llmwiki mcp <workspace>          Run stdio MCP server (for Claude config)
-    llmwiki mcp-config <workspace>   Print claude_desktop_config.json snippet
-    llmwiki reindex <workspace>      Rebuild search from files (backs up index.db; drops highlights/metadata)
-"""
+"""LLM Wiki local-first workspace CLI; `llmwiki -h` lists the commands."""
 
 import argparse
 import json
@@ -55,7 +46,6 @@ def cmd_init(workspace: str) -> None:
         print(f"  index.db: {db_path}")
         return
 
-    # Initialize SQLite
     import sqlite3
     _load_migration_runner().apply_migrations(str(db_path))
 
@@ -71,7 +61,6 @@ def cmd_init(workspace: str) -> None:
         (ws_id, ws_name, user_id),
     )
 
-    # Scaffold the wiki overview. Activity is captured in knowledge_base_events.
     doc1_id = str(uuid.uuid4())
     conn.execute(
         "INSERT INTO documents (id, user_id, filename, title, path, relative_path, source_kind, "
@@ -85,7 +74,6 @@ def cmd_init(workspace: str) -> None:
     conn.commit()
     conn.close()
 
-    # Write actual wiki files
     overview = ws / "wiki" / "overview.md"
     if not overview.exists():
         overview.write_text(
@@ -94,15 +82,14 @@ def cmd_init(workspace: str) -> None:
             encoding="utf-8",
         )
 
-    # Index existing files
-    _index_existing_files(ws, db_path, user_id, ws_id)
+    _index_existing_files(ws, db_path, user_id)
 
     print(f"✓ Initialized workspace: {ws}")
     print(f"  wiki/overview.md — created")
     print(f"  .llmwiki/index.db — created")
 
 
-def _index_existing_files(ws: Path, db_path: Path, user_id: str, ws_id: str) -> None:
+def _index_existing_files(ws: Path, db_path: Path, user_id: str) -> None:
     """Index existing files in the workspace into SQLite."""
     import hashlib
     import uuid
@@ -113,12 +100,10 @@ def _index_existing_files(ws: Path, db_path: Path, user_id: str, ws_id: str) -> 
 
     conn = sqlite3.connect(str(db_path))
 
-    # Get already-indexed paths
     cursor = conn.execute("SELECT relative_path FROM documents")
     existing = {row[0] for row in cursor.fetchall()}
 
     for root_path, dirs, files in os.walk(ws):
-        # Skip ignored directories
         dirs[:] = [d for d in dirs if d not in ignore_dirs and not d.startswith(".")]
 
         for filename in files:
@@ -134,7 +119,6 @@ def _index_existing_files(ws: Path, db_path: Path, user_id: str, ws_id: str) -> 
             ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
             stat = full.stat()
 
-            # Determine path (directory) and source_kind
             parts = relative.split("/")
             if len(parts) > 1:
                 dir_path = "/" + "/".join(parts[:-1]) + "/"
@@ -142,7 +126,6 @@ def _index_existing_files(ws: Path, db_path: Path, user_id: str, ws_id: str) -> 
                 dir_path = "/"
             source_kind = "wiki" if relative.startswith("wiki/") else "source"
 
-            # Derive title
             stem = filename.rsplit(".", 1)[0] if "." in filename else filename
             title = stem.replace("-", " ").replace("_", " ").strip().title()
 
@@ -202,14 +185,12 @@ def cmd_serve(workspace: str, open_browser: bool = True) -> None:
     print(f"  MCP: llmwiki mcp-config {ws}")
     print()
 
-    # Start API server
     api_proc = subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "main:app", "--host", "127.0.0.1", "--port", "8000"],
         cwd=str(API_DIR),
         env=env,
     )
 
-    # Start web dev server
     web_env = env.copy()
     web_env["NEXT_PUBLIC_MODE"] = "local"
     web_env["NEXT_PUBLIC_API_URL"] = "http://localhost:8000"
@@ -272,13 +253,10 @@ def cmd_mcp(workspace: str) -> None:
     if not (ws / ".llmwiki" / "index.db").exists():
         cmd_init(str(ws))
 
-    # local_server lives in mcp/; chdir so `python -m local_server` resolves
-    # the module no matter where the CLI was invoked from (Claude Desktop /
-    # Code launches this with cwd set to ~ on macOS).
-    # Windows os.exec* detaches from the parent's process handle, which breaks
-    # Claude Desktop's stdio lifecycle — spawn and wait there instead.
+    # Claude Desktop launches with cwd=~, so chdir for `-m local_server` to resolve.
     os.chdir(str(MCP_DIR))
     cmd = [sys.executable, "-m", "local_server", "--workspace", str(ws)]
+    # Windows os.exec* detaches from the parent process, breaking Claude Desktop's stdio lifecycle.
     if sys.platform == "win32":
         sys.exit(subprocess.call(cmd))
     os.execvp(sys.executable, cmd)
@@ -289,8 +267,7 @@ def cmd_mcp_config(workspace: str, name: str | None = None) -> None:
     server_name = name or f"llmwiki-{_sanitize_name(ws.name)}"
     llmwiki_path = str(REPO_ROOT / "llmwiki")
 
-    # Launch via the current interpreter: shebangs don't work on Windows, and
-    # this pins the venv python (Claude Desktop won't have it activated).
+    # The current interpreter: shebangs fail on Windows and Claude Desktop won't activate the venv.
     config = {
         "mcpServers": {
             server_name: {
@@ -327,7 +304,6 @@ def cmd_reindex(workspace: str, assume_yes: bool) -> None:
     conn.execute("DELETE FROM documents")
     conn.commit()
 
-    # Get workspace info
     cursor = conn.execute("SELECT id, user_id FROM workspace LIMIT 1")
     row = cursor.fetchone()
     if not row:
@@ -336,7 +312,7 @@ def cmd_reindex(workspace: str, assume_yes: bool) -> None:
     ws_id, user_id = row
     conn.close()
 
-    _index_existing_files(ws, db_path, user_id, ws_id)
+    _index_existing_files(ws, db_path, user_id)
     print(f"✓ Reindexed workspace: {ws}")
 
 

@@ -11,7 +11,6 @@ from services.types import (
     CreateFromUrl,
     CreateNote,
     CreateWebClip,
-    ReplaceHighlights,
     UpdateContent,
     UpdateMetadata,
     UpsertHighlight,
@@ -110,35 +109,13 @@ async def get_document_highlights(
     return row
 
 
-@router.patch("/v1/documents/{doc_id}/highlights")
-async def replace_document_highlights(
-    doc_id: UUID,
-    body: ReplaceHighlights,
-    service: Annotated[DocumentService, Depends(get_document_service)],
-):
-    highlights = [h.model_dump() for h in body.highlights]
-    row = await service.replace_highlights(
-        str(doc_id), highlights, body.expectedVersion,
-    )
-    if not row:
-        raise HTTPException(status_code=404, detail="Document not found")
-    if row.get("conflict"):
-        raise HTTPException(
-            status_code=409,
-            detail="Version mismatch — refetch and retry",
-        )
-    return row
-
-
 @router.post("/v1/documents/{doc_id}/highlights", status_code=200)
 async def upsert_document_highlight(
     doc_id: UUID,
     body: UpsertHighlight,
     service: Annotated[DocumentService, Depends(get_document_service)],
 ):
-    """Idempotent single-highlight upsert. Re-posting the same {id, payload}
-    is safe; the wire-level retry behavior on dropped connections matters more
-    than strict deduplication."""
+    """Idempotently upsert one highlight by id; safe to retry."""
     row = await service.upsert_highlight(
         str(doc_id), body.highlight.model_dump(), body.expectedVersion,
     )
@@ -159,10 +136,7 @@ async def delete_document_highlight(
     service: Annotated[DocumentService, Depends(get_document_service)],
     expectedVersion: int | None = Query(None),
 ):
-    """Idempotent single-highlight delete. Removing an absent id returns the
-    current state without bumping the version (200 either way).
-    `expectedVersion` is a query param (DELETE bodies are awkward in some
-    proxies/clients)."""
+    """Idempotently delete one highlight (absent id is a no-op); `expectedVersion` is a query param since DELETE bodies are unreliable."""
     row = await service.delete_highlight(str(doc_id), highlight_id, expectedVersion)
     if not row:
         raise HTTPException(status_code=404, detail="Document not found")

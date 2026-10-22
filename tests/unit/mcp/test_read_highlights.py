@@ -1,5 +1,3 @@
-"""Unit tests for MCP read highlight materialization."""
-
 import importlib.util
 import sys
 import types

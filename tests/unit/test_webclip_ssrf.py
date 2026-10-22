@@ -1,13 +1,4 @@
-"""SSRF guard tests for the web-clip image fetcher.
-
-Server-side fetchers hit user-controlled URLs, so these guards (now shared via
-infra.safe_fetch) are the highest-stakes code in the API. These tests pin the
-invariants that matter: the address blocklist, the
-all-resolved-addresses-must-be-public rule (which defeats DNS rebinding),
-connection pinning to the validated IP, redirect re-validation, and data-URI
-content validation. No live network — getaddrinfo and the httpx transport are
-mocked.
-"""
+"""SSRF invariants: address blocklist, all-resolved-addresses-public, IP pinning, redirect re-validation, data-URI checks."""
 
 import base64
 import ipaddress
@@ -83,8 +74,7 @@ class TestResolvePublicIP:
         assert sf.resolve_public_ip("internal.test") is None
 
     def test_mixed_public_and_private_blocked(self, monkeypatch):
-        """A host with one public and one private A record must be rejected
-        entirely — this is the DNS-rebinding shape."""
+        """One public plus one private A record is the DNS-rebinding shape and must be rejected."""
         monkeypatch.setattr(
             sf.socket, "getaddrinfo",
             _fake_getaddrinfo({"rebind.test": ["93.184.216.34", "10.0.0.5"]}),
@@ -137,7 +127,7 @@ class TestFetchRemoteImage:
             return httpx.Response(200, headers={"content-type": "image/png"}, content=png)
 
         monkeypatch.setattr(sf.socket, "getaddrinfo", _fake_getaddrinfo({"cdn.test": ["93.184.216.34"]}))
-        monkeypatch.setattr(w.httpx, "AsyncClient", _client_with_transport(handler))
+        monkeypatch.setattr(sf.httpx, "AsyncClient", _client_with_transport(handler))
 
         result = await w._fetch_remote_image("http://cdn.test/a.png")
 
@@ -154,7 +144,7 @@ class TestFetchRemoteImage:
             return httpx.Response(200, content=b"x")
 
         monkeypatch.setattr(sf.socket, "getaddrinfo", _fake_getaddrinfo({"evil.test": ["169.254.169.254"]}))
-        monkeypatch.setattr(w.httpx, "AsyncClient", _client_with_transport(handler))
+        monkeypatch.setattr(sf.httpx, "AsyncClient", _client_with_transport(handler))
 
         result = await w._fetch_remote_image("http://evil.test/latest/meta-data")
 
@@ -174,7 +164,7 @@ class TestFetchRemoteImage:
             return httpx.Response(200, content=b"x")
 
         monkeypatch.setattr(sf.socket, "getaddrinfo", _fake_getaddrinfo({"cdn.test": ["93.184.216.34"]}))
-        monkeypatch.setattr(w.httpx, "AsyncClient", _client_with_transport(handler))
+        monkeypatch.setattr(sf.httpx, "AsyncClient", _client_with_transport(handler))
 
         result = await w._fetch_remote_image(url)
 
@@ -192,7 +182,7 @@ class TestFetchRemoteImage:
                 "meta.test": ["169.254.169.254"],
             }),
         )
-        monkeypatch.setattr(w.httpx, "AsyncClient", _client_with_transport(handler))
+        monkeypatch.setattr(sf.httpx, "AsyncClient", _client_with_transport(handler))
 
         result = await w._fetch_remote_image("http://cdn.test/a.png")
 
@@ -206,7 +196,7 @@ class TestFetchRemoteImage:
             return httpx.Response(302, headers={"location": "http://cdn.test:8080/private"})
 
         monkeypatch.setattr(sf.socket, "getaddrinfo", _fake_getaddrinfo({"cdn.test": ["93.184.216.34"]}))
-        monkeypatch.setattr(w.httpx, "AsyncClient", _client_with_transport(handler))
+        monkeypatch.setattr(sf.httpx, "AsyncClient", _client_with_transport(handler))
 
         result = await w._fetch_remote_image("http://cdn.test/a.png")
 
@@ -221,7 +211,7 @@ class TestFetchRemoteImage:
             return httpx.Response(302, headers={"location": "http://api.railway.internal/private"})
 
         monkeypatch.setattr(sf.socket, "getaddrinfo", _fake_getaddrinfo({"cdn.test": ["93.184.216.34"]}))
-        monkeypatch.setattr(w.httpx, "AsyncClient", _client_with_transport(handler))
+        monkeypatch.setattr(sf.httpx, "AsyncClient", _client_with_transport(handler))
 
         result = await w._fetch_remote_image("http://cdn.test/a.png")
 
@@ -229,12 +219,11 @@ class TestFetchRemoteImage:
         assert len(sent_urls) == 1
 
     async def test_content_type_must_match_sniffed_bytes(self, monkeypatch):
-        """A response claiming image/png but carrying non-image bytes is dropped."""
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, headers={"content-type": "image/png"}, content=b"not really a png")
 
         monkeypatch.setattr(sf.socket, "getaddrinfo", _fake_getaddrinfo({"cdn.test": ["93.184.216.34"]}))
-        monkeypatch.setattr(w.httpx, "AsyncClient", _client_with_transport(handler))
+        monkeypatch.setattr(sf.httpx, "AsyncClient", _client_with_transport(handler))
 
         assert await w._fetch_remote_image("http://cdn.test/a.png") is None
 
@@ -246,7 +235,7 @@ class TestFetchRemoteImage:
 
         monkeypatch.setattr(w, "MAX_IMAGE_BYTES", 16)
         monkeypatch.setattr(sf.socket, "getaddrinfo", _fake_getaddrinfo({"cdn.test": ["93.184.216.34"]}))
-        monkeypatch.setattr(w.httpx, "AsyncClient", _client_with_transport(handler))
+        monkeypatch.setattr(sf.httpx, "AsyncClient", _client_with_transport(handler))
 
         assert await w._fetch_remote_image("http://cdn.test/a.png") is None
 

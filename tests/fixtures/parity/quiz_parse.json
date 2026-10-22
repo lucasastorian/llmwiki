@@ -1,0 +1,977 @@
+{
+  "about": "`yaml` is a ```quiz block body. lint_quiz_blocks (api/domain/quiz_lint.py and mcp/tools/quiz_lint.py, identically) returns no errors iff `pythonValid`. parseQuizYaml (web/src/lib/quiz/parseQuiz.ts) returns `ts.spec`, and `ts.error` when given (omitted: any YAML-library error). The viewer may accept more than the server only where `tsLenient` says why; it must never reject what the server accepts.",
+  "cases": [
+    {
+      "name": "minimal choice question gets defaults",
+      "yaml": "questions:\n  - prompt: Q?\n    options: [a, b]\n    answer: 0\n",
+      "pythonValid": true,
+      "ts": {
+        "spec": {
+          "title": null,
+          "questions": [
+            {
+              "kind": "choice",
+              "options": [
+                "a",
+                "b"
+              ],
+              "answer": 0,
+              "prompt": "Q?",
+              "hints": [],
+              "explanation": null
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "full choice question is trimmed",
+      "yaml": "title: \"  Checkpoint  \"\nquestions:\n  - prompt: \"  What is $P(A)$?  \"\n    options: [\" $1/4$ \", \"$3/8$\"]\n    answer: 1\n    hints:\n      - \" think \"\n    explanation: \" because \"\n",
+      "pythonValid": true,
+      "ts": {
+        "spec": {
+          "title": "Checkpoint",
+          "questions": [
+            {
+              "kind": "choice",
+              "options": [
+                "$1/4$",
+                "$3/8$"
+              ],
+              "answer": 1,
+              "prompt": "What is $P(A)$?",
+              "hints": [
+                "think"
+              ],
+              "explanation": "because"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "explicit choice type",
+      "yaml": "questions:\n  - type: choice\n    prompt: Q?\n    options: [a, b]\n    answer: 1\n",
+      "pythonValid": true,
+      "ts": {
+        "spec": {
+          "title": null,
+          "questions": [
+            {
+              "kind": "choice",
+              "options": [
+                "a",
+                "b"
+              ],
+              "answer": 1,
+              "prompt": "Q?",
+              "hints": [],
+              "explanation": null
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "text question",
+      "yaml": "questions:\n  - type: text\n    prompt: Explain the base-rate fallacy.\n    rubric: Correct if the answer invokes the prior.\n    explanation: Bayes.\n",
+      "pythonValid": true,
+      "ts": {
+        "spec": {
+          "title": null,
+          "questions": [
+            {
+              "kind": "text",
+              "rubric": "Correct if the answer invokes the prior.",
+              "prompt": "Explain the base-rate fallacy.",
+              "hints": [],
+              "explanation": "Bayes."
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "mixed choice and text questions",
+      "yaml": "title: Mixed\nquestions:\n  - prompt: Pick one\n    options: [x, y, z]\n    answer: 2\n  - type: text\n    prompt: Why?\n    rubric: Mentions z.\n",
+      "pythonValid": true,
+      "ts": {
+        "spec": {
+          "title": "Mixed",
+          "questions": [
+            {
+              "kind": "choice",
+              "options": [
+                "x",
+                "y",
+                "z"
+              ],
+              "answer": 2,
+              "prompt": "Pick one",
+              "hints": [],
+              "explanation": null
+            },
+            {
+              "kind": "text",
+              "rubric": "Mentions z.",
+              "prompt": "Why?",
+              "hints": [],
+              "explanation": null
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "six options with last answer",
+      "yaml": "questions:\n  - prompt: Q?\n    options: [a, b, c, d, e, f]\n    answer: 5\n",
+      "pythonValid": true,
+      "ts": {
+        "spec": {
+          "title": null,
+          "questions": [
+            {
+              "kind": "choice",
+              "options": [
+                "a",
+                "b",
+                "c",
+                "d",
+                "e",
+                "f"
+              ],
+              "answer": 5,
+              "prompt": "Q?",
+              "hints": [],
+              "explanation": null
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "twenty questions",
+      "yaml": "questions:\n  - {prompt: Q1, options: [a, b], answer: 0}\n  - {prompt: Q2, options: [a, b], answer: 0}\n  - {prompt: Q3, options: [a, b], answer: 0}\n  - {prompt: Q4, options: [a, b], answer: 0}\n  - {prompt: Q5, options: [a, b], answer: 0}\n  - {prompt: Q6, options: [a, b], answer: 0}\n  - {prompt: Q7, options: [a, b], answer: 0}\n  - {prompt: Q8, options: [a, b], answer: 0}\n  - {prompt: Q9, options: [a, b], answer: 0}\n  - {prompt: Q10, options: [a, b], answer: 0}\n  - {prompt: Q11, options: [a, b], answer: 0}\n  - {prompt: Q12, options: [a, b], answer: 0}\n  - {prompt: Q13, options: [a, b], answer: 0}\n  - {prompt: Q14, options: [a, b], answer: 0}\n  - {prompt: Q15, options: [a, b], answer: 0}\n  - {prompt: Q16, options: [a, b], answer: 0}\n  - {prompt: Q17, options: [a, b], answer: 0}\n  - {prompt: Q18, options: [a, b], answer: 0}\n  - {prompt: Q19, options: [a, b], answer: 0}\n  - {prompt: Q20, options: [a, b], answer: 0}\n",
+      "pythonValid": true,
+      "ts": {
+        "spec": {
+          "title": null,
+          "questions": [
+            {
+              "kind": "choice",
+              "options": [
+                "a",
+                "b"
+              ],
+              "answer": 0,
+              "prompt": "Q1",
+              "hints": [],
+              "explanation": null
+            },
+            {
+              "kind": "choice",
+              "options": [
+                "a",
+                "b"
+              ],
+              "answer": 0,
+              "prompt": "Q2",
+              "hints": [],
+              "explanation": null
+            },
+            {
+              "kind": "choice",
+              "options": [
+                "a",
+                "b"
+              ],
+              "answer": 0,
+              "prompt": "Q3",
+              "hints": [],
+              "explanation": null
+            },
+            {
+              "kind": "choice",
+              "options": [
+                "a",
+                "b"
+              ],
+              "answer": 0,
+              "prompt": "Q4",
+              "hints": [],
+              "explanation": null
+            },
+            {
+              "kind": "choice",
+              "options": [
+                "a",
+                "b"
+              ],
+              "answer": 0,
+              "prompt": "Q5",
+              "hints": [],
+              "explanation": null
+            },
+            {
+              "kind": "choice",
+              "options": [
+                "a",
+                "b"
+              ],
+              "answer": 0,
+              "prompt": "Q6",
+              "hints": [],
+              "explanation": null
+            },
+            {
+              "kind": "choice",
+              "options": [
+                "a",
+                "b"
+              ],
+              "answer": 0,
+              "prompt": "Q7",
+              "hints": [],
+              "explanation": null
+            },
+            {
+              "kind": "choice",
+              "options": [
+                "a",
+                "b"
+              ],
+              "answer": 0,
+              "prompt": "Q8",
+              "hints": [],
+              "explanation": null
+            },
+            {
+              "kind": "choice",
+              "options": [
+                "a",
+                "b"
+              ],
+              "answer": 0,
+              "prompt": "Q9",
+              "hints": [],
+              "explanation": null
+            },
+            {
+              "kind": "choice",
+              "options": [
+                "a",
+                "b"
+              ],
+              "answer": 0,
+              "prompt": "Q10",
+              "hints": [],
+              "explanation": null
+            },
+            {
+              "kind": "choice",
+              "options": [
+                "a",
+                "b"
+              ],
+              "answer": 0,
+              "prompt": "Q11",
+              "hints": [],
+              "explanation": null
+            },
+            {
+              "kind": "choice",
+              "options": [
+                "a",
+                "b"
+              ],
+              "answer": 0,
+              "prompt": "Q12",
+              "hints": [],
+              "explanation": null
+            },
+            {
+              "kind": "choice",
+              "options": [
+                "a",
+                "b"
+              ],
+              "answer": 0,
+              "prompt": "Q13",
+              "hints": [],
+              "explanation": null
+            },
+            {
+              "kind": "choice",
+              "options": [
+                "a",
+                "b"
+              ],
+              "answer": 0,
+              "prompt": "Q14",
+              "hints": [],
+              "explanation": null
+            },
+            {
+              "kind": "choice",
+              "options": [
+                "a",
+                "b"
+              ],
+              "answer": 0,
+              "prompt": "Q15",
+              "hints": [],
+              "explanation": null
+            },
+            {
+              "kind": "choice",
+              "options": [
+                "a",
+                "b"
+              ],
+              "answer": 0,
+              "prompt": "Q16",
+              "hints": [],
+              "explanation": null
+            },
+            {
+              "kind": "choice",
+              "options": [
+                "a",
+                "b"
+              ],
+              "answer": 0,
+              "prompt": "Q17",
+              "hints": [],
+              "explanation": null
+            },
+            {
+              "kind": "choice",
+              "options": [
+                "a",
+                "b"
+              ],
+              "answer": 0,
+              "prompt": "Q18",
+              "hints": [],
+              "explanation": null
+            },
+            {
+              "kind": "choice",
+              "options": [
+                "a",
+                "b"
+              ],
+              "answer": 0,
+              "prompt": "Q19",
+              "hints": [],
+              "explanation": null
+            },
+            {
+              "kind": "choice",
+              "options": [
+                "a",
+                "b"
+              ],
+              "answer": 0,
+              "prompt": "Q20",
+              "hints": [],
+              "explanation": null
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "null hints and explanation",
+      "yaml": "questions:\n  - prompt: Q?\n    options: [a, b]\n    answer: 0\n    hints:\n    explanation:\n",
+      "pythonValid": true,
+      "ts": {
+        "spec": {
+          "title": null,
+          "questions": [
+            {
+              "kind": "choice",
+              "options": [
+                "a",
+                "b"
+              ],
+              "answer": 0,
+              "prompt": "Q?",
+              "hints": [],
+              "explanation": null
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "block scalar prompt",
+      "yaml": "questions:\n  - prompt: |\n      Line one\n      Line two\n    options: [a, b]\n    answer: 0\n",
+      "pythonValid": true,
+      "ts": {
+        "spec": {
+          "title": null,
+          "questions": [
+            {
+              "kind": "choice",
+              "options": [
+                "a",
+                "b"
+              ],
+              "answer": 0,
+              "prompt": "Line one\nLine two",
+              "hints": [],
+              "explanation": null
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "unicode and latex",
+      "yaml": "title: Ünïcödé 日本語\nquestions:\n  - prompt: \"Évaluer $\\\\int_0^1 x\\\\,dx$ 😀\"\n    options: [\"½\", \"⅓\"]\n    answer: 0\n",
+      "pythonValid": true,
+      "ts": {
+        "spec": {
+          "title": "Ünïcödé 日本語",
+          "questions": [
+            {
+              "kind": "choice",
+              "options": [
+                "½",
+                "⅓"
+              ],
+              "answer": 0,
+              "prompt": "Évaluer $\\int_0^1 x\\,dx$ 😀",
+              "hints": [],
+              "explanation": null
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "duplicate key last wins",
+      "yaml": "questions:\n  - prompt: First\n    prompt: Second\n    options: [a, b]\n    answer: 0\n",
+      "pythonValid": true,
+      "ts": {
+        "spec": {
+          "title": null,
+          "questions": [
+            {
+              "kind": "choice",
+              "options": [
+                "a",
+                "b"
+              ],
+              "answer": 0,
+              "prompt": "Second",
+              "hints": [],
+              "explanation": null
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "anchors and merge keys are rejected",
+      "yaml": "questions:\n  - &first\n    prompt: First?\n    options: [a, b]\n    answer: 1\n  - <<: *first\n    prompt: Merged?\n",
+      "pythonValid": false,
+      "ts": {
+        "spec": null,
+        "error": "Alias resolution is disabled"
+      }
+    },
+    {
+      "name": "invalid yaml",
+      "yaml": "{ unbalanced",
+      "pythonValid": false,
+      "ts": {
+        "spec": null
+      }
+    },
+    {
+      "name": "multiple yaml documents",
+      "yaml": "questions:\n  - prompt: Q?\n    options: [a, b]\n    answer: 0\n---\nquestions:\n  - prompt: Q?\n    options: [a, b]\n    answer: 0\n",
+      "pythonValid": false,
+      "ts": {
+        "spec": null
+      }
+    },
+    {
+      "name": "list body",
+      "yaml": "- a\n- b\n",
+      "pythonValid": false,
+      "ts": {
+        "spec": null,
+        "error": "quiz body must be a YAML mapping"
+      }
+    },
+    {
+      "name": "scalar body",
+      "yaml": "just text\n",
+      "pythonValid": false,
+      "ts": {
+        "spec": null,
+        "error": "quiz body must be a YAML mapping"
+      }
+    },
+    {
+      "name": "empty body",
+      "yaml": "",
+      "pythonValid": false,
+      "ts": {
+        "spec": null,
+        "error": "quiz body must be a YAML mapping"
+      }
+    },
+    {
+      "name": "missing questions",
+      "yaml": "title: Empty\n",
+      "pythonValid": false,
+      "ts": {
+        "spec": null,
+        "error": "`questions` must be a non-empty list"
+      }
+    },
+    {
+      "name": "empty questions list",
+      "yaml": "questions: []\n",
+      "pythonValid": false,
+      "ts": {
+        "spec": null,
+        "error": "`questions` must be a non-empty list"
+      }
+    },
+    {
+      "name": "questions is a mapping",
+      "yaml": "questions:\n  prompt: Q?\n",
+      "pythonValid": false,
+      "ts": {
+        "spec": null,
+        "error": "`questions` must be a non-empty list"
+      }
+    },
+    {
+      "name": "twenty-one questions",
+      "yaml": "questions:\n  - {prompt: Q1, options: [a, b], answer: 0}\n  - {prompt: Q2, options: [a, b], answer: 0}\n  - {prompt: Q3, options: [a, b], answer: 0}\n  - {prompt: Q4, options: [a, b], answer: 0}\n  - {prompt: Q5, options: [a, b], answer: 0}\n  - {prompt: Q6, options: [a, b], answer: 0}\n  - {prompt: Q7, options: [a, b], answer: 0}\n  - {prompt: Q8, options: [a, b], answer: 0}\n  - {prompt: Q9, options: [a, b], answer: 0}\n  - {prompt: Q10, options: [a, b], answer: 0}\n  - {prompt: Q11, options: [a, b], answer: 0}\n  - {prompt: Q12, options: [a, b], answer: 0}\n  - {prompt: Q13, options: [a, b], answer: 0}\n  - {prompt: Q14, options: [a, b], answer: 0}\n  - {prompt: Q15, options: [a, b], answer: 0}\n  - {prompt: Q16, options: [a, b], answer: 0}\n  - {prompt: Q17, options: [a, b], answer: 0}\n  - {prompt: Q18, options: [a, b], answer: 0}\n  - {prompt: Q19, options: [a, b], answer: 0}\n  - {prompt: Q20, options: [a, b], answer: 0}\n  - {prompt: Q21, options: [a, b], answer: 0}\n",
+      "pythonValid": false,
+      "ts": {
+        "spec": null,
+        "error": "at most 20 questions per block"
+      }
+    },
+    {
+      "name": "question is a string",
+      "yaml": "questions:\n  - just a string\n",
+      "pythonValid": false,
+      "ts": {
+        "spec": null,
+        "error": "question 1: must be a mapping with a `prompt`"
+      }
+    },
+    {
+      "name": "unknown question type",
+      "yaml": "questions:\n  - type: essay\n    prompt: Q?\n",
+      "pythonValid": false,
+      "ts": {
+        "spec": null,
+        "error": "question 1: `type` must be \"choice\" or \"text\""
+      }
+    },
+    {
+      "name": "empty prompt",
+      "yaml": "questions:\n  - prompt: \"\"\n    options: [a, b]\n    answer: 0\n",
+      "pythonValid": false,
+      "ts": {
+        "spec": null,
+        "error": "question 1: `prompt` must be non-empty text"
+      }
+    },
+    {
+      "name": "whitespace-only prompt",
+      "yaml": "questions:\n  - prompt: \"   \"\n    options: [a, b]\n    answer: 0\n",
+      "pythonValid": false,
+      "ts": {
+        "spec": null,
+        "error": "question 1: `prompt` must be non-empty text"
+      }
+    },
+    {
+      "name": "missing prompt",
+      "yaml": "questions:\n  - options: [a, b]\n    answer: 0\n",
+      "pythonValid": false,
+      "ts": {
+        "spec": null,
+        "error": "question 1: `prompt` must be non-empty text"
+      }
+    },
+    {
+      "name": "one option",
+      "yaml": "questions:\n  - prompt: Q?\n    options: [only]\n    answer: 0\n",
+      "pythonValid": false,
+      "ts": {
+        "spec": null,
+        "error": "question 1: `options` must list 2-6 choices"
+      }
+    },
+    {
+      "name": "seven options",
+      "yaml": "questions:\n  - prompt: Q?\n    options: [a, b, c, d, e, f, g]\n    answer: 0\n",
+      "pythonValid": false,
+      "ts": {
+        "spec": null,
+        "error": "question 1: `options` must list 2-6 choices"
+      }
+    },
+    {
+      "name": "empty option string",
+      "yaml": "questions:\n  - prompt: Q?\n    options: [a, \"\"]\n    answer: 0\n",
+      "pythonValid": false,
+      "ts": {
+        "spec": null,
+        "error": "question 1: `options` must be a list of non-empty strings"
+      }
+    },
+    {
+      "name": "numeric option",
+      "yaml": "questions:\n  - prompt: Q?\n    options: [1, 2]\n    answer: 0\n",
+      "pythonValid": false,
+      "ts": {
+        "spec": null,
+        "error": "question 1: `options` must be a list of non-empty strings"
+      }
+    },
+    {
+      "name": "answer out of range",
+      "yaml": "questions:\n  - prompt: Q?\n    options: [a, b]\n    answer: 2\n",
+      "pythonValid": false,
+      "ts": {
+        "spec": null,
+        "error": "question 1: `answer` must be the 0-based index of the correct option"
+      }
+    },
+    {
+      "name": "negative answer",
+      "yaml": "questions:\n  - prompt: Q?\n    options: [a, b]\n    answer: -1\n",
+      "pythonValid": false,
+      "ts": {
+        "spec": null,
+        "error": "question 1: `answer` must be the 0-based index of the correct option"
+      }
+    },
+    {
+      "name": "fractional answer",
+      "yaml": "questions:\n  - prompt: Q?\n    options: [a, b]\n    answer: 0.5\n",
+      "pythonValid": false,
+      "ts": {
+        "spec": null,
+        "error": "question 1: `answer` must be the 0-based index of the correct option"
+      }
+    },
+    {
+      "name": "boolean answer",
+      "yaml": "questions:\n  - prompt: Q?\n    options: [a, b]\n    answer: true\n",
+      "pythonValid": false,
+      "ts": {
+        "spec": null,
+        "error": "question 1: `answer` must be the 0-based index of the correct option"
+      }
+    },
+    {
+      "name": "string answer",
+      "yaml": "questions:\n  - prompt: Q?\n    options: [a, b]\n    answer: \"1\"\n",
+      "pythonValid": false,
+      "ts": {
+        "spec": null,
+        "error": "question 1: `answer` must be the 0-based index of the correct option"
+      }
+    },
+    {
+      "name": "missing answer",
+      "yaml": "questions:\n  - prompt: Q?\n    options: [a, b]\n",
+      "pythonValid": false,
+      "ts": {
+        "spec": null,
+        "error": "question 1: `answer` must be the 0-based index of the correct option"
+      }
+    },
+    {
+      "name": "text question without rubric",
+      "yaml": "questions:\n  - type: text\n    prompt: Explain X.\n",
+      "pythonValid": false,
+      "ts": {
+        "spec": null,
+        "error": "question 1: `rubric` must be non-empty text"
+      }
+    },
+    {
+      "name": "text question with blank rubric",
+      "yaml": "questions:\n  - type: text\n    prompt: Explain X.\n    rubric: \"  \"\n",
+      "pythonValid": false,
+      "ts": {
+        "spec": null,
+        "error": "question 1: `rubric` must be non-empty text"
+      }
+    },
+    {
+      "name": "hints is a string",
+      "yaml": "questions:\n  - prompt: Q?\n    options: [a, b]\n    answer: 0\n    hints: think harder\n",
+      "pythonValid": false,
+      "ts": {
+        "spec": null,
+        "error": "question 1: `hints` must be a list of non-empty strings"
+      }
+    },
+    {
+      "name": "hints contains empty string",
+      "yaml": "questions:\n  - prompt: Q?\n    options: [a, b]\n    answer: 0\n    hints: [ok, \"\"]\n",
+      "pythonValid": false,
+      "ts": {
+        "spec": null,
+        "error": "question 1: `hints` must be a list of non-empty strings"
+      }
+    },
+    {
+      "name": "numeric explanation",
+      "yaml": "questions:\n  - prompt: Q?\n    options: [a, b]\n    answer: 0\n    explanation: 42\n",
+      "pythonValid": false,
+      "ts": {
+        "spec": null,
+        "error": "question 1: `explanation` must be text"
+      }
+    },
+    {
+      "name": "unknown block key",
+      "yaml": "theme: dark\nquestions:\n  - prompt: Q?\n    options: [a, b]\n    answer: 0\n",
+      "pythonValid": false,
+      "ts": {
+        "spec": {
+          "title": null,
+          "questions": [
+            {
+              "kind": "choice",
+              "options": [
+                "a",
+                "b"
+              ],
+              "answer": 0,
+              "prompt": "Q?",
+              "hints": [],
+              "explanation": null
+            }
+          ]
+        }
+      },
+      "tsLenient": "The viewer ignores keys it does not render."
+    },
+    {
+      "name": "unknown question key",
+      "yaml": "questions:\n  - prompt: Q?\n    options: [a, b]\n    answer: 0\n    rubric: not for choice\n",
+      "pythonValid": false,
+      "ts": {
+        "spec": {
+          "title": null,
+          "questions": [
+            {
+              "kind": "choice",
+              "options": [
+                "a",
+                "b"
+              ],
+              "answer": 0,
+              "prompt": "Q?",
+              "hints": [],
+              "explanation": null
+            }
+          ]
+        }
+      },
+      "tsLenient": "The viewer ignores keys it does not render."
+    },
+    {
+      "name": "non-string title",
+      "yaml": "title: 42\nquestions:\n  - prompt: Q?\n    options: [a, b]\n    answer: 0\n",
+      "pythonValid": false,
+      "ts": {
+        "spec": {
+          "title": null,
+          "questions": [
+            {
+              "kind": "choice",
+              "options": [
+                "a",
+                "b"
+              ],
+              "answer": 0,
+              "prompt": "Q?",
+              "hints": [],
+              "explanation": null
+            }
+          ]
+        }
+      },
+      "tsLenient": "The viewer drops a non-string title instead of rejecting the block."
+    },
+    {
+      "name": "six hints",
+      "yaml": "questions:\n  - prompt: Q?\n    options: [a, b]\n    answer: 0\n    hints: [a, b, c, d, e, f]\n",
+      "pythonValid": false,
+      "ts": {
+        "spec": {
+          "title": null,
+          "questions": [
+            {
+              "kind": "choice",
+              "options": [
+                "a",
+                "b"
+              ],
+              "answer": 0,
+              "prompt": "Q?",
+              "hints": [
+                "a",
+                "b",
+                "c",
+                "d",
+                "e",
+                "f"
+              ],
+              "explanation": null
+            }
+          ]
+        }
+      },
+      "tsLenient": "The viewer renders any number of hints."
+    },
+    {
+      "name": "empty explanation",
+      "yaml": "questions:\n  - prompt: Q?\n    options: [a, b]\n    answer: 0\n    explanation: \"\"\n",
+      "pythonValid": false,
+      "ts": {
+        "spec": {
+          "title": null,
+          "questions": [
+            {
+              "kind": "choice",
+              "options": [
+                "a",
+                "b"
+              ],
+              "answer": 0,
+              "prompt": "Q?",
+              "hints": [],
+              "explanation": null
+            }
+          ]
+        }
+      },
+      "tsLenient": "The viewer treats a blank explanation as absent."
+    },
+    {
+      "name": "null type",
+      "yaml": "questions:\n  - type:\n    prompt: Q?\n    options: [a, b]\n    answer: 0\n",
+      "pythonValid": false,
+      "ts": {
+        "spec": {
+          "title": null,
+          "questions": [
+            {
+              "kind": "choice",
+              "options": [
+                "a",
+                "b"
+              ],
+              "answer": 0,
+              "prompt": "Q?",
+              "hints": [],
+              "explanation": null
+            }
+          ]
+        }
+      },
+      "tsLenient": "`type: ~` reads as absent (`?? 'choice'`) in the viewer; PyYAML's None fails the server's type check."
+    },
+    {
+      "name": "whole-number float answer",
+      "yaml": "questions:\n  - prompt: Q?\n    options: [a, b]\n    answer: 1.0\n",
+      "pythonValid": false,
+      "ts": {
+        "spec": {
+          "title": null,
+          "questions": [
+            {
+              "kind": "choice",
+              "options": [
+                "a",
+                "b"
+              ],
+              "answer": 1,
+              "prompt": "Q?",
+              "hints": [],
+              "explanation": null
+            }
+          ]
+        }
+      },
+      "tsLenient": "JS cannot tell `1.0` from `1`; PyYAML yields a float the server rejects."
+    },
+    {
+      "name": "yes/no options",
+      "yaml": "questions:\n  - prompt: Q?\n    options: [yes, no]\n    answer: 0\n",
+      "pythonValid": false,
+      "ts": {
+        "spec": {
+          "title": null,
+          "questions": [
+            {
+              "kind": "choice",
+              "options": [
+                "yes",
+                "no"
+              ],
+              "answer": 0,
+              "prompt": "Q?",
+              "hints": [],
+              "explanation": null
+            }
+          ]
+        }
+      },
+      "tsLenient": "PyYAML (YAML 1.1) reads yes/no as booleans; the viewer's YAML 1.2 parser keeps them as strings."
+    },
+    {
+      "name": "date-like prompt",
+      "yaml": "questions:\n  - prompt: 2024-01-01\n    options: [a, b]\n    answer: 0\n",
+      "pythonValid": false,
+      "ts": {
+        "spec": {
+          "title": null,
+          "questions": [
+            {
+              "kind": "choice",
+              "options": [
+                "a",
+                "b"
+              ],
+              "answer": 0,
+              "prompt": "2024-01-01",
+              "hints": [],
+              "explanation": null
+            }
+          ]
+        }
+      },
+      "tsLenient": "PyYAML reads 2024-01-01 as a date; the viewer's YAML 1.2 parser keeps it as a string."
+    },
+    {
+      "name": "nested merge aliases are rejected before expansion",
+      "yaml": "q: &a {x: 1}\nq0: &a0 {<<: [*a, *a]}\nq1: &a1 {<<: [*a0, *a0]}\nq2: &a2 {<<: [*a1, *a1]}\n",
+      "pythonValid": false,
+      "ts": {
+        "spec": null,
+        "error": "Alias resolution is disabled"
+      }
+    }
+  ]
+}

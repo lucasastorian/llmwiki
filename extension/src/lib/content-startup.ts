@@ -18,12 +18,7 @@ export interface ContentStartupDependencies<T> {
   bootstrapTimeoutMs?: number;
 }
 
-/**
- * Coordinate repeated programmatic content-script injections through state on
- * the isolated world's Window. The promise is installed synchronously before
- * any eligibility or bootstrap work starts, so concurrent bundles share one
- * controller attempt.
- */
+/** Repeated injections share one startup via state on the isolated world's Window. */
 export function ensureContentStarted<T>(
   state: ContentStartupState<T>,
   dependencies: ContentStartupDependencies<T>,
@@ -62,8 +57,7 @@ export function ensureContentStarted<T>(
       }
     });
 
-  // This assignment happens before the queued callback above can reach its
-  // first await, which closes the duplicate-controller race.
+  // Assigned before the queued callback runs, closing the duplicate-controller race.
   state.__llmwikiInitPromise = startup;
   return startup;
 }

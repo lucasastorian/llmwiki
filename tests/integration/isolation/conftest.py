@@ -97,7 +97,6 @@ async def seed_two_tenants(pool):
         KEY_B_ID, USER_B_ID,
     )
 
-    # ── Second docs (reference targets) ──
     await pool.execute(
         "INSERT INTO documents (id, knowledge_base_id, user_id, filename, title, path, file_type, status, content, version) "
         "VALUES ($1, $2, $3, 'source.pdf', 'Source', '/', 'pdf', 'ready', NULL, 1)",
@@ -109,7 +108,6 @@ async def seed_two_tenants(pool):
         DOC_B2_ID, KB_B_ID, USER_B_ID,
     )
 
-    # ── Document pages ──
     await pool.execute(
         "INSERT INTO document_pages (id, document_id, page, content) VALUES ($1, $2, 1, 'Alice page 1 content')",
         PAGE_A_ID, DOC_A_ID,
@@ -119,7 +117,6 @@ async def seed_two_tenants(pool):
         PAGE_B_ID, DOC_B_ID,
     )
 
-    # ── Document references ──
     await pool.execute(
         "INSERT INTO document_references (id, source_document_id, target_document_id, knowledge_base_id, reference_type) "
         "VALUES ($1, $2, $3, $4, 'cites')",
@@ -134,17 +131,13 @@ async def seed_two_tenants(pool):
     yield
 
 
-# ── Tier 1 fixture: RLS-enforced DB session (no application-level user_id) ──
-
 def _quote_literal(s: str) -> str:
     return "'" + s.replace("'", "''") + "'"
 
 
 @pytest.fixture
 def rls_session(pool):
-    """Return an async context manager that yields a raw asyncpg connection
-    with RLS active for a given user_id.  No application-level WHERE user_id
-    clauses — only RLS protects the query."""
+    """Return a context-manager factory yielding a raw connection where only RLS (no app-level user_id filter) is active."""
 
     @asynccontextmanager
     async def _session(user_id: str):
@@ -168,13 +161,9 @@ def rls_session(pool):
     return _session
 
 
-# ── Tier 2 fixture: HTTP client with RLS disabled (application layer only) ──
-
 @pytest.fixture
 async def client_no_rls(pool):
-    """HTTP client where get_scoped_db skips RLS setup (no SET LOCAL ROLE,
-    no JWT claims).  Only the application-level WHERE user_id clauses
-    protect data access."""
+    """HTTP client whose ScopedDB skips RLS setup, so only app-level user_id filters protect data."""
     import deps
     from main import app
     from services.hosted import HostedServiceFactory
@@ -187,8 +176,7 @@ async def client_no_rls(pool):
         tr = conn.transaction()
         await tr.start()
         try:
-            # Intentionally NO role switch or JWT claims — RLS is inactive
-            yield ScopedDB(_pool, conn, user_id)
+            yield ScopedDB(conn, user_id)
             await tr.commit()
         except Exception:
             await tr.rollback()

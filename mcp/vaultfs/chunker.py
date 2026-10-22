@@ -1,12 +1,4 @@
-"""Text chunker for wiki pages + notes created via MCP.
-
-Mirrors api/services/chunker.py so MCP-created content shows up in
-keyword search alongside API-created content. Splits content into
-~512 token chunks with ~128 token overlap, tracking markdown headers
-for breadcrumb context. Persists into `document_chunks` (Postgres via
-asyncpg, SQLite via aiosqlite — chunks_fts is kept in sync by triggers
-in the local schema).
-"""
+"""Markdown chunker mirroring api/services/chunker.py so MCP-written content is searchable like API-written content."""
 
 import hashlib
 import logging
@@ -104,13 +96,7 @@ def chunk_text(
 
 
 def _enforce_max_chars(chunks: list[Chunk]) -> list[Chunk]:
-    """Split any chunk whose content exceeds MAX_CHUNK_CHARS.
-
-    Paragraph-based chunking emits one chunk per paragraph when the paragraph
-    is bigger than CHUNK_SIZE. CJK text and long code blocks routinely blow
-    past the 10k-char DB constraint. Split on sentence boundaries; hard-slice
-    only if no break is available.
-    """
+    """Split chunks over the MAX_CHUNK_CHARS DB limit on sentence boundaries, hard-slicing only as a last resort."""
     if not any(len(c.content) > MAX_CHUNK_CHARS for c in chunks):
         return chunks
 
@@ -123,9 +109,7 @@ def _enforce_max_chars(chunks: list[Chunk]) -> list[Chunk]:
                 header_breadcrumb=c.header_breadcrumb,
             ))
             continue
-        # Each split piece gets its own start_char so text-anchor highlight
-        # mapping can compute correct end offsets per piece. Mirrors the
-        # fix in api/services/chunker.py.
+        # Per-piece start_char keeps text-anchor highlight offsets correct.
         base = c.start_char or 0
         offset = 0
         for piece in _split_oversized(c.content):
@@ -175,8 +159,7 @@ async def store_chunks_pg(
     changed = chunks[kept:]
     if not changed:
         return
-    # source_content mirrors content at ingest; highlight CRUD may later
-    # rewrite content with annotations appended. See api/services/highlight_chunks.
+    # source_content mirrors content at ingest; highlight sync may later append annotations to content.
     await conn.execute(
         "INSERT INTO document_chunks "
         "(document_id, user_id, knowledge_base_id, chunk_index, content, source_content, page, start_char, "
@@ -227,7 +210,7 @@ async def store_chunks_sqlite(
     document_id: str,
     chunks: list[Chunk],
 ) -> None:
-    """SQLite variant. Triggers on chunks_fts keep the FTS index in sync."""
+    """SQLite variant; chunks_fts triggers keep the FTS index in sync."""
     await db.execute("DELETE FROM document_chunks WHERE document_id = ?", (document_id,))
     if chunks:
         await db.executemany(

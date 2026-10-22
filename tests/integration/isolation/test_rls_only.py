@@ -1,9 +1,4 @@
-"""Tier 1: RLS-only isolation tests.
-
-Every query here deliberately OMITS application-level user_id WHERE clauses.
-If isolation holds, only Postgres Row-Level Security blocked cross-tenant access.
-This proves RLS works independently of the application layer.
-"""
+"""Queries deliberately omit application-level user_id filters, so only Postgres RLS can block cross-tenant access."""
 
 import asyncpg
 import pytest
@@ -50,7 +45,6 @@ class TestRLSBlocksKnowledgeBases:
 
 
 class TestRLSBlocksKnowledgeBaseEvents:
-    """Event isolation must hold with no application-level ownership filters."""
 
     async def test_list_events_only_returns_own(self, rls_session):
         async with rls_session(USER_A_ID) as conn:
@@ -153,7 +147,6 @@ class TestRLSBlocksDocuments:
         assert row["content"] == "Alice secret content"
 
     async def test_cross_tenant_content_not_leaked(self, rls_session):
-        """Even a broad SELECT cannot leak Bob's content to Alice."""
         async with rls_session(USER_A_ID) as conn:
             rows = await conn.fetch("SELECT content FROM documents")
         contents = [r["content"] for r in rows]
@@ -244,12 +237,10 @@ class TestRLSBlocksDocumentReferences:
         assert row is None
 
     async def test_cannot_delete_other_tenant_references(self, rls_session):
-        """RLS write policy blocks cross-tenant DELETE."""
         async with rls_session(USER_A_ID) as conn:
             await conn.execute(
                 "DELETE FROM document_references WHERE id = $1", REF_B_ID,
             )
-        # Verify Bob's reference still exists (unscoped check)
         async with rls_session(USER_B_ID) as conn:
             row = await conn.fetchrow(
                 "SELECT id FROM document_references WHERE id = $1", REF_B_ID,
@@ -257,7 +248,6 @@ class TestRLSBlocksDocumentReferences:
         assert row is not None
 
     async def test_cannot_insert_into_other_tenant_kb(self, rls_session):
-        """RLS write policy blocks INSERT with another tenant's KB."""
         import asyncpg
         with pytest.raises(asyncpg.InsufficientPrivilegeError):
             async with rls_session(USER_A_ID) as conn:
@@ -269,7 +259,6 @@ class TestRLSBlocksDocumentReferences:
                 )
 
     async def test_can_delete_own_references(self, rls_session):
-        """Confirm user can delete their own references."""
         async with rls_session(USER_A_ID) as conn:
             result = await conn.execute(
                 "DELETE FROM document_references WHERE id = $1", REF_A_ID,
@@ -286,14 +275,12 @@ class TestRLSBlocksDocumentWrites:
                 "UPDATE documents SET content = 'pwned' WHERE id = $1", DOC_B_ID,
             )
         assert "UPDATE 0" in result
-        # Verify Bob's content unchanged
         async with rls_session(USER_B_ID) as conn:
             row = await conn.fetchrow("SELECT content FROM documents WHERE id = $1", DOC_B_ID)
         assert row["content"] == "Bob secret content"
 
     async def test_cannot_update_other_tenant_highlights(self, rls_session):
-        """Highlights live in documents.highlights JSONB. The doc-level
-        default-deny RLS policy must apply to that column too."""
+        """Highlights live in documents.highlights JSONB, so doc-level default-deny must cover them."""
         async with rls_session(USER_A_ID) as conn:
             result = await conn.execute(
                 "UPDATE documents SET highlights = '[{\"id\": \"injected\"}]'::jsonb "
@@ -303,10 +290,7 @@ class TestRLSBlocksDocumentWrites:
         assert "UPDATE 0" in result
 
     async def test_cannot_update_own_document_highlights_via_rls(self, rls_session):
-        """Documents have only a SELECT policy; UPDATE is default-denied even
-        for the user's own document. This documents that direct RLS-scoped
-        writes are NOT the supported write path — service-role + explicit
-        user_id filter is."""
+        """UPDATE is default-denied even on own docs; service-role with an explicit user_id filter is the write path."""
         async with rls_session(USER_A_ID) as conn:
             result = await conn.execute(
                 "UPDATE documents SET highlights = '[]'::jsonb WHERE id = $1",
@@ -315,15 +299,12 @@ class TestRLSBlocksDocumentWrites:
         assert "UPDATE 0" in result
 
     async def test_cannot_move_other_tenant_doc_via_rls(self, rls_session):
-        """RLS UPDATE default-deny blocks the move-to-different-KB path too.
-        Service-role API does the actual move with explicit user_id filtering."""
         async with rls_session(USER_A_ID) as conn:
             result = await conn.execute(
                 "UPDATE documents SET knowledge_base_id = $1 WHERE id = $2",
                 KB_A_ID, DOC_B_ID,
             )
         assert "UPDATE 0" in result
-        # Bob's doc still lives in Bob's KB.
         async with rls_session(USER_B_ID) as conn:
             row = await conn.fetchrow(
                 "SELECT knowledge_base_id::text FROM documents WHERE id = $1",
@@ -337,14 +318,12 @@ class TestRLSBlocksDocumentWrites:
                 "DELETE FROM documents WHERE id = $1", DOC_B_ID,
             )
         assert "DELETE 0" in result
-        # Verify Bob's doc still exists
         async with rls_session(USER_B_ID) as conn:
             row = await conn.fetchrow("SELECT id FROM documents WHERE id = $1", DOC_B_ID)
         assert row is not None
 
 
 class TestRLSBlocksKBWrites:
-    """RLS default-deny blocks UPDATE/DELETE on knowledge_bases."""
 
     async def test_cannot_update_other_tenant_kb(self, rls_session):
         async with rls_session(USER_A_ID) as conn:
@@ -352,7 +331,6 @@ class TestRLSBlocksKBWrites:
                 "UPDATE knowledge_bases SET name = 'Hijacked' WHERE id = $1", KB_B_ID,
             )
         assert "UPDATE 0" in result
-        # Verify Bob's KB name unchanged
         async with rls_session(USER_B_ID) as conn:
             row = await conn.fetchrow("SELECT name FROM knowledge_bases WHERE id = $1", KB_B_ID)
         assert row["name"] == "Bob KB"
@@ -363,14 +341,12 @@ class TestRLSBlocksKBWrites:
                 "DELETE FROM knowledge_bases WHERE id = $1", KB_B_ID,
             )
         assert "DELETE 0" in result
-        # Verify Bob's KB still exists
         async with rls_session(USER_B_ID) as conn:
             row = await conn.fetchrow("SELECT id FROM knowledge_bases WHERE id = $1", KB_B_ID)
         assert row is not None
 
 
 class TestRLSBlocksUserWrites:
-    """RLS users_update policy blocks cross-tenant user modifications."""
 
     async def test_cannot_update_other_tenant_user(self, rls_session):
         async with rls_session(USER_A_ID) as conn:
@@ -378,14 +354,12 @@ class TestRLSBlocksUserWrites:
                 "UPDATE users SET display_name = 'Hacked' WHERE id = $1", USER_B_ID,
             )
         assert "UPDATE 0" in result
-        # Verify Bob's display name unchanged
         async with rls_session(USER_B_ID) as conn:
             row = await conn.fetchrow("SELECT display_name FROM users WHERE id = $1", USER_B_ID)
         assert row["display_name"] == "Bob"
 
 
 class TestRLSBidirectional:
-    """Same checks from Bob's perspective."""
 
     async def test_bob_cannot_see_alice_kb(self, rls_session):
         async with rls_session(USER_B_ID) as conn:

@@ -55,8 +55,7 @@ class UrlIngestService:
 
     async def _download(self, url: str) -> DownloadedPdf:
         try:
-            # httpx's timeout applies to individual I/O phases. This outer
-            # deadline also covers DNS, redirects, body streaming, and cleanup.
+            # httpx timeouts are per I/O phase; this deadline also bounds DNS, redirects, and streaming.
             async with asyncio.timeout(DOWNLOAD_TIMEOUT):
                 current = url
                 async with httpx.AsyncClient(
@@ -71,9 +70,7 @@ class UrlIngestService:
                                 status_code=400,
                                 detail="URL must be a public http(s) address",
                             )
-                        # getaddrinfo is blocking on common platforms. Keep it
-                        # off the event loop while retaining the all-addresses
-                        # public-IP check and subsequent IP-pinned request.
+                        # getaddrinfo blocks the event loop on common platforms.
                         ip = await asyncio.to_thread(resolve_public_ip, parsed.hostname)
                         if not ip:
                             raise HTTPException(
@@ -104,8 +101,7 @@ class UrlIngestService:
                             await resp.aclose()
                 raise HTTPException(status_code=400, detail="Too many redirects")
         except TimeoutError as e:
-            # Keep this a 400 so callers can fall back to browser-side capture
-            # for URLs that the server cannot fetch within its bounded budget.
+            # A 400 lets callers fall back to browser-side capture.
             raise HTTPException(
                 status_code=400,
                 detail="Could not fetch URL before timeout",
@@ -167,8 +163,7 @@ class UrlIngestService:
     async def _insert_within_quota(
         self, document_id: str, kb_id: str, user_id: str, pdf: DownloadedPdf, path: str, url: str,
     ) -> None:
-        """Quota check + pending-row insert under a per-user advisory lock, so
-        concurrent ingests cannot all pass the same SUM(file_size) read."""
+        """Quota check and pending insert under a per-user lock so concurrent ingests can't share one SUM read."""
         title = pdf.filename.rsplit(".", 1)[0]
         async with self.pool.acquire() as conn, conn.transaction():
             await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", user_id)

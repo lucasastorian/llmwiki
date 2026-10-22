@@ -1,6 +1,4 @@
-"""PDF-by-URL ingestion tests: URL normalization, filename derivation, and the
-SSRF/size/magic-byte guards on the download path. No live network — getaddrinfo
-and the httpx transport are mocked, matching test_webclip_ssrf.py."""
+"""PDF-by-URL ingestion: URL normalization, filename derivation, and SSRF/size/magic-byte download guards."""
 
 import asyncio
 import socket

@@ -50,7 +50,6 @@ export default function SettingsPage() {
         <h1 className="text-xl font-semibold tracking-tight">Settings</h1>
       </div>
 
-      {/* Usage */}
       {usage && (
         <section>
           <h2 className="text-base font-medium">Usage</h2>
@@ -106,7 +105,6 @@ export default function SettingsPage() {
 
       {usage && <div className="h-px bg-border my-8" />}
 
-      {/* MCP Config */}
       <section>
         <h2 className="text-base font-medium">
           {isLocal ? 'Connect Claude' : 'AI connections'}

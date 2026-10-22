@@ -34,8 +34,7 @@ export function WikiSelector({ kbName, kbId }: { kbName: string; kbId: string })
   const [deleting, setDeleting] = React.useState(false)
   const triggerRef = React.useRef<HTMLButtonElement>(null)
 
-  // Dialogs open after the popover unmounts, so Radix's default focus
-  // restore lands on <body>; send it back to the selector trigger.
+  // The popover unmounts before the dialog opens, so Radix would restore focus to <body>.
   const restoreFocusToTrigger = React.useCallback((event: Event) => {
     event.preventDefault()
     triggerRef.current?.focus()

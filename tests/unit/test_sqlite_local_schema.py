@@ -1,5 +1,4 @@
-"""Legacy local DBs predate schema versioning — the migration runner must
-converge any historical shape onto the current schema and stamp user_version."""
+"""The migration runner must converge any pre-versioning local DB shape onto the current schema and stamp user_version."""
 
 import json
 import sqlite3

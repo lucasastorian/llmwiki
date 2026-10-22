@@ -1,23 +1,4 @@
-// Wiki-side highlight types. Mirrors api/services/types.py:Highlight + TextAnchor.
-// JSONB shape on `documents.highlights`:
-//
-//   [
-//     {
-//       id: "uuid",
-//       type: "text" | "pdf",
-//       anchor:     { xpath, endXPath?, startOffset, endOffset, textContent, prefix?, suffix? } | null,
-//       textAnchor: { textStart, textEnd, textContent, prefix?, suffix? }                    | null,
-//       pdfAnchor:  { page, textContent, prefix?, suffix?, rects }                           | null,
-//       comment: string | null,
-//       color: "yellow",
-//       createdAt: ISO,
-//     },
-//     ...
-//   ]
-//
-// These are all the same user-facing feature. The separate anchor fields are
-// resolver metadata for different surfaces: live-page DOM, parsed markdown,
-// and PDF canvas/text-layer rendering.
+// The `documents.highlights` JSONB shape; field parity with the server is enforced by tests/fixtures/parity/highlight_types.json.
 
 export interface DomAnchor {
   xpath: string

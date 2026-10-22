@@ -1,9 +1,4 @@
-"""Security regressions for HTML image embedding.
-
-No live network is used: DNS and the httpx transport are replaced so these
-tests exercise URL validation, address pinning, redirect handling, and body
-validation deterministically.
-"""
+"""HTML image-embedding SSRF regressions, with DNS and the httpx transport replaced."""
 
 import asyncio
 import socket

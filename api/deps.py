@@ -35,12 +35,7 @@ async def get_pool(request: Request):
 
 
 async def get_user_id(request: Request) -> str:
-    """Authenticate and return user_id.
-
-    In local mode, auth_provider is a LocalAuthProvider (always returns the fixed user).
-    In hosted mode, auth_provider is None and we fall through to Supabase JWKS.
-    The auth path is determined at startup, not here.
-    """
+    """Authenticate via the startup-chosen provider (local mode), else Supabase JWKS."""
     auth_provider = request.app.state.auth_provider
     if auth_provider:
         return await auth_provider.get_current_user(request)
@@ -67,31 +62,16 @@ async def get_scoped_db(
     request: Request,
     pool: Annotated = Depends(get_pool),
 ) -> AsyncGenerator[ScopedDB, None]:
-    """Scoped DB connection.
-
-    In local mode (pool is None, sqlite_db is set), returns a thin wrapper
-    around SQLite — no RLS, no transaction management.
-    In hosted mode, returns a proper RLS-enforced Postgres connection.
-
-    The branching is on app.state.pool being None, which is set once at startup.
-    """
-    if pool is None:
-        db = request.app.state.sqlite_db
-        user_id = await get_user_id(request)
-        yield ScopedDB(None, db, user_id)
-        return
-
+    """RLS-enforced Postgres connection for hosted-only routes."""
     from auth import get_current_user
     user_id = await get_current_user(request)
     conn = await _acquire_connection(pool)
     try:
-        # The transaction context covers startup too. If BEGIN, RLS setup,
-        # request handling, or cancellation fails, it rolls back before the
-        # connection is returned to the pool.
+        # RLS setup sits inside the transaction so any failure or cancel rolls back before release.
         async with conn.transaction():
             claims = json.dumps({"sub": user_id})
             await conn.execute("SET LOCAL ROLE authenticated")
             await conn.execute("SELECT set_config('request.jwt.claims', $1, true)", claims)
-            yield ScopedDB(pool, conn, user_id)
+            yield ScopedDB(conn, user_id)
     finally:
         await asyncio.shield(pool.release(conn))

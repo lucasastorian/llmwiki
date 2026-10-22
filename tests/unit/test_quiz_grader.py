@@ -75,8 +75,7 @@ class TestQuizGrader:
         assert exc.value.headers == {"Retry-After": "17"}
 
     async def test_parses_vllm_choices_inside_success_envelope(self):
-        # Real /ai/run shape for @cf/google/gemma-4-*: success envelope whose
-        # result is an OpenAI chat.completion, not {"response": ...}.
+        # Real /ai/run shape for gemma-4: result is an OpenAI chat.completion, not {"response": ...}.
         body = {
             "success": True,
             "errors": [],

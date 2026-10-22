@@ -102,8 +102,3 @@ export interface WikiNode {
   status?: 'complete' | 'in_progress' | 'not_started'
   locked?: boolean
 }
-
-export interface WikiSubsection {
-  id: string
-  title: string
-}

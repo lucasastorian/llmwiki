@@ -1,0 +1,425 @@
+{
+  "about": "Parser._normalize_anchor_text / Parser._locate_highlight (api/html_parser/parser.py) must return `expected`; normalizeAnchorText / locateTextAnchor (web/src/lib/highlights/locator.ts) must return `tsExpected` if present, else `expected`. `knownDiscrepancy` documents a live mismatch; delete it with `tsExpected` once fixed.",
+  "normalizeAnchorText": [
+    {
+      "name": "collapses spaces tabs newlines",
+      "input": "  hello   world\n\t!  ",
+      "expected": "hello world !"
+    },
+    {
+      "name": "strips zero-width space and BOM",
+      "input": "zero\u200bwidth\ufeff text",
+      "expected": "zerowidth text"
+    },
+    {
+      "name": "nbsp becomes space",
+      "input": "a\u00a0\u00a0b",
+      "expected": "a b"
+    },
+    {
+      "name": "crlf collapses",
+      "input": "line\r\nnext\rlast",
+      "expected": "line next last"
+    },
+    {
+      "name": "unicode em and ideographic spaces collapse",
+      "input": "a\u2003b\u3000c",
+      "expected": "a b c"
+    },
+    {
+      "name": "form feed and vertical tab collapse",
+      "input": "a\fb\u000bc",
+      "expected": "a b c"
+    },
+    {
+      "name": "next-line control char",
+      "input": "a\u0085b",
+      "expected": "a\u0085b"
+    },
+    {
+      "name": "empty",
+      "input": "",
+      "expected": ""
+    },
+    {
+      "name": "whitespace only",
+      "input": " \n\t\u00a0 ",
+      "expected": ""
+    },
+    {
+      "name": "astral emoji preserved",
+      "input": " \ud83d\ude00  ok ",
+      "expected": "\ud83d\ude00 ok"
+    },
+    {
+      "name": "file separator control chars are not whitespace",
+      "input": "a\u001cb\u001fc",
+      "expected": "a\u001cb\u001fc"
+    },
+    {
+      "name": "zero-width between spaces",
+      "input": " a \u200b b ",
+      "expected": "a b"
+    }
+  ],
+  "locateTextAnchor": [
+    {
+      "name": "unique match",
+      "plaintext": "The transformer architecture uses attention.\nAttention is all you need, famously.",
+      "textContent": "transformer architecture",
+      "expected": {
+        "textStart": 4,
+        "textEnd": 28,
+        "textContent": "transformer architecture"
+      }
+    },
+    {
+      "name": "match spans newline",
+      "plaintext": "The transformer architecture uses attention.\nAttention is all you need, famously.",
+      "textContent": "attention. Attention is",
+      "expected": {
+        "textStart": 34,
+        "textEnd": 57,
+        "textContent": "attention.\nAttention is"
+      }
+    },
+    {
+      "name": "needle with irregular whitespace",
+      "plaintext": "The transformer architecture uses attention.\nAttention is all you need, famously.",
+      "textContent": "  uses \t attention. ",
+      "expected": {
+        "textStart": 29,
+        "textEnd": 44,
+        "textContent": "uses attention."
+      }
+    },
+    {
+      "name": "match across block break",
+      "plaintext": "First block.\n\nSecond block.",
+      "textContent": "block. Second",
+      "expected": {
+        "textStart": 6,
+        "textEnd": 20,
+        "textContent": "block.\n\nSecond"
+      }
+    },
+    {
+      "name": "match at very start",
+      "plaintext": "The transformer architecture uses attention.\nAttention is all you need, famously.",
+      "textContent": "The transformer",
+      "expected": {
+        "textStart": 0,
+        "textEnd": 15,
+        "textContent": "The transformer"
+      }
+    },
+    {
+      "name": "match at very end",
+      "plaintext": "The transformer architecture uses attention.\nAttention is all you need, famously.",
+      "textContent": "need, famously.",
+      "expected": {
+        "textStart": 66,
+        "textEnd": 81,
+        "textContent": "need, famously."
+      }
+    },
+    {
+      "name": "leading and trailing whitespace in plaintext",
+      "plaintext": "\n\n  padded text here  \n",
+      "textContent": "padded text",
+      "expected": {
+        "textStart": 4,
+        "textEnd": 15,
+        "textContent": "padded text"
+      }
+    },
+    {
+      "name": "case sensitive miss",
+      "plaintext": "The transformer architecture uses attention.\nAttention is all you need, famously.",
+      "textContent": "THE TRANSFORMER",
+      "expected": null
+    },
+    {
+      "name": "absent",
+      "plaintext": "The transformer architecture uses attention.\nAttention is all you need, famously.",
+      "textContent": "nonexistent passage",
+      "expected": null
+    },
+    {
+      "name": "empty needle",
+      "plaintext": "The transformer architecture uses attention.\nAttention is all you need, famously.",
+      "textContent": "",
+      "expected": null
+    },
+    {
+      "name": "whitespace-only needle",
+      "plaintext": "The transformer architecture uses attention.\nAttention is all you need, famously.",
+      "textContent": " \n\t",
+      "expected": null
+    },
+    {
+      "name": "prefix and suffix pick second occurrence",
+      "plaintext": "alpha beta gamma. delta beta epsilon.",
+      "textContent": "beta",
+      "prefix": "delta ",
+      "suffix": " epsilon",
+      "expected": {
+        "textStart": 24,
+        "textEnd": 28,
+        "textContent": "beta"
+      }
+    },
+    {
+      "name": "suffix alone picks occurrence",
+      "plaintext": "one fish two fish red fish",
+      "textContent": "fish",
+      "suffix": " red",
+      "expected": {
+        "textStart": 4,
+        "textEnd": 8,
+        "textContent": "fish"
+      }
+    },
+    {
+      "name": "prefix contained in window but not adjacent scores lower",
+      "plaintext": "x: the cat sat. y: a dog and the cat ran.",
+      "textContent": "the cat",
+      "prefix": "dog and",
+      "expected": {
+        "textStart": 29,
+        "textEnd": 36,
+        "textContent": "the cat"
+      }
+    },
+    {
+      "name": "long ambiguous needle without context takes first",
+      "plaintext": "repeat this phrase / repeat this phrase",
+      "textContent": "repeat this phrase",
+      "expected": {
+        "textStart": 0,
+        "textEnd": 18,
+        "textContent": "repeat this phrase"
+      }
+    },
+    {
+      "name": "tie between occurrences takes first",
+      "plaintext": "ab cd ab cd",
+      "textContent": "ab cd",
+      "prefix": "zz",
+      "expected": {
+        "textStart": 0,
+        "textEnd": 5,
+        "textContent": "ab cd"
+      }
+    },
+    {
+      "name": "short ambiguous needle without context is refused",
+      "plaintext": "aa x aa y aa",
+      "textContent": "aa",
+      "expected": null
+    },
+    {
+      "name": "short ambiguous needle with matching context",
+      "plaintext": "aa x aa y aa",
+      "textContent": "aa",
+      "prefix": "y ",
+      "expected": {
+        "textStart": 10,
+        "textEnd": 12,
+        "textContent": "aa"
+      }
+    },
+    {
+      "name": "short unique needle is accepted",
+      "plaintext": "one ab two",
+      "textContent": "ab",
+      "expected": {
+        "textStart": 4,
+        "textEnd": 6,
+        "textContent": "ab"
+      }
+    },
+    {
+      "name": "prefix longer than default window",
+      "plaintext": "AAAAAAAAAA lorem ipsum dolor sit amet consectetur adipiscing elit target. B lorem target.",
+      "textContent": "target",
+      "prefix": "lorem ipsum dolor sit amet consectetur adipiscing elit ",
+      "expected": {
+        "textStart": 66,
+        "textEnd": 72,
+        "textContent": "target"
+      }
+    },
+    {
+      "name": "nbsp in plaintext matches space in needle",
+      "plaintext": "price\u00a0100 dollars",
+      "textContent": "price 100",
+      "expected": {
+        "textStart": 0,
+        "textEnd": 9,
+        "textContent": "price\u00a0100"
+      }
+    },
+    {
+      "name": "nbsp in needle matches space in plaintext",
+      "plaintext": "price 100 dollars",
+      "textContent": "price\u00a0100",
+      "expected": {
+        "textStart": 0,
+        "textEnd": 9,
+        "textContent": "price 100"
+      }
+    },
+    {
+      "name": "crlf in plaintext",
+      "plaintext": "line one\r\nline two",
+      "textContent": "one line",
+      "expected": {
+        "textStart": 5,
+        "textEnd": 14,
+        "textContent": "one\r\nline"
+      }
+    },
+    {
+      "name": "zero-width in needle is ignored",
+      "plaintext": "zero width here",
+      "textContent": "zero\u200b width",
+      "expected": {
+        "textStart": 0,
+        "textEnd": 10,
+        "textContent": "zero width"
+      }
+    },
+    {
+      "name": "zero-width in plaintext",
+      "plaintext": "foo\u200bbar baz",
+      "textContent": "foobar",
+      "expected": {
+        "textStart": 0,
+        "textEnd": 7,
+        "textContent": "foo\u200bbar"
+      }
+    },
+    {
+      "name": "astral emoji before match shifts offsets",
+      "plaintext": "\ud83d\ude00 grin then word",
+      "textContent": "then word",
+      "expected": {
+        "textStart": 8,
+        "textEnd": 17,
+        "textContent": "then word"
+      }
+    },
+    {
+      "name": "combining accent",
+      "plaintext": "Cafe\u0301 au lait",
+      "textContent": "Cafe\u0301 au",
+      "expected": {
+        "textStart": 0,
+        "textEnd": 8,
+        "textContent": "Cafe\u0301 au"
+      }
+    },
+    {
+      "name": "unicode em space in plaintext collapses like the needle",
+      "plaintext": "a\u2003b",
+      "textContent": "a b",
+      "expected": {
+        "textStart": 0,
+        "textEnd": 3,
+        "textContent": "a\u2003b"
+      }
+    },
+    {
+      "name": "astral emoji inside match",
+      "plaintext": "go \ud83d\ude00 grin \ud83c\udf89 end",
+      "textContent": "\ud83d\ude00 grin \ud83c\udf89",
+      "expected": {
+        "textStart": 3,
+        "textEnd": 13,
+        "textContent": "\ud83d\ude00 grin \ud83c\udf89"
+      }
+    },
+    {
+      "name": "astral emoji in prefix context",
+      "plaintext": "\ud83d\ude00 key one. \ud83d\ude00\ud83d\ude00 key two.",
+      "textContent": "key",
+      "prefix": "\ud83d\ude00\ud83d\ude00",
+      "expected": {
+        "textStart": 17,
+        "textEnd": 20,
+        "textContent": "key"
+      }
+    },
+    {
+      "name": "zero-width at match edges",
+      "plaintext": "a \u200bfoo\u200b b",
+      "textContent": "foo",
+      "expected": {
+        "textStart": 3,
+        "textEnd": 7,
+        "textContent": "foo\u200b"
+      }
+    },
+    {
+      "name": "form feed between lines is whitespace",
+      "plaintext": "a b\t\n\f\nc d",
+      "textContent": "b\t\n\f\nc",
+      "expected": {
+        "textStart": 2,
+        "textEnd": 8,
+        "textContent": "b\t\n\f\nc"
+      }
+    },
+    {
+      "name": "vertical tab is whitespace",
+      "plaintext": "one\u000btwo three",
+      "textContent": "one two",
+      "expected": {
+        "textStart": 0,
+        "textEnd": 7,
+        "textContent": "one\u000btwo"
+      }
+    },
+    {
+      "name": "line and paragraph separators are whitespace",
+      "plaintext": "alpha\u2028beta\u2029gamma",
+      "textContent": "alpha beta gamma",
+      "expected": {
+        "textStart": 0,
+        "textEnd": 16,
+        "textContent": "alpha\u2028beta\u2029gamma"
+      }
+    },
+    {
+      "name": "ideographic space is whitespace",
+      "plaintext": "\u6771\u4eac\u3000\u5927\u962a \u3067\u3059",
+      "textContent": "\u6771\u4eac \u5927\u962a",
+      "expected": {
+        "textStart": 0,
+        "textEnd": 5,
+        "textContent": "\u6771\u4eac\u3000\u5927\u962a"
+      }
+    },
+    {
+      "name": "em space run inside the haystack",
+      "plaintext": "see the\u2003\u2003quick fox",
+      "textContent": "the quick",
+      "expected": {
+        "textStart": 4,
+        "textEnd": 14,
+        "textContent": "the\u2003\u2003quick"
+      }
+    },
+    {
+      "name": "nbsp run inside a span",
+      "plaintext": "x hello\u00a0\u00a0world y",
+      "textContent": "hello world",
+      "expected": {
+        "textStart": 2,
+        "textEnd": 14,
+        "textContent": "hello\u00a0\u00a0world"
+      }
+    }
+  ]
+}

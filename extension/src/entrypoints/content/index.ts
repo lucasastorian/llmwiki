@@ -5,7 +5,6 @@ import {
   findMark,
   HIGHLIGHT_CLASS,
   makeHighlight,
-  unwrapAllMarks,
   unwrapById,
   wrapRange,
 } from "@/lib/highlights";
@@ -37,9 +36,7 @@ import {
 type ContentGlobalState = ContentStartupState<HighlightController>;
 
 export default defineContentScript({
-  // Injected on demand via chrome.scripting.executeScript when the popup opens
-  // (under the activeTab grant) — never auto-mounted. `matches` is the API
-  // origin only so WXT doesn't fold a broad host into the manifest.
+  // Runtime-injected only; WXT folds `matches` into host_permissions, so keep it narrow.
   matches: ["https://api.llmwiki.app/*"],
   registration: "runtime",
   runAt: "document_idle",
@@ -57,17 +54,13 @@ export default defineContentScript({
         dispose: (controller) => controller.dispose(),
       });
     } catch (error) {
-      // The shared in-flight sentinel is already cleared. A later popup
-      // injection can retry after transient storage/background failures.
       console.warn("[llmwiki] content startup failed:", error);
     }
   },
 });
 
 function isLlmWikiAppPage(): boolean {
-  // The wiki ships its own in-app highlight UI; the extension must not double up.
-  // Detection is via a meta tag in the wiki's root layout so this works on prod,
-  // localhost, and any future deploy host without hostname allowlists.
+  // Meta tag rather than a hostname allowlist, so any deploy host of the wiki matches.
   return !!document.querySelector('meta[name="llmwiki-app"]');
 }
 
@@ -334,8 +327,7 @@ class HighlightController {
 
   private attachListeners(): void {
     if (this.listenersAttached) return;
-    // Set first so dispose() removes any partial registration if a later
-    // Chrome API call throws during extension invalidation.
+    // Set first so dispose() cleans up if a Chrome API throws during extension invalidation.
     this.listenersAttached = true;
     document.addEventListener("mouseup", this.onMouseUp);
     document.addEventListener("mousedown", this.onMouseDown);
@@ -355,8 +347,7 @@ class HighlightController {
     try {
       chrome.runtime.onMessage.removeListener(this.onRuntimeMessage);
     } catch {
-      // Extension context invalidation can make Chrome APIs unavailable; DOM
-      // listeners are still removed so a later retry cannot duplicate them.
+      // Chrome APIs can throw after extension context invalidation.
     }
     this.listenersAttached = false;
   }
@@ -366,8 +357,7 @@ class HighlightController {
   }
 
   private async ensureSession(): Promise<string | null> {
-    // Local mode is intentionally unauthenticated, so never hand the cloud
-    // Supabase token to a user-configured local URL.
+    // Never send the cloud Supabase token to a user-configured local URL.
     if (this.mode === "local") {
       this.accessToken = null;
       return null;
@@ -400,8 +390,6 @@ class HighlightController {
 
     await this.ensureSession();
     this.assertActive();
-    // In cloud mode, no token means the user is signed out. Keep the page
-    // untouched until they sign in. Local mode is intentionally unauthenticated.
     if (this.mode !== "local" && !this.accessToken) return;
 
     await this.restorePendingPageState();
@@ -414,10 +402,6 @@ class HighlightController {
     } catch (err) {
       this.assertActive();
       const msg = err instanceof Error ? err.message : String(err);
-      // 401 means the stored session is stale; sign-in flow will refresh.
-      // Network failures are expected when a selected local server is down.
-      // Pending edits are already restored from chrome.storage and will
-      // retry on the next sync opportunity, so do not spam extension logs.
       if (shouldWarnForLookupFailure(msg)) {
         console.warn("[llmwiki] by-url lookup failed:", err);
       }
@@ -433,7 +417,7 @@ class HighlightController {
     this.version = doc.version;
     this.highlights = mergeHighlightsById(doc.highlights ?? [], this.highlights);
     this.dropDeletedHighlights();
-    // Defer apply slightly so SPA hydration settles.
+    // Let SPA hydration settle before mutating the DOM.
     window.requestAnimationFrame(() => {
       if (!this.disposed) applyHighlights(this.highlights);
     });
@@ -447,7 +431,6 @@ class HighlightController {
     try {
       const fresh = await getHighlights(this.apiUrl, this.accessToken, documentId);
       this.version = fresh.version;
-      // Server may have stripped/normalized; trust its copy if non-empty
       if (fresh.highlights && fresh.highlights.length) {
         this.highlights = fresh.highlights;
       }
@@ -455,7 +438,6 @@ class HighlightController {
       console.warn("[llmwiki] refresh after save failed; resetting version:", err);
       this.version = 0;
     }
-    // Flush any pending in-memory highlights that were captured pre-save
     if (flushPending && this.highlights.length) this.scheduleSave();
   }
 
@@ -579,9 +561,7 @@ class HighlightController {
     if (!anchor) return;
     const highlight = makeHighlight(anchor, null);
     const wrapped = wrapRange(range, highlight.id);
-    // If wrapping fails (multi-node range crossing inline tags), still keep the
-    // anchor so it persists, the LLM sees it, and the next page-load reapply
-    // pass can attempt text-scan resolution into a single text node.
+    // Keep the anchor even if wrapping fails; the next page load retries resolution.
     this.highlights.push(highlight);
     this.deletedHighlightIds.delete(highlight.id);
     this.savePendingPageState();
@@ -590,8 +570,6 @@ class HighlightController {
       const mark = findMark(highlight.id);
       if (mark) this.openPopoverForExisting(highlight.id, mark, { discardOnCancel: true });
     } else if (withNote) {
-      // No wrap means no anchor element to point a popover at — open at the
-      // last range bounding rect via a transient anchor element.
       this.openPopoverAtRect(highlight.id, range.getBoundingClientRect(), { discardOnCancel: true });
     } else {
       this.persistHighlight(highlight, "Highlight saved");
@@ -937,10 +915,7 @@ class HighlightController {
       if (!saved || !this.documentId) {
         return;
       }
-      // create_web_clip enriches initial highlights with textAnchor for the
-      // TipTap renderer. Re-posting the original browser highlight would
-      // replace that enriched copy and drop textAnchor, so skip only the
-      // highlight event that was part of the initial autosave payload.
+      // Re-posting would overwrite the server's textAnchor-enriched copy from create_web_clip.
       if (
         successMessage === "Highlight saved" &&
         this.autoSaveIncludedHighlightIds.has(highlight.id)
@@ -1019,7 +994,6 @@ class HighlightController {
   private async flushSave() {
     if (!this.apiUrl) return;
     if (this.isSaving) {
-      // Re-queue
       this.scheduleSave();
       return;
     }
@@ -1062,7 +1036,6 @@ class HighlightController {
     } catch (err) {
       const conflict = (err as { conflict?: boolean })?.conflict;
       if (conflict && this.documentId) {
-        // Refetch and merge — last writer wins on duplicates by id
         try {
           const fresh = await getHighlights(this.apiUrl, this.accessToken, this.documentId);
           const ids = new Set(this.highlights.map((h) => h.id));
@@ -1122,7 +1095,6 @@ function shouldWarnForLookupFailure(message: string): boolean {
 function isRangeInDocument(range: Range): boolean {
   const startEl = range.startContainer.parentElement;
   if (!startEl) return false;
-  // Skip selections inside form fields, code editors, etc.
   if (startEl.closest("input,textarea,[contenteditable='true']")) return false;
   return true;
 }

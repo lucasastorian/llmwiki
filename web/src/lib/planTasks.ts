@@ -38,8 +38,7 @@ function cleanStageTitle(raw: string): string {
   return raw.replace(/\*\*/g, '').replace(/\[([^\]]+)\]\(([^)]*)\)/g, '$1').trim()
 }
 
-// Indented/nested tasks count toward the enclosing stage so the totals match
-// every glyph the reader sees; the 4-space code-block ambiguity is accepted.
+// Nested tasks count toward the enclosing stage; the 4-space code-block ambiguity is accepted.
 export function parsePlanTasks(markdown: string): PlanSummary {
   const lines = markdown.replace(FRONTMATTER_RE, '').split('\n')
   const stages: StageProgress[] = []

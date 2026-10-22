@@ -1,12 +1,4 @@
-"""MCP PostgresVaultFS multi-tenant isolation tests.
-
-Verifies that PostgresVaultFS operations for User A cannot reach User B's data,
-and vice versa, across reads, writes, graph queries, and S3 key derivation.
-
-search_chunks is excluded: it needs PGroonga's `&@~` operator, which the test
-Postgres lacks. Its tenancy guards (`d.user_id = $3` plus RLS on
-document_chunks) are the same ones every other query here exercises.
-"""
+"""PostgresVaultFS tenant isolation; search_chunks is skipped because the test Postgres lacks PGroonga's `&@~`."""
 
 import json
 import os
@@ -39,10 +31,7 @@ REF_B_ID = "bbbb3333-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
 
 @pytest.fixture(scope="session")
 async def pg_pool():
-    """Shared Postgres pool for MCP isolation tests.
-
-    Reuses the same test DB and schema as the API isolation tests.
-    """
+    """Shared pool on the same test DB and schema as the API isolation tests."""
     from pathlib import Path
     db_url = os.environ["DATABASE_URL"]
     pool = await asyncpg.create_pool(db_url, min_size=2, max_size=5)
@@ -235,7 +224,6 @@ class TestWriteIsolation:
         assert row["archived"] is False
 
     async def test_archive_mixed_batch_archives_only_own(self, fs_alice, pg_pool):
-        """A batch mixing Alice's and Bob's ids archives only Alice's."""
         count = await fs_alice.archive_documents([str(DOC_A2_ID), str(DOC_B2_ID)])
         assert count == 1
         rows = await pg_pool.fetch(
@@ -389,33 +377,7 @@ class TestReplyIsolation:
 
 
 class TestReferenceIsolation:
-    """Reference mutations now use scoped_execute (RLS-enforced)."""
-
-    async def test_delete_references_other_tenant_deletes_nothing(self, fs_alice, pg_pool):
-        await fs_alice.delete_references(str(DOC_B_ID))
-        row = await pg_pool.fetchrow(
-            "SELECT id FROM document_references WHERE id = $1", REF_B_ID,
-        )
-        assert row is not None
-
-    async def test_upsert_reference_cross_tenant_kb_fails(self, fs_alice, pg_pool):
-        """An edge written into Bob's KB is rejected by RLS and caught, leaving
-        Bob's KB with only his own pre-existing reference."""
-        await fs_alice.upsert_reference(
-            str(DOC_A_ID), str(DOC_A2_ID), str(KB_B_ID), "cites", None,
-        )
-        rows = await pg_pool.fetch(
-            "SELECT id FROM document_references WHERE knowledge_base_id = $1",
-            KB_B_ID,
-        )
-        assert [str(r["id"]) for r in rows] == [REF_B_ID]
-
-    async def test_delete_own_references_works(self, fs_alice, pg_pool):
-        await fs_alice.delete_references(str(DOC_A_ID))
-        row = await pg_pool.fetchrow(
-            "SELECT id FROM document_references WHERE id = $1", REF_A_ID,
-        )
-        assert row is None
+    """Reference mutations are RLS-enforced."""
 
     async def test_replace_references_is_bulk_and_scoped(self, fs_alice, pg_pool):
         await fs_alice.replace_references(
@@ -432,6 +394,25 @@ class TestReferenceIsolation:
             "SELECT id FROM document_references WHERE id = $1", REF_B_ID,
         )
         assert bob is not None
+
+    async def test_replace_references_cannot_clear_other_tenants_edges(self, fs_alice, pg_pool):
+        await fs_alice.replace_references(str(DOC_B_ID), str(KB_B_ID), [])
+
+        row = await pg_pool.fetchrow("SELECT id FROM document_references WHERE id = $1", REF_B_ID)
+        assert row is not None
+
+    async def test_replace_references_cannot_write_into_other_tenants_kb(self, fs_alice, pg_pool):
+        with pytest.raises(asyncpg.InsufficientPrivilegeError):
+            await fs_alice.replace_references(
+                str(DOC_A_ID), str(KB_B_ID), [(str(DOC_A2_ID), "cites", None)],
+            )
+
+        bob_kb = await pg_pool.fetch(
+            "SELECT id::text FROM document_references WHERE knowledge_base_id = $1", KB_B_ID,
+        )
+        assert [r["id"] for r in bob_kb] == [REF_B_ID]
+        alice_ref = await pg_pool.fetchrow("SELECT id FROM document_references WHERE id = $1", REF_A_ID)
+        assert alice_ref is not None
 
 
 class TestListDocumentsWithContentIsolation:
@@ -486,7 +467,6 @@ class TestPageIsolation:
 
 
 class TestGraphQueryIsolation:
-    """Backlinks, forward references, uncited sources, stale pages."""
 
     async def test_get_backlinks_other_tenant_doc_returns_empty(self, fs_alice):
         """DOC_B2 is the target of Bob's citation; Alice sees no backlinks to it."""
@@ -533,7 +513,6 @@ class TestPropagateStalenesIsolation:
     """propagate_staleness uses service_execute with WHERE user_id."""
 
     async def test_propagate_staleness_does_not_affect_other_tenant(self, fs_alice, pg_pool):
-        """Alice propagating staleness for Bob's doc should not mark Alice's docs stale."""
         await fs_alice.propagate_staleness(str(DOC_B2_ID))
         row = await pg_pool.fetchrow(
             "SELECT stale_since FROM documents WHERE id = $1", DOC_A_ID,
@@ -542,7 +521,6 @@ class TestPropagateStalenesIsolation:
 
 
 class TestBidirectional:
-    """Verify isolation works from Bob's perspective too."""
 
     async def test_bob_cannot_see_alice_kb(self, fs_bob):
         result = await fs_bob.resolve_kb("alice-kb")

@@ -29,9 +29,7 @@ export function MermaidBlock({ chart }: { chart: string }) {
     let cancelled = false
     setFailed(false)
     import('mermaid').then(({ default: mermaid }) => {
-      // Without suppressErrorRendering, a parse failure ALSO injects mermaid's
-      // bomb error SVG into document.body — the promise rejection alone is not
-      // the whole failure mode.
+      // Otherwise a parse failure also injects mermaid's error SVG into document.body.
       mermaid.initialize({
         startOnLoad: false,
         suppressErrorRendering: true,

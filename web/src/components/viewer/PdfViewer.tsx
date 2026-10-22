@@ -5,16 +5,14 @@ import { flushSync } from 'react-dom'
 import { Document, Page } from 'react-pdf'
 import { ChevronUp, ChevronDown, Search, X, Download, ZoomIn, ZoomOut, MessageSquare } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { ensurePdfWorker } from '@/lib/pdfjs'
-import { useDocumentHighlights } from '@/hooks/useWikiHighlights'
+import '@/lib/pdfjs'
+import { useDocumentHighlights } from '@/hooks/useDocumentHighlights'
 import { createHighlightId } from '@/lib/highlights/ids'
 import type { Highlight, PdfAnchor } from '@/lib/highlights/types'
 import { computePdfAnchor, pdfRectsToViewport } from '@/lib/highlights/pdfAnchor'
 
 import 'react-pdf/dist/Page/TextLayer.css'
 import 'react-pdf/dist/Page/AnnotationLayer.css'
-
-ensurePdfWorker()
 
 type Props = {
   fileUrl: string
@@ -26,6 +24,31 @@ type Props = {
 }
 
 const VIRTUALIZE_BUFFER = 2
+
+type IndexedMatches = { matchingPages: number[]; occurrences: number }
+
+function countOccurrences(haystack: string, needle: string): number {
+  let count = 0
+  let idx = 0
+  while ((idx = haystack.indexOf(needle, idx)) !== -1) {
+    count++
+    idx += needle.length
+  }
+  return count
+}
+
+function findIndexedMatches(pageTexts: Map<number, string>, query: string): IndexedMatches {
+  const lowerQuery = query.toLowerCase()
+  const matchingPages: number[] = []
+  let occurrences = 0
+  for (const [page, text] of pageTexts) {
+    const count = countOccurrences(text.toLowerCase(), lowerQuery)
+    if (count === 0) continue
+    matchingPages.push(page)
+    occurrences += count
+  }
+  return { matchingPages, occurrences }
+}
 
 export default function PdfViewer({ fileUrl, documentId, title, className, initialPage, hideToolbar }: Props) {
   const [numPages, setNumPages] = useState(0)
@@ -87,7 +110,6 @@ export default function PdfViewer({ fileUrl, documentId, title, className, initi
     pdfDocRef.current = pdf
   }
 
-  // Extract text from all pages at load time for full-document search
   useEffect(() => {
     const doc = pdfDocRef.current
     if (!doc || !numPages) return
@@ -121,7 +143,6 @@ export default function PdfViewer({ fileUrl, documentId, title, className, initi
     }
   }, [])
 
-  // Scroll to initial page (e.g., from citation click) after pages render
   const initialPageScrolled = useRef(false)
   useEffect(() => {
     if (!initialPage || initialPage <= 1 || !numPages || initialPageScrolled.current) return
@@ -180,9 +201,7 @@ export default function PdfViewer({ fileUrl, documentId, title, className, initi
   const pageAspectRef = useRef<Map<number, number>>(new Map())
   const estimatedPageHeight = pageWidth > 0 ? pageWidth * 1.414 : 800
 
-  // react-pdf renders pages from `width`, not from our UI zoom scalar. Any
-  // PDF.js viewport used for anchor conversion must mirror the rendered width
-  // or saved PDF-space rects drift after resize / fit-width changes.
+  // react-pdf renders from `width`, not zoom; anchor viewports must match it or saved rects drift.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const renderedViewport = useCallback((page: any) => {
     const base = page.getViewport({ scale: 1 })
@@ -224,8 +243,7 @@ export default function PdfViewer({ fileUrl, documentId, title, className, initi
     return () => observer.disconnect()
   }, [numPages])
 
-  // Page proxies in state so highlight overlays re-render the moment a
-  // proxy becomes available (no global render-version counter needed).
+  // In state so highlight overlays re-render as soon as a page proxy loads.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [pageProxies, setPageProxies] = useState<Map<number, any>>(() => new Map())
 
@@ -241,7 +259,6 @@ export default function PdfViewer({ fileUrl, documentId, title, className, initi
     })
   }, [])
 
-  // ─── Highlights ────────────────────────────────────────────────────
   const {
     highlights,
     saveHighlight: persistHighlight,
@@ -308,16 +325,11 @@ export default function PdfViewer({ fileUrl, documentId, title, className, initi
       if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return
       const range = sel.getRangeAt(0)
 
-      // Cross-page guard: both selection endpoints must live inside this
-      // page wrapper. `commonAncestorContainer` would walk to a shared
-      // ancestor *above* both pages when selecting across pages, so anchor
-      // + focus node containment is the reliable check.
+      // commonAncestorContainer climbs above both pages on cross-page selections; check endpoints instead.
       const anchorNode = sel.anchorNode
       const focusNode = sel.focusNode
       const inThisPage = (node: Node | null) => !!node && pageEl.contains(node)
       if (!inThisPage(anchorNode) || !inThisPage(focusNode)) {
-        // If either endpoint is in a different page wrapper, surface the
-        // toast. Otherwise the selection isn't ours — silent return.
         const otherPageWrapper =
           [anchorNode, focusNode].find(
             (n) => n && !inThisPage(n) && (n as HTMLElement).closest?.('[data-page]') !== null,
@@ -333,10 +345,7 @@ export default function PdfViewer({ fileUrl, documentId, title, className, initi
       const computed = computePdfAnchor({ range, viewport, pageContainer: pageEl, pageText })
       if (!computed) return
 
-      // Position the popover under the last visual line of the selection.
-      // Use pdfRectsToViewport so the rect is already y-axis-normalized,
-      // not the raw convertToViewportRectangle tuple (which can land at the
-      // top of the line after PDF's bottom-left origin flip).
+      // pdfRectsToViewport normalizes PDF's bottom-left origin; the raw tuple lands at the line's top.
       const lastRect = computed.rects[computed.rects.length - 1]
       const [vpRect] = pdfRectsToViewport([lastRect], viewport)
       setPopover({
@@ -371,16 +380,11 @@ export default function PdfViewer({ fileUrl, documentId, title, className, initi
         },
       })
       setCommentDraft(highlight.comment ?? '')
-      // Compact pill on overlay click ([Note] [Delete]); user expands to
-      // textarea only when they actually want to edit the note.
       setCommentExpanded(false)
     },
     [pageProxies, renderedViewport],
   )
 
-  // "Note" pressed in CREATE mode: save the highlight immediately so the
-  // yellow rect renders, then switch the popover to edit-expanded for that
-  // just-saved highlight so the user can type their note on top of it.
   const startNoteFromCreate = useCallback(async () => {
     if (!documentId || !popover || popover.mode !== 'create' || savingHighlight) return
     setSavingHighlight(true)
@@ -456,7 +460,7 @@ export default function PdfViewer({ fileUrl, documentId, title, className, initi
       setCommentExpanded(false)
       window.getSelection()?.removeAllRanges()
     } catch {
-      // Popover stays open so user can retry; no toast infra to surface details.
+      // Popover stays open so the user can retry.
     } finally {
       setSavingHighlight(false)
     }
@@ -471,7 +475,7 @@ export default function PdfViewer({ fileUrl, documentId, title, className, initi
       setCommentDraft('')
       setCommentExpanded(false)
     } catch {
-      // Same as save: leave popover open so user can retry.
+      // Popover stays open so the user can retry.
     } finally {
       setSavingHighlight(false)
     }
@@ -483,9 +487,7 @@ export default function PdfViewer({ fileUrl, documentId, title, className, initi
     setCommentExpanded(false)
   }, [])
 
-  // Dismiss the popover on click-outside or Escape. Clicks on existing
-  // highlight overlays don't dismiss — the click handler there re-opens
-  // with a fresh edit popover anyway.
+  // Overlay clicks don't dismiss; their handler reopens a fresh edit popover.
   useEffect(() => {
     if (!popover) return
     const onDocMouseDown = (e: MouseEvent) => {
@@ -592,53 +594,28 @@ export default function PdfViewer({ fileUrl, documentId, title, className, initi
     clearTimeout(debounceTimerRef.current)
   }, [])
 
-  const performSearch = useCallback((query: string) => {
-    cancelPendingSearch()
-    clearSearchHighlights()
-    if (!query.trim()) return
-
-    const lowerQuery = query.toLowerCase()
-
-    // Step 1: Find matching pages via in-memory text index (searches ALL pages)
-    const matchingPages: number[] = []
-    let indexOccurrences = 0
-    if (pageTexts.size > 0) {
-      for (const [page, text] of pageTexts) {
-        const lower = text.toLowerCase()
-        let idx = 0
-        let count = 0
-        while ((idx = lower.indexOf(lowerQuery, idx)) !== -1) {
-          count++
-          idx += lowerQuery.length
-        }
-        if (count > 0) {
-          matchingPages.push(page)
-          indexOccurrences += count
-        }
+  // Matching pages must be rendered before DOM marks can be applied.
+  const renderSearchPages = useCallback((matchingPages: number[]) => {
+    if (matchingPages.length === 0) return
+    const newSearchPages = new Set<number>()
+    setVisiblePages((prev) => {
+      const next = new Set(prev)
+      for (const p of matchingPages) {
+        if (!prev.has(p)) newSearchPages.add(p)
+        next.add(p)
       }
-    }
+      return next
+    })
+    searchPagesRef.current = newSearchPages
+  }, [])
 
-    // Step 2: Ensure matching pages are rendered so DOM highlighting works
-    if (matchingPages.length > 0) {
-      const newSearchPages = new Set<number>()
-      setVisiblePages((prev) => {
-        const next = new Set(prev)
-        for (const p of matchingPages) {
-          if (!prev.has(p)) newSearchPages.add(p)
-          next.add(p)
-        }
-        return next
-      })
-      searchPagesRef.current = newSearchPages
-    }
-
-    // Step 3: Apply DOM highlighting after a frame (gives React time to render new pages)
+  const markMatchesAfterRender = useCallback((query: string, indexOccurrences: number) => {
+    // Wait a frame for React to render the newly visible pages.
     searchRafRef.current = requestAnimationFrame(() => {
       searchTimerRef.current = setTimeout(() => {
         const marks = applyDomHighlights(query)
         searchMarksRef.current = marks
 
-        // Use real occurrence count from text index when DOM marks aren't all ready yet
         setMatchCount(marks.length || indexOccurrences)
 
         if (marks.length > 0) {
@@ -648,7 +625,17 @@ export default function PdfViewer({ fileUrl, documentId, title, className, initi
         }
       }, 100)
     })
-  }, [pageTexts, clearSearchHighlights, applyDomHighlights, cancelPendingSearch])
+  }, [applyDomHighlights])
+
+  const performSearch = useCallback((query: string) => {
+    cancelPendingSearch()
+    clearSearchHighlights()
+    if (!query.trim()) return
+
+    const { matchingPages, occurrences } = findIndexedMatches(pageTexts, query)
+    renderSearchPages(matchingPages)
+    markMatchesAfterRender(query, occurrences)
+  }, [pageTexts, clearSearchHighlights, cancelPendingSearch, renderSearchPages, markMatchesAfterRender])
 
   const navigateMatch = useCallback((delta: number) => {
     const marks = searchMarksRef.current
@@ -664,7 +651,6 @@ export default function PdfViewer({ fileUrl, documentId, title, className, initi
     marks[next].scrollIntoView({ behavior: 'smooth', block: 'center' })
   }, [currentMatchIndex])
 
-  // Clean up pending search timers on unmount
   useEffect(() => {
     return () => {
       cancelAnimationFrame(searchRafRef.current)
@@ -683,7 +669,6 @@ export default function PdfViewer({ fileUrl, documentId, title, className, initi
     setSearchOpen(false)
     setSearchQuery('')
     clearSearchHighlights()
-    // Remove pages that were only added for search results
     if (searchPagesRef.current.size > 0) {
       const toRemove = searchPagesRef.current
       setVisiblePages((prev) => {

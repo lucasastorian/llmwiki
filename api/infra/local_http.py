@@ -1,11 +1,4 @@
-"""HTTP boundary checks for the unauthenticated, single-user local API.
-
-Local mode deliberately has no bearer-token authentication. Keep it safe for
-that deployment model by accepting only loopback Host headers and by refusing
-browser writes from origins other than the local web UI or explicitly trusted
-browser-extension IDs. Requests without an Origin remain valid for non-browser
-clients such as the CLI and MCP integrations.
-"""
+"""Guards for the unauthenticated local API: loopback Host only; browser writes only from trusted origins."""
 
 from __future__ import annotations
 
@@ -153,9 +146,7 @@ class LocalHTTPBoundaryMiddleware:
                 await response(scope, receive, send)
                 return
 
-            # Modern browsers send Origin on unsafe requests.  If an
-            # intermediary strips it, Fetch Metadata still lets us distinguish
-            # a cross-site browser request from curl/MCP/native clients.
+            # If an intermediary strips Origin, Sec-Fetch-Site still tells browsers from CLI/MCP clients.
             if not origin_values:
                 fetch_site = next(
                     (

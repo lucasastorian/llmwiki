@@ -1,9 +1,4 @@
-"""Unit tests for html_parser plaintext extraction + highlight locator (V2A).
-
-The plaintext output has to match what TipTap's `doc.textBetween` would
-produce on the parsed markdown — markdown punctuation removed, block
-separation preserved, inline spans flattened.
-"""
+"""Plaintext must match TipTap's `doc.textBetween` on the parsed markdown: punctuation removed, blocks separated, inline spans flattened."""
 
 import asyncio
 import socket
@@ -11,8 +6,6 @@ import threading
 
 import pytest
 from html_parser import Parser
-
-# ── Plaintext extraction ──────────────────────────────────
 
 
 def _plain(html: str) -> str:
@@ -58,16 +51,25 @@ def test_plain_blockquote():
     assert out == "Quoted."
 
 
-def test_plain_image_emits_empty():
-    """Images are leaf nodes in ProseMirror with no rendered text content.
-    Plaintext drops them entirely so the client walker matches."""
+def test_plain_image_splits_paragraph_without_alt_text():
+    """The viewer's images are text-less block nodes, so an inline image splits its paragraph."""
     out = _plain('<p>See <img src="x.png" alt="diagram"/> for details.</p>')
-    assert out == "See for details."
+    assert out == "See\n\nfor details."
 
 
-def test_plain_image_no_alt_also_empty():
+def test_plain_image_without_alt_also_splits():
     out = _plain('<p>Before <img src="x.png"/> after.</p>')
-    assert out == "Before after."
+    assert out == "Before\n\nafter."
+
+
+def test_parse_maps_highlight_offsets_in_utf16_units():
+    result = Parser("<p>\U0001F600\U0001F600 Intro then target words.</p>").parse(
+        [{"id": "h", "anchor": {"textContent": "target words"}}],
+    )
+    anchor = result.highlights[0].text_anchor
+    utf16 = result.plaintext.encode("utf-16-le")
+    assert (anchor.text_start, anchor.text_end) == (16, 28)
+    assert utf16[anchor.text_start * 2:anchor.text_end * 2].decode("utf-16-le") == "target words"
 
 
 def test_plain_br_is_newline():
@@ -83,9 +85,6 @@ def test_plain_collapses_multiple_blank_lines():
 def test_plain_drops_script_and_style():
     html = "<p>Visible</p><script>alert(1)</script><style>p{color:red}</style>"
     assert _plain(html) == "Visible"
-
-
-# ── Tagged HTML sanitization ──────────────────────────────
 
 
 def test_sanitized_html_strips_executable_attributes_and_urls():
@@ -282,6 +281,22 @@ async def test_webclip_asset_materialization_drops_remote_images_when_fetch_fail
     assert assets == []
 
 
+@pytest.mark.asyncio
+async def test_dropped_inline_image_does_not_glue_neighbouring_words(monkeypatch):
+    from services import webclip_assets
+    from services.webclip_assets import materialize_webclip_assets
+
+    async def fake_remote(url: str, max_bytes: int | None = None):
+        return None
+
+    monkeypatch.setattr(webclip_assets, "_fetch_remote_image", fake_remote)
+    result = Parser('<p>before <img src="https://cdn.example/a.png" alt="A"> after</p>').parse()
+
+    markdown, _ = await materialize_webclip_assets(result.content, result.images, "article.assets")
+
+    assert markdown == "before after"
+
+
 @pytest.mark.parametrize("ip", ["127.0.0.1", "169.254.169.254", "10.0.0.5", "192.168.1.1", "::1"])
 def test_resolve_public_ip_rejects_internal_addresses(monkeypatch, ip):
     from infra import safe_fetch
@@ -345,7 +360,7 @@ async def test_fetch_remote_image_blocks_metadata_endpoint(monkeypatch):
     async def fail_send(*args, **kwargs):
         raise AssertionError("must not issue HTTP to a blocked host")
 
-    monkeypatch.setattr(webclip_assets.httpx.AsyncClient, "send", fail_send)
+    monkeypatch.setattr(safe_fetch.httpx.AsyncClient, "send", fail_send)
 
     result = await webclip_assets._fetch_remote_image("http://169.254.169.254/latest/meta-data/")
     assert result is None
@@ -726,9 +741,6 @@ async def test_hosted_webclip_rejects_when_storage_quota_exceeded():
     assert exc.value.status_code == 413
 
 
-# ── Highlight locator ─────────────────────────────────────
-
-
 def test_locate_single_match():
     plaintext = "The quick brown fox jumps over the lazy dog."
     a = Parser._locate_highlight(plaintext, {"textContent": "brown fox"})
@@ -738,7 +750,6 @@ def test_locate_single_match():
 
 def test_locate_normalizes_whitespace_in_input():
     plaintext = "The quick brown fox."
-    # Caller passes unnormalized text — locator should still find it
     a = Parser._locate_highlight(plaintext, {"textContent": "  quick   brown  "})
     assert a is not None
     assert a.text_content == "quick brown"
@@ -758,7 +769,6 @@ def test_locate_disambiguates_via_prefix():
         {"textContent": "The cat", "prefix": "mat. ", "suffix": " ran"},
     )
     assert a is not None
-    # Should match the second occurrence (after "mat. ")
     assert a.text_start == plaintext.index("The cat", 10)
 
 
@@ -779,9 +789,6 @@ def test_locate_whitespace_only_text_content():
     plaintext = "Hello."
     a = Parser._locate_highlight(plaintext, {"textContent": "   \n  "})
     assert a is None
-
-
-# ── End-to-end: parse with highlights ─────────────────────
 
 
 def test_parse_with_highlights_returns_mapped():
@@ -834,6 +841,7 @@ def test_content_only_preserves_article_header_title():
           <p>By Eileen Sullivan and Andrea Fuller</p>
         </header>
         <p>President Trump's upheaval of the federal government has led to an exodus.</p>
+        <p>Hundreds of lawyers have left the Justice Department since January, according to an analysis of personnel data.</p>
       </article>
     </body></html>
     """
@@ -845,8 +853,7 @@ def test_content_only_preserves_article_header_title():
 
 
 def test_parse_highlight_across_inline_tags():
-    """Highlight spans a <strong> boundary in the source HTML.
-    In plaintext the inline tag is gone, so the highlight matches cleanly."""
+    """Inline tags vanish from plaintext, so a highlight crossing <strong> still matches."""
     html = "<p>The <strong>quick</strong> brown fox.</p>"
     p = Parser(html)
     result = p.parse(highlights=[
@@ -858,9 +865,6 @@ def test_parse_highlight_across_inline_tags():
 
 
 def test_parse_handles_image_in_highlight_range():
-    """User selected text that crossed an image. Image emits empty in
-    plaintext, so the surrounding text concatenates and the highlight
-    locates as expected."""
     html = '<p>Look at <img src="x.png" alt="diagram"/> here.</p>'
     p = Parser(html)
     result = p.parse(highlights=[
@@ -868,44 +872,36 @@ def test_parse_handles_image_in_highlight_range():
     ])
     a = result.highlights[0].text_anchor
     assert a is not None
-    # Plaintext is "Look at  here." (two spaces where image was);
-    # locator finds the normalized phrase
+    # Plaintext is "Look at  here.": the image leaves a double space.
     assert "Look at" in result.plaintext[a.text_start:a.text_end]
     assert "here" in result.plaintext[a.text_start:a.text_end]
 
 
 def test_parse_cross_block_highlight():
-    """Selection spans paragraphs. range.toString() gives newline-collapsed
-    text but plaintext keeps `\\n\\n` between paragraphs. The locator's
-    normalize-with-index-map handles this."""
+    """range.toString() collapses newlines but plaintext keeps `\\n\\n` between paragraphs."""
     html = "<p>End of first paragraph.</p><p>Start of second paragraph.</p>"
     p = Parser(html)
     result = p.parse(highlights=[
-        # Extension might capture this as collapsed-whitespace text
         {"id": "x", "anchor": {"textContent": "first paragraph. Start of"}},
     ])
     a = result.highlights[0].text_anchor
     assert a is not None
-    # Maps back to original plaintext offsets, which span the paragraph break
     span = result.plaintext[a.text_start:a.text_end]
     assert "first paragraph" in span
     assert "Start of" in span
-    assert "\n\n" in span  # paragraph break preserved
+    assert "\n\n" in span
 
 
 def test_parse_short_highlight_no_context_unlocated():
-    """Single common word with multiple occurrences and no prefix/suffix
-    leaves the highlight unlocated rather than guessing."""
     html = "<p>The cat sat on the mat. The dog ran on the rug.</p>"
     p = Parser(html)
     result = p.parse(highlights=[
-        {"id": "x", "anchor": {"textContent": "the"}},  # ambiguous, no context
+        {"id": "x", "anchor": {"textContent": "the"}},
     ])
     assert result.highlights[0].text_anchor is None
 
 
 def test_parse_short_highlight_with_prefix_locates():
-    """Same short text but with prefix becomes locatable."""
     html = "<p>The cat sat on the mat. The dog ran on the rug.</p>"
     p = Parser(html)
     result = p.parse(highlights=[
@@ -916,5 +912,99 @@ def test_parse_short_highlight_with_prefix_locates():
     ])
     a = result.highlights[0].text_anchor
     assert a is not None
-    # Should land on "the" before "rug", not the first occurrence
     assert result.plaintext[a.text_start:a.text_start + 7] == "the rug"
+
+
+@pytest.mark.parametrize("separator", ["", '<img src="https://x.com/a.png">', "<br>"])
+def test_parse_is_linear_in_unicode_whitespace_runs(separator):
+    """Whitespace runs that markdown cleaning keeps (U+2000) must be scanned once, not once per position."""
+    import time
+
+    html = f"<p>x{chr(0x2000) * 50_000}{separator}y</p>"
+    started = time.perf_counter()
+    Parser(html).parse()
+    assert time.perf_counter() - started < 2.0
+
+
+def test_removing_an_image_ref_is_linear_in_escaped_alt_text():
+    """A non-matching ref must not backtrack exponentially through backslash escapes in another image's alt."""
+    import time
+
+    from services.webclip_assets import _remove_markdown_image_ref
+
+    markdown = "![" + "\\\\" * 40 + "](llmwiki-image://IMG1) text"
+    started = time.perf_counter()
+    assert _remove_markdown_image_ref(markdown, "llmwiki-image://IMG2") == markdown
+    assert time.perf_counter() - started < 2.0
+
+
+@pytest.mark.parametrize("html", [
+    "<p>&lt;<span>https://evil.example</span>&gt;</p>",
+    "<p>&lt;<span>123@example.com</span>&gt;</p>",
+    "<p>&lt;<b>img</b> src=x onerror=alert(1)&gt;</p>",
+    "<p>&amp;<span>copy;</span> and <span>~</span>~struck~~</p>",
+])
+def test_escaped_markup_split_across_text_nodes_stays_literal(html):
+    content = Parser(html).parse().content
+    assert "<" not in content.replace("\\<", "")
+    assert "&" not in content.replace("\\&", "")
+    assert "~" not in content.replace("\\~", "")
+
+
+@pytest.mark.parametrize("href", [
+    "JaVaScRiPt:alert(1)",
+    " javascript:alert(1)",
+    "java\tscript:alert(1)",
+    "\x01javascript:alert(1)",
+    "vbscript:msgbox(1)",
+    "data:text/html,<script>alert(1)</script>",
+])
+def test_links_with_unsafe_schemes_keep_text_only(href):
+    content = Parser(f'<p><a href="{href}">click</a> me</p>').parse().content
+    assert content == "click me"
+
+
+@pytest.mark.parametrize("href", ["https://x.com/a", "HTTP://x.com/a", "mailto:a@b.co", "/relative/path"])
+def test_links_with_safe_schemes_are_kept(href):
+    assert "](" in Parser(f'<p><a href="{href}">click</a></p>').parse().content
+
+
+def test_form_action_in_plaintext_matches_markdown_when_a_base_url_is_set() -> None:
+    html = '<p>Before</p><form action="/search"><input name="q"></form><p>After</p>'
+    result = Parser(html, url="https://example.com/page").parse()
+
+    assert "\\[Form: GET /search\\]" in result.content
+    assert "[Form: GET /search]" in result.plaintext
+
+
+def test_removing_an_image_ref_is_linear_when_unclosed_openers_follow():
+    import time
+
+    from services.webclip_assets import _remove_markdown_image_ref
+
+    markdown = "![a](llmwiki-image://IMG1)\n\n```\n" + "![" * 8000 + "\n```"
+    started = time.perf_counter()
+    assert _remove_markdown_image_ref(markdown, "llmwiki-image://IMG1") == "\n\n```\n" + "![" * 8000 + "\n```"
+    assert time.perf_counter() - started < 0.5
+
+
+def test_removing_an_image_ref_leaves_earlier_unclosed_openers_alone():
+    from services.webclip_assets import _remove_markdown_image_ref
+
+    markdown = "```\n![unfinished\n```\n\nA paragraph.\n\nSee ![a \\] b](llmwiki-image://IMG1)here"
+    assert _remove_markdown_image_ref(markdown, "llmwiki-image://IMG1") == (
+        "```\n![unfinished\n```\n\nA paragraph.\n\nSee here"
+    )
+
+
+def test_nested_emphasis_resolves_in_one_pass():
+    import time
+
+    depth = 250
+    html = "<p>" + "".join(f"<{'b' if i % 2 else 'i'}>w{i} " + "filler " * 60 for i in range(depth)) + "x" + "".join(
+        f"</{'b' if i % 2 else 'i'}>" for i in reversed(range(depth))
+    ) + "</p>"
+    started = time.perf_counter()
+    result = Parser(html).parse()
+    assert time.perf_counter() - started < 0.5
+    assert result.plaintext.startswith("w0 filler") and "w249 filler" in result.plaintext

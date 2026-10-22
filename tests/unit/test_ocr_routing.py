@@ -232,3 +232,17 @@ async def test_missing_document_is_not_marked_failed(ocr, monkeypatch):
 
     assert extract_calls == []
     assert pool.failure() is None
+
+
+async def test_html_over_the_output_budget_marks_failed(ocr, monkeypatch):
+    monkeypatch.setattr("html_parser.parser.MAX_OUTPUT_CHARS", 50)
+    service, pool = _service(ocr, "clip.html")
+
+    async def download_bytes(key: str) -> bytes:
+        return ("<p>" + "word " * 100 + "</p>").encode()
+    service._s3.download_bytes = download_bytes
+
+    await service.process_document(DOC, USER)
+
+    assert "too large" in pool.failure()
+    assert service._s3.upload_bytes_calls == []

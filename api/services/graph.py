@@ -1,7 +1,4 @@
-"""Graph service — queries and rebuilds the document reference graph.
-
-All SQL lives here. Routes should never execute queries directly.
-"""
+"""Query and rebuild the document reference graph; routes never run graph SQL directly."""
 
 import json
 import logging
@@ -49,8 +46,6 @@ def _build_edge(r: dict) -> dict:
     }
 
 
-# ── Hosted (asyncpg) ──
-
 async def get_graph_hosted(conn, kb_id, user_id: str) -> dict:
     """Return {nodes, edges} for the knowledge graph viewer."""
     doc_rows = await conn.fetch(
@@ -78,12 +73,7 @@ async def get_graph_hosted(conn, kb_id, user_id: str) -> dict:
 
 
 async def rebuild_hosted(conn, kb_id, user_id: str) -> dict:
-    """Parse wiki pages and rebuild reference edges atomically.
-
-    Runs through RLS (authenticated role) — the database enforces that
-    the user can only read/write their own documents and references.
-    Uses a savepoint for atomicity within the ScopedDB transaction.
-    """
+    """Rebuild reference edges atomically under RLS, as a savepoint in the ScopedDB transaction."""
     all_docs = [dict(r) for r in await conn.fetch(
         "SELECT id, filename, title, path, file_type "
         "FROM documents "
@@ -102,7 +92,6 @@ async def rebuild_hosted(conn, kb_id, user_id: str) -> dict:
         kb_id, user_id,
     )]
 
-    # Atomic: transaction wraps the delete + all inserts
     async with conn.transaction():
         await conn.execute(
             "DELETE FROM document_references "
@@ -166,8 +155,6 @@ async def _insert_links(conn: asyncpg.Connection, kb_id: str, links: list[tuple]
     )
 
 
-# ── Local (aiosqlite) ──
-
 async def get_graph_local(db, user_id: str) -> dict:
     """Return {nodes, edges} for the knowledge graph viewer (SQLite)."""
     doc_cursor = await db.execute(
@@ -210,8 +197,7 @@ async def rebuild_local(db, user_id: str) -> dict:
     )
     wiki_pages = rows_to_dicts(wiki_cursor, await wiki_cursor.fetchall())
 
-    # Delete + inserts commit together under the write lock; roll back on any
-    # failure so a mid-rebuild error can't leave the graph wiped.
+    # Roll back on any failure so a mid-rebuild error can't leave the graph wiped.
     async with serialized_write():
         try:
             await db.execute("DELETE FROM document_references")

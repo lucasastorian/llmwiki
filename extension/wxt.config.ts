@@ -21,29 +21,13 @@ function origin(name: string, value: string): string {
 
 export default defineConfig({
   srcDir: "src",
+  publicDir: "src/public",
   modules: ["@wxt-dev/module-react"],
-  // This is a Chrome MV3 extension. WXT's multi-browser default target asks
-  // the pinned esbuild version to downlevel modern Supabase Auth code using a
-  // destructuring transform it no longer supports, which prevents packaging.
+  // WXT's default target makes the pinned esbuild downlevel Supabase Auth with an unsupported transform.
   vite: () => ({
     build: { target: "chrome109" },
   }),
-  // Dev runner config:
-  //   - Persistent profile so the Google/Supabase sign-in survives reloads
-  //   - Opens a known testbed URL so we can verify the content script bootstraps
-  //     against a real site (CSP, CORS, real DOM)
-  //   - Uses your actual Chrome binary, in a separate profile dir, so this
-  //     doesn't interfere with your normal browsing session
-  runner: {
-    binaries: {
-      chrome: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-    },
-    chromiumProfile: "/tmp/llmwiki-ext-profile",
-    keepProfileChanges: true,
-    startUrls: ["https://example.com/"],
-  },
-  // WXT loads dotenv after importing this config file, so resolve environment
-  // values lazily. Evaluating them at module load silently ignored .env.
+  // WXT loads dotenv after importing this config, so env must be read lazily.
   manifest: () => {
     const apiOrigin = origin(
       "VITE_API_BASE_URL",
@@ -61,8 +45,7 @@ export default defineConfig({
       version: packageJson.version,
       minimum_chrome_version: "109",
       permissions: ["activeTab", "identity", "offscreen", "storage", "scripting"],
-      // activeTab covers the page itself. Explicit host access is still needed
-      // for cross-origin API and Supabase Auth requests from extension pages.
+      // activeTab covers the page; extension pages still need host access for API/Auth requests.
       host_permissions: [
         `${apiOrigin}/*`,
         `${supabaseOrigin}/*`,

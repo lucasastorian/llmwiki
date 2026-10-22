@@ -1,9 +1,6 @@
 import type { QuizQuestion } from './types'
 
-// Include the block, position, and full answer shape so repeated prompts remain
-// distinct both within a block and across separate blocks on the same page.
-// The choice identity predates text questions — never reorder it, or stored
-// completion keys stop matching.
+// Never reorder: stored completion keys depend on this exact shape.
 export function questionKey(blockSource: string, question: QuizQuestion, index: number): string {
   const identity =
     question.kind === 'text'

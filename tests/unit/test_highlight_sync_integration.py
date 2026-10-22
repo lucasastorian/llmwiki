@@ -1,14 +1,4 @@
-"""End-to-end sync coverage against a real SQLite chunks table.
-
-Exercises the highlight CRUD → chunk metadata update loop end-to-end:
-- Create a doc + chunks
-- POST a highlight via the repo → chunks get annotations_text + has_highlight
-- The materialized `content` column carries the footnote-body block
-- DELETE the highlight → chunks revert (annotations cleared, has_highlight = 0)
-
-If anything in the (old ∪ new) recompute, the chunk writer wiring, or the
-mapping helpers regresses, one of these assertions fires.
-"""
+"""Highlight CRUD to chunk annotations/content sync against a real SQLite chunks table."""
 import uuid
 from pathlib import Path
 
@@ -109,7 +99,6 @@ class TestHighlightSyncRoundTrip:
         assert result is not None
         assert result["highlights"] == [h]
 
-        # Page-1 chunk should be annotated; page-2 chunk should not.
         c1 = await _chunk_row(db, chunk_ids[0])
         c2 = await _chunk_row(db, chunk_ids[1])
 
@@ -117,7 +106,6 @@ class TestHighlightSyncRoundTrip:
         assert c1["annotations_text"] is not None
         assert "User highlighted" in c1["annotations_text"]
         assert "solid-tumor angle" in c1["annotations_text"]
-        # content materializes source + annotations footnote block.
         assert c1["content"].startswith(c1["source_content"])
         assert "[^user-1]:" in c1["content"]
 
@@ -126,7 +114,7 @@ class TestHighlightSyncRoundTrip:
         assert c2["content"] == c2["source_content"]
 
     async def test_delete_clears_stale_annotations(self, db_repo):
-        """Regression for (old ∪ new) coverage of the deletion path."""
+        """Deletion must revisit chunks touched by the old highlight set, not just the new one."""
         db, repo = db_repo
         doc_id = "00000000-0000-0000-0000-000000000002"
         await _seed_doc(db, doc_id)
@@ -134,19 +122,15 @@ class TestHighlightSyncRoundTrip:
             ("CAR-T cells engineered ex vivo.", 1, 0),
         ])
 
-        # 1) Add a highlight.
         h = _pdf_highlight("h-1", page=1, text="CAR-T cells", comment="ref-1")
         await repo.replace_highlights(doc_id, "local", [h])
         before = await _chunk_row(db, chunk_ids[0])
         assert before["has_highlight"] == 1
         assert "ref-1" in (before["annotations_text"] or "")
 
-        # 2) Delete it (replace with empty list).
         await repo.replace_highlights(doc_id, "local", [])
         after = await _chunk_row(db, chunk_ids[0])
 
-        # Without the union-of-affected logic, this chunk would never be
-        # revisited and would keep its stale annotations_text.
         assert after["has_highlight"] == 0
         assert after["annotations_text"] is None
         assert after["content"] == after["source_content"]
@@ -164,7 +148,6 @@ class TestHighlightSyncRoundTrip:
         row = await _chunk_row(db, chunk_ids[0])
         assert "check refs" in row["annotations_text"]
 
-        # Edit the comment (same id, replaces).
         h1_edited = _pdf_highlight("h-1", page=1, text="Vein-to-vein", comment="updated note")
         await repo.upsert_highlight(doc_id, "local", h1_edited)
         row = await _chunk_row(db, chunk_ids[0])
@@ -189,14 +172,12 @@ class TestHighlightSyncRoundTrip:
 
         await repo.delete_highlight(doc_id, "local", "h-1")
         row = await _chunk_row(db, chunk_ids[0])
-        # Surviving highlight still in annotations; deleted one gone.
         assert "first" not in (row["annotations_text"] or "")
         assert "second" in row["annotations_text"]
         assert row["has_highlight"] == 1
 
     async def test_chunks_fts_picks_up_annotation_text(self, db_repo):
-        """SQLite chunks_fts indexes `content`, which after sync contains the
-        footnote body. A FTS MATCH on the comment text should find the chunk."""
+        """chunks_fts indexes `content`, which carries the footnote body after sync."""
         db, repo = db_repo
         doc_id = "00000000-0000-0000-0000-000000000005"
         await _seed_doc(db, doc_id)
@@ -219,3 +200,37 @@ class TestHighlightSyncRoundTrip:
         rows = await cursor.fetchall()
         assert len(rows) == 1
         assert "fooflarble" in rows[0][0]
+
+
+class TestWikiNoteTextHighlights:
+
+    async def test_text_highlight_on_formatted_markdown_annotates_its_chunk(self, db_repo):
+        """Wiki highlights quote rendered text, which never contains the Markdown syntax of the chunk."""
+        db, repo = db_repo
+        doc_id = "00000000-0000-0000-0000-000000000010"
+        await _seed_doc(db, doc_id)
+        chunk_ids = await _seed_chunks(db, doc_id, [
+            ("Intro paragraph about something else.", None, 0),
+            ("An _important_ insight about **Fish &amp; chips**.", None, 40),
+        ])
+        highlight = {
+            "id": "h-1",
+            "type": "text",
+            "anchor": None,
+            "textAnchor": {
+                "textStart": 0, "textEnd": 39,
+                "textContent": "An important insight about Fish & chips",
+                "prefix": "something else.\n", "suffix": ".",
+            },
+            "comment": "worth a page",
+            "color": "yellow",
+            "createdAt": "2026-06-01T00:00:00Z",
+        }
+
+        await repo.upsert_highlight(doc_id, "local", highlight)
+        await repo.reapply_highlights(doc_id)
+
+        intro, note = await _chunk_row(db, chunk_ids[0]), await _chunk_row(db, chunk_ids[1])
+        assert note["has_highlight"] == 1
+        assert "worth a page" in note["annotations_text"]
+        assert intro["has_highlight"] == 0

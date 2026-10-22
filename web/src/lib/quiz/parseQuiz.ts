@@ -1,8 +1,7 @@
 import { parse } from 'yaml'
 import type { ChoiceQuestion, QuizParseResult, QuizQuestion, QuizSpec, TextQuestion } from './types'
 
-// Mirrors the server-side validator (mcp/tools/quiz_lint.py); the server is the
-// gate at write time, this guards against content that predates or bypasses it.
+// A lenient superset of the server quiz lint, for content that predates or bypasses it; see tests/fixtures/parity/quiz_parse.json.
 const MIN_OPTIONS = 2
 const MAX_OPTIONS = 6
 const MAX_QUESTIONS = 20
@@ -10,7 +9,8 @@ const MAX_QUESTIONS = 20
 export function parseQuizYaml(source: string): QuizParseResult {
   let data: unknown
   try {
-    data = parse(source)
+    // Matches the server lint: duplicate keys allowed (last wins); aliases rejected, since merges expand exponentially.
+    data = parse(source, { uniqueKeys: false, maxAliasCount: 0 })
   } catch (err) {
     return { spec: null, error: err instanceof Error ? err.message : 'invalid YAML' }
   }

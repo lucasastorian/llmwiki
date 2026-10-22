@@ -18,7 +18,7 @@ from services.chunker import chunk_text
 from services.webclip_assets import materialize_webclip_assets
 
 from .base import DocumentService, KBService, ServiceFactory, UserService
-from .highlight_merge import merge_highlights_by_id
+from .highlight_merge import merge_highlights_by_id, merge_text_anchors
 from .parsers import extract_tags, parse_frontmatter, title_from_filename
 from .types import MAX_TEXT_CONTENT_BYTES
 
@@ -84,7 +84,7 @@ class LocalKBService(KBService):
         cols = [d[0] for d in cursor.description]
         return [dict(zip(cols, r, strict=False)) for r in rows]
 
-    async def get(self, kb_id: str) -> dict | None:
+    async def _workspace(self) -> dict | None:
         kbs = await self.list()
         return kbs[0] if kbs else None
 
@@ -119,7 +119,7 @@ class LocalKBService(KBService):
             except Exception:
                 await self.db.rollback()
                 raise
-        return await self.get(kb_id)
+        return await self._workspace()
 
     async def update_sharing(
         self, kb_id: str, visibility: str, public_slug: str | None,
@@ -192,33 +192,15 @@ def _normalize_webclip_path(path: str | None) -> str:
     return normalized
 
 
-def _merge_text_anchors(payloads: list[dict], mapped) -> list[dict]:
-    """Same as the hosted helper — merge parser-computed text_anchors back
-    onto incoming highlight payloads."""
-    out: list[dict] = []
-    for i, h in enumerate(payloads):
-        if not isinstance(h, dict):
-            continue
-        entry = dict(h)
-        if i < len(mapped) and mapped[i].text_anchor is not None:
-            ta = mapped[i].text_anchor
-            entry["textAnchor"] = {
-                "textStart": ta.text_start,
-                "textEnd": ta.text_end,
-                "textContent": ta.text_content,
-                "prefix": ta.prefix,
-                "suffix": ta.suffix,
-            }
-        out.append(entry)
-    return out
-
-
 def _parse_web_clip(html: str, url: str, highlights: list[dict]):
     """Run the synchronous HTML parser from a worker thread."""
-    from html_parser import Parser
+    from html_parser import ParseLimitExceededError, Parser
 
     parser = Parser(html, url=url, content_only=True)
-    return parser.parse(highlights=highlights)
+    try:
+        return parser.parse(highlights=highlights)
+    except ParseLimitExceededError as e:
+        raise HTTPException(status_code=413, detail=str(e)) from e
 
 
 def _write_text_file(path: Path, content: str) -> None:
@@ -419,7 +401,7 @@ class LocalDocumentService(DocumentService):
 
             current = await self.doc_repo.get_highlights(parent_id)
             current_highlights = current["highlights"] if current else []
-            enriched = _merge_text_anchors(highlights or [], result.highlights)
+            enriched = merge_text_anchors(highlights or [], result.highlights)
             merged_highlights = merge_highlights_by_id(current_highlights, enriched)
             if merged_highlights or current_highlights:
                 await self.doc_repo.replace_highlights(parent_id, self.user_id, merged_highlights)
@@ -477,12 +459,9 @@ class LocalDocumentService(DocumentService):
             chunks = await asyncio.to_thread(chunk_text, markdown)
             await self.chunk_repo.store(parent_id, self.user_id, kb_id, chunks)
 
-        # replace_highlights AFTER chunks exist so the repo-level
-        # _recompute_chunks_for_doc can materialize annotations onto the
-        # freshly-created chunks. Running it before chunks exist would be a
-        # no-op materialization.
+        # Only after chunks exist can the highlight write materialize annotations onto them.
         if highlights:
-            enriched = _merge_text_anchors(highlights, result.highlights)
+            enriched = merge_text_anchors(highlights, result.highlights)
             await self.doc_repo.replace_highlights(parent_id, self.user_id, enriched)
 
         doc = await self.doc_repo.get(parent_id) or row
@@ -497,14 +476,6 @@ class LocalDocumentService(DocumentService):
 
     async def get_highlights(self, doc_id: str) -> dict | None:
         return await self.doc_repo.get_highlights(doc_id)
-
-    async def replace_highlights(
-        self, doc_id: str, highlights: list[dict],
-        expected_version: int | None = None,
-    ) -> dict | None:
-        return await self.doc_repo.replace_highlights(
-            doc_id, self.user_id, highlights, expected_version,
-        )
 
     async def upsert_highlight(
         self, doc_id: str, highlight: dict,
@@ -550,8 +521,7 @@ class LocalDocumentService(DocumentService):
         if not doc:
             return None
 
-        # Local mode has a singleton workspace — there's nowhere to move to.
-        # Drop the field if the client sent one rather than failing the call.
+        # Single workspace, nowhere to move to: ignore the field rather than fail the call.
         fields = {k: v for k, v in fields.items() if k != "knowledge_base_id"}
         if not fields:
             return doc
@@ -601,10 +571,8 @@ class LocalDocumentService(DocumentService):
 
 class LocalServiceFactory(ServiceFactory):
 
-    def __init__(self, db, storage=None, user_id: str = ""):
+    def __init__(self, db):
         self.db = db
-        self.storage = storage
-        self.user_id = user_id
 
     def user_service(self, user_id: str) -> LocalUserService:
         return LocalUserService(self.db, user_id)

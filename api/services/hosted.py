@@ -19,7 +19,7 @@ from services.chunker import chunk_text, store_chunks
 from services.webclip_assets import materialize_webclip_assets
 
 from .base import DocumentService, KBService, PublicWikiService, ServiceFactory, UserService
-from .highlight_merge import merge_highlights_by_id, preserve_replies
+from .highlight_merge import merge_highlights_by_id, merge_text_anchors, preserve_replies
 from .parsers import parse_frontmatter, title_from_filename
 from .types import MAX_TEXT_CONTENT_BYTES
 
@@ -50,10 +50,13 @@ async def _acquire_connection(pool):
 
 def _parse_web_clip(html: str, url: str, highlights: list[dict]):
     """Run the synchronous HTML parser from a worker thread."""
-    from html_parser import Parser
+    from html_parser import ParseLimitExceededError, Parser
 
     parser = Parser(html, url=url, content_only=True)
-    return parser.parse(highlights=highlights)
+    try:
+        return parser.parse(highlights=highlights)
+    except ParseLimitExceededError as e:
+        raise HTTPException(status_code=413, detail=str(e)) from e
 
 
 class HostedUserService(UserService):
@@ -153,13 +156,6 @@ class HostedKBService(KBService):
             self.user_id,
         )
         return [dict(r) for r in rows]
-
-    async def get(self, kb_id: str) -> dict | None:
-        row = await self.pool.fetchrow(
-            f"{_KB_LIST_QUERY} WHERE kb.id = $1 AND kb.user_id = $2",
-            kb_id, self.user_id,
-        )
-        return dict(row) if row else None
 
     async def create(self, name: str, description: str | None, kind: str | None = None) -> dict:
         await self._check_capacity()
@@ -307,6 +303,10 @@ class HostedKBService(KBService):
             counter += 1
         return slug
 
+
+_UPDATABLE_DOCUMENT_COLUMNS = (
+    "filename", "path", "title", "date", "knowledge_base_id", "document_number", "tags",
+)
 
 _DOC_COLUMNS = (
     "id, knowledge_base_id, user_id, filename, path, title, "
@@ -486,11 +486,10 @@ class HostedDocumentService(DocumentService):
         markdown_size = len((markdown or "").encode("utf-8"))
         file_size = markdown_size + sum(len(asset.data) for asset in assets)
         chunks = await asyncio.to_thread(chunk_text, markdown) if markdown else []
-        # Best-effort fast-fail for obvious quota errors. The in-transaction
-        # check below runs under the advisory lock and is authoritative.
+        # Fast-fail only; the in-transaction check under the advisory lock is authoritative.
         await self._check_storage_available(file_size)
 
-        enriched = self._merge_text_anchors(highlights or [], result.highlights)
+        enriched = merge_text_anchors(highlights or [], result.highlights)
         parent_doc_id = str(existing_preview["id"]) if existing_preview else str(uuid.uuid4())
         for asset in assets:
             asset.document_id = str(uuid.uuid4())
@@ -545,8 +544,7 @@ class HostedDocumentService(DocumentService):
                         path, title, markdown_size, markdown, json.dumps(parent_metadata),
                         json.dumps(next_highlights), parent_doc_id, self.user_id,
                     )
-                    # Re-clip of the same URL: clear the previous asset docs so
-                    # the fresh assets don't collide on (kb, path, filename).
+                    # Re-clip: clear old asset docs so fresh ones don't collide on (kb, path, filename).
                     old_asset_ids = [
                         r["id"] for r in await conn.fetch(
                             "SELECT id::text FROM documents WHERE user_id = $1 "
@@ -595,10 +593,7 @@ class HostedDocumentService(DocumentService):
                     await store_chunks(conn, str(row["id"]), self.user_id, str(kb_id), chunks)
                 else:
                     await conn.execute("DELETE FROM document_chunks WHERE document_id = $1", str(row["id"]))
-                # Materialize the highlights we just persisted into the
-                # freshly-created chunks. Without this, comments on a
-                # clipped-with-highlights doc would not be searchable until
-                # the user touched the highlight again.
+                # Chunks were just replaced; re-materialize highlights or their comments stay unsearchable.
                 if next_highlights:
                     await self._recompute_chunks_for_doc(
                         conn, str(row["id"]), [], next_highlights,
@@ -611,31 +606,6 @@ class HostedDocumentService(DocumentService):
         response = _doc_dict(row)
         response["highlights"] = next_highlights
         return response
-
-    @staticmethod
-    def _merge_text_anchors(payloads: list[dict], mapped) -> list[dict]:
-        """Merge parser-computed text_anchors back onto the original highlight
-        payloads. Preserves all incoming fields (id, type, anchor, comment,
-        color, createdAt) and adds `textAnchor` when located. Highlights that
-        couldn't be located still persist — the wiki viewer can fall back to
-        text search at render time."""
-        anchor_by_index = {i: m.text_anchor for i, m in enumerate(mapped)}
-        merged: list[dict] = []
-        for i, h in enumerate(payloads):
-            if not isinstance(h, dict):
-                continue
-            entry = dict(h)
-            ta = anchor_by_index.get(i)
-            if ta is not None:
-                entry["textAnchor"] = {
-                    "textStart": ta.text_start,
-                    "textEnd": ta.text_end,
-                    "textContent": ta.text_content,
-                    "prefix": ta.prefix,
-                    "suffix": ta.suffix,
-                }
-            merged.append(entry)
-        return merged
 
     async def get_by_source_url(self, url: str) -> dict | None:
         row = await self.pool.fetchrow(
@@ -666,49 +636,6 @@ class HostedDocumentService(DocumentService):
         result["highlights"] = self._parse_highlights(result.get("highlights"))
         return result
 
-    async def replace_highlights(
-        self, doc_id: str, highlights: list[dict],
-        expected_version: int | None = None,
-    ) -> dict | None:
-        conn = await _acquire_connection(self.pool)
-        try:
-            async with conn.transaction():
-                # Fetch + lock the doc row so we have OLD highlights inside
-                # the same txn that writes the new ones. Required for the
-                # (old ∪ new) chunk recomputation downstream — a deletion
-                # would otherwise leave stale annotations.
-                locked = await conn.fetchrow(
-                    "SELECT version, highlights FROM documents "
-                    "WHERE id = $1 AND user_id = $2 FOR UPDATE",
-                    doc_id, self.user_id,
-                )
-                if not locked:
-                    return None
-                if expected_version is not None and locked["version"] != expected_version:
-                    return {"conflict": True}
-
-                old_highlights = self._parse_highlights(locked["highlights"])
-                preserve_replies(highlights, old_highlights)
-                payload = json.dumps(highlights)
-
-                row = await conn.fetchrow(
-                    "UPDATE documents SET highlights = $1::jsonb, "
-                    "version = version + 1, updated_at = now() "
-                    "WHERE id = $2 AND user_id = $3 "
-                    "RETURNING id::text, version, highlights",
-                    payload, doc_id, self.user_id,
-                )
-                if not row:
-                    return None
-                new_highlights = self._parse_highlights(row["highlights"])
-                await self._recompute_chunks_for_doc(conn, doc_id, old_highlights, new_highlights)
-        finally:
-            await self.pool.release(conn)
-
-        result = dict(row)
-        result["highlights"] = new_highlights
-        return result
-
     @staticmethod
     def _parse_highlights(value):
         if value is None:
@@ -725,8 +652,7 @@ class HostedDocumentService(DocumentService):
         self, doc_id: str, highlight: dict,
         expected_version: int | None = None,
     ) -> dict | None:
-        """Atomic single-entry upsert by `id`. Idempotent: re-posting the same
-        highlight is safe; the client may use it as a retry-friendly op."""
+        """Upsert one highlight by `id`, atomically and idempotently."""
         new_id = highlight.get("id")
         if not new_id:
             return None
@@ -746,7 +672,6 @@ class HostedDocumentService(DocumentService):
 
                 current = self._parse_highlights(row["highlights"])
                 preserve_replies([highlight], current)
-                # Replace existing entry with the same id, else append.
                 replaced = False
                 next_list: list[dict] = []
                 for h in current:
@@ -787,8 +712,7 @@ class HostedDocumentService(DocumentService):
         self, doc_id: str, highlight_id: str,
         expected_version: int | None = None,
     ) -> dict | None:
-        """Atomic single-entry delete by `id`. Idempotent: deleting an absent
-        id is a no-op (returns the current state with version unchanged)."""
+        """Delete one highlight by `id`; an absent id is a no-op that leaves the version unchanged."""
         conn = await _acquire_connection(self.pool)
         try:
             async with conn.transaction():
@@ -808,8 +732,6 @@ class HostedDocumentService(DocumentService):
                     if not (isinstance(h, dict) and h.get("id") == highlight_id)
                 ]
                 if len(next_list) == len(current):
-                    # No-op: nothing to delete. Return current state without
-                    # bumping the version (idempotent semantics).
                     return {
                         "id": doc_id,
                         "version": row["version"],
@@ -840,20 +762,10 @@ class HostedDocumentService(DocumentService):
         self, conn, doc_id: str,
         old_highlights: list[dict], new_highlights: list[dict],
     ) -> None:
-        """Update affected chunks' annotations_text + has_highlight + content.
-
-        Affected = chunks touched by old highlights ∪ chunks touched by new
-        highlights. The union prevents stale annotations when a highlight is
-        deleted or moves to a different chunk.
-
-        Called inside the highlight CRUD transaction so the chunk write and
-        the documents.highlights write commit atomically.
-        """
-        from services.highlight_chunks import (
-            ChunkRecord,
-            all_affected_chunks,
-            iter_chunks_with_annotations,
-        )
+        """Rewrite annotations on chunks touched by old ∪ new highlights, inside the caller's transaction."""
+        from services.chunk_text_index import ChunkTextIndex
+        from services.highlight_chunks import all_affected_chunks, iter_chunks_with_annotations
+        from services.types import ChunkRecord
 
         rows = await conn.fetch(
             "SELECT id::text AS id, chunk_index, source_content, page, start_char "
@@ -871,11 +783,12 @@ class HostedDocumentService(DocumentService):
             )
             for r in rows
         ]
-        affected = all_affected_chunks(chunks, old_highlights, new_highlights)
+        index = ChunkTextIndex(chunks)
+        affected = all_affected_chunks(index, old_highlights, new_highlights)
         if not affected:
             return
 
-        updates = list(iter_chunks_with_annotations(chunks, affected, new_highlights))
+        updates = list(iter_chunks_with_annotations(index, affected, new_highlights))
         await conn.execute(
             "UPDATE document_chunks c "
             "SET annotations_text = u.annotations_text, has_highlight = u.has_highlight, content = u.content "
@@ -996,141 +909,46 @@ class HostedDocumentService(DocumentService):
         return dict(row)
 
     async def update_metadata(self, doc_id: str, fields: dict) -> dict | None:
-        import json as _json
-
-        sets = []
-        params = []
-        idx = 1
-        for key in ("filename", "path", "title", "date"):
-            if key in fields:
-                sets.append(f"{key} = ${idx}")
-                params.append(fields[key])
-                idx += 1
         if "knowledge_base_id" in fields:
-            sets.append(f"knowledge_base_id = ${idx}")
-            params.append(fields["knowledge_base_id"])
-            idx += 1
-        if "tags" in fields:
-            sets.append(f"tags = ${idx}")
-            params.append(fields["tags"])
-            idx += 1
-        if "metadata" in fields:
-            sets.append(f"metadata = COALESCE(metadata, '{{}}'::jsonb) || ${idx}::jsonb")
-            params.append(_json.dumps(fields["metadata"]))
-            idx += 1
-
-        if not sets:
-            return None
-
-        sets.append("updated_at = now()")
-        params.extend([doc_id, self.user_id])
-        sql = (
-            f"UPDATE documents SET {', '.join(sets)} "
-            f"WHERE id = ${idx} AND user_id = ${idx + 1} "
-            f"RETURNING {_DOC_COLUMNS}"
-        )
-
-        # If we're moving the doc to a different KB, run the doc update +
-        # chunk cascade + reference prune as one transaction. Otherwise,
-        # one-shot update is fine.
-        if "knowledge_base_id" in fields:
-            new_kb_id = fields["knowledge_base_id"]
-
-            # `documents` has UNIQUE(knowledge_base_id, document_number) and
-            # the assignment trigger only fires on INSERT. On a move we have
-            # to compute a fresh document_number for the target KB and bake
-            # it into the UPDATE — otherwise moving doc #N into a KB that
-            # already has #N raises a unique-violation.
-            #
-            # We need to inject `document_number = $X` into `sets` and an
-            # advisory lock around the SELECT MAX/UPDATE pair. Easiest: build
-            # a fresh SQL string that adds the document_number assignment.
-
-            conn = await _acquire_connection(self.pool)
-            try:
-                async with conn.transaction():
-                    # Verify ownership of the target KB INSIDE the
-                    # transaction with FOR SHARE so a concurrent transfer
-                    # can't flip ownership between check and update. The
-                    # FOR SHARE lock blocks competing UPDATE/DELETE on the
-                    # KB row until we commit.
-                    owns_target = await conn.fetchval(
-                        "SELECT 1 FROM knowledge_bases "
-                        "WHERE id = $1 AND user_id = $2 FOR SHARE",
-                        new_kb_id, self.user_id,
-                    )
-                    if not owns_target:
-                        raise HTTPException(
-                            status_code=404,
-                            detail="Target knowledge base not found",
-                        )
-                    # Serialize concurrent moves into the same target KB so
-                    # two simultaneous moves can't pick the same number.
-                    await conn.execute(
-                        "SELECT pg_advisory_xact_lock(hashtext($1::text))",
-                        new_kb_id,
-                    )
-                    next_number = await conn.fetchval(
-                        "SELECT COALESCE(MAX(document_number), 0) + 1 "
-                        "FROM documents WHERE knowledge_base_id = $1",
-                        new_kb_id,
-                    )
-
-                    # Inject document_number into the UPDATE before the
-                    # WHERE/RETURNING tail. The base SQL has the form:
-                    #   UPDATE documents SET <sets>, updated_at = now()
-                    #   WHERE id = $N AND user_id = $N+1
-                    #   RETURNING ...
-                    # We add ", document_number = $K" with a new param.
-                    move_params = list(params)
-                    move_params.insert(idx - 1, next_number)
-                    # The `idx`/`idx+1` tail params are doc_id and user_id;
-                    # bump them by one because we've inserted a param before.
-                    new_idx = idx + 1
-                    move_sets = list(sets)
-                    # `sets` already had updated_at appended; insert the
-                    # document_number assignment before it.
-                    insert_at = len(move_sets) - 1
-                    move_sets.insert(insert_at, f"document_number = ${idx}")
-                    move_sql = (
-                        f"UPDATE documents SET {', '.join(move_sets)} "
-                        f"WHERE id = ${new_idx} AND user_id = ${new_idx + 1} "
-                        f"RETURNING {_DOC_COLUMNS}"
-                    )
-
-                    try:
-                        row = await conn.fetchrow(move_sql, *move_params)
-                    except asyncpg.UniqueViolationError as e:
-                        self._reraise_doc_conflict(e)
-                    if not row:
-                        return None
-                    # Chunks carry their own kb_id for FTS path; cascade.
-                    await conn.execute(
-                        "UPDATE document_chunks SET knowledge_base_id = $1 "
-                        "WHERE document_id = $2",
-                        new_kb_id, doc_id,
-                    )
-                    # References are KB-scoped. Drop edges touching the
-                    # moved doc; the graph rebuilder will re-derive them in
-                    # the new KB on next /graph/rebuild call.
-                    await conn.execute(
-                        "DELETE FROM document_references "
-                        "WHERE source_document_id = $1 OR target_document_id = $1",
-                        doc_id,
-                    )
-            finally:
-                await self.pool.release(conn)
-            return _doc_dict(row)
-
+            return await self._move_document(doc_id, fields)
         try:
-            row = await self.pool.fetchrow(sql, *params)
+            row = await self._update_document_fields(self.pool, doc_id, fields)
         except asyncpg.UniqueViolationError as e:
             self._reraise_doc_conflict(e)
         return _doc_dict(row) if row else None
 
+    async def _move_document(self, doc_id: str, fields: dict) -> dict | None:
+        """Move a document into another owned KB, applying its other metadata changes atomically."""
+        new_kb_id = fields["knowledge_base_id"]
+        conn = await _acquire_connection(self.pool)
+        try:
+            async with conn.transaction():
+                await self._lock_owned_target_kb(conn, new_kb_id)
+                # document_number is unique per KB and assigned only on INSERT, so a move must assign a fresh one.
+                next_number = await self._next_document_number(conn, new_kb_id)
+                try:
+                    row = await self._update_document_fields(
+                        conn, doc_id, {**fields, "document_number": next_number},
+                    )
+                except asyncpg.UniqueViolationError as e:
+                    self._reraise_doc_conflict(e)
+                if not row:
+                    return None
+                await self._repoint_chunks_to_kb(conn, doc_id, new_kb_id)
+                # References are KB-scoped; the next graph rebuild re-derives them in the new KB.
+                await self._delete_document_references(conn, doc_id)
+        finally:
+            await self.pool.release(conn)
+        return _doc_dict(row)
+
+    async def _lock_owned_target_kb(self, conn: asyncpg.Connection, kb_id: str) -> None:
+        """Pin ownership of the target KB and serialize moves into it until commit."""
+        if not await self._select_owned_kb_for_share(conn, kb_id):
+            raise HTTPException(status_code=404, detail="Target knowledge base not found")
+        await self._advisory_xact_lock(conn, kb_id)
+
     async def delete(self, doc_id: str) -> bool:
-        # Wiki pages are archived to preserve slugs and cross-references;
-        # source documents are hard-deleted so the filename can be re-used.
+        # Wiki pages archive to keep slugs/links intact; sources hard-delete so the filename is reusable.
         row = await self.pool.fetchrow(
             "SELECT path FROM documents WHERE id = $1 AND user_id = $2",
             doc_id, self.user_id,
@@ -1194,6 +1012,60 @@ class HostedDocumentService(DocumentService):
             except Exception:
                 logger.exception("S3 purge failed for document %s", doc_id)
 
+    async def _update_document_fields(
+        self, executor: asyncpg.Pool | asyncpg.Connection, doc_id: str, fields: dict,
+    ) -> asyncpg.Record | None:
+        sets: list[str] = []
+        params: list = []
+        for column in _UPDATABLE_DOCUMENT_COLUMNS:
+            if column in fields:
+                params.append(fields[column])
+                sets.append(f"{column} = ${len(params)}")
+        if "metadata" in fields:
+            params.append(json.dumps(fields["metadata"]))
+            sets.append(f"metadata = COALESCE(metadata, '{{}}'::jsonb) || ${len(params)}::jsonb")
+        if not sets:
+            return None
+        params.extend([doc_id, self.user_id])
+        return await executor.fetchrow(
+            f"UPDATE documents SET {', '.join(sets)}, updated_at = now() "
+            f"WHERE id = ${len(params) - 1} AND user_id = ${len(params)} "
+            f"RETURNING {_DOC_COLUMNS}",
+            *params,
+        )
+
+    async def _select_owned_kb_for_share(self, conn: asyncpg.Connection, kb_id: str) -> int | None:
+        # FOR SHARE so a concurrent transfer can't flip target-KB ownership before we commit.
+        return await conn.fetchval(
+            "SELECT 1 FROM knowledge_bases WHERE id = $1 AND user_id = $2 FOR SHARE",
+            kb_id, self.user_id,
+        )
+
+    @staticmethod
+    async def _advisory_xact_lock(conn: asyncpg.Connection, key: str) -> None:
+        await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1::text))", key)
+
+    @staticmethod
+    async def _next_document_number(conn: asyncpg.Connection, kb_id: str) -> int:
+        return await conn.fetchval(
+            "SELECT COALESCE(MAX(document_number), 0) + 1 FROM documents WHERE knowledge_base_id = $1",
+            kb_id,
+        )
+
+    @staticmethod
+    async def _repoint_chunks_to_kb(conn: asyncpg.Connection, doc_id: str, kb_id: str) -> None:
+        await conn.execute(
+            "UPDATE document_chunks SET knowledge_base_id = $1 WHERE document_id = $2",
+            kb_id, doc_id,
+        )
+
+    @staticmethod
+    async def _delete_document_references(conn: asyncpg.Connection, doc_id: str) -> None:
+        await conn.execute(
+            "DELETE FROM document_references WHERE source_document_id = $1 OR target_document_id = $1",
+            doc_id,
+        )
+
 
 class HostedPublicWikiService(PublicWikiService):
     """Anonymous read-only access to wikis with visibility = 'public'."""
@@ -1203,10 +1075,7 @@ class HostedPublicWikiService(PublicWikiService):
         self.s3 = s3
 
     async def get_by_slug(self, slug: str) -> dict | None:
-        # Single LEFT JOIN — visibility, KB metadata, author, and docs all
-        # come from one statement. A flip mid-statement is impossible
-        # (Postgres reads a consistent snapshot), so there's no TOCTOU
-        # window between "is it public" and "what's the content".
+        # One statement reads one snapshot: no TOCTOU between the visibility check and the content.
         rows = await self.pool.fetch(
             "SELECT kb.id::text AS kb_id, kb.user_id::text AS kb_user_id, "
             "       kb.name AS kb_name, kb.description AS kb_description, "

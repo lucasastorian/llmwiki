@@ -39,8 +39,7 @@ describe("extension settings helpers", () => {
     it("matches only on the dot boundary and is case-insensitive", () => {
       expect(isBuiltInDisabledHost("LLMWIKI.APP")).toBe(true);
       expect(isBuiltInDisabledHost("app.llmwiki.app")).toBe(true);
-      // Look-alikes that merely contain or extend the string must NOT match,
-      // or an attacker domain could pose as (or hide from) the app gate.
+      // Look-alike domains must not pose as (or hide from) the app gate.
       expect(isBuiltInDisabledHost("evilllmwiki.app")).toBe(false);
       expect(isBuiltInDisabledHost("notllmwiki.app")).toBe(false);
       expect(isBuiltInDisabledHost("llmwiki.app.evil.com")).toBe(false);

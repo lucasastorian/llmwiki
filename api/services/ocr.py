@@ -12,20 +12,12 @@ from html_parser import Parser
 from services.chunker import chunk_text
 from services.converter_client import ConverterClient
 from services.mistral_ocr_client import MistralOcrClient
-from services.office_local import convert_office_to_pdf
 from services.page_quota import PageQuota
 from services.page_store import PageStore
 from services.s3 import S3Service
 from services.spreadsheet_extract import parse_sheets
 
 logger = logging.getLogger(__name__)
-
-
-def _extract_pdf_in_process(pdf_path: str):
-    """Lazy local-only import; hosted mode must never load the PDF parser."""
-    from services.pdf_extract import extract_pdf
-
-    return extract_pdf(pdf_path)
 
 
 class OCRService:
@@ -75,13 +67,11 @@ class OCRService:
             logger.exception("Processing failed for document %s", document_id)
             await self._mark_failed(document_id, str(e)[:500])
 
-    # ── PDF extraction ────────────────────────────────────────────────────
-
     async def _process_pdf(self, document_id: str, user_id: str, kb_id: str, s3_source_key: str):
         if settings.PDF_BACKEND == "mistral":
             if not settings.MISTRAL_API_KEY:
                 raise ValueError("MISTRAL_API_KEY not configured — cannot process PDFs")
-            # Cheap pre-check: refuse if user is already over quota so we don't burn the Mistral call.
+            # Fail before paying for the Mistral call if already over quota.
             await self._quota.check_user_page_limit(user_id, 1)
             presigned_url = await self._s3.generate_presigned_get(s3_source_key)
             ocr_result = await self._mistral.ocr(presigned_url)
@@ -93,97 +83,17 @@ class OCRService:
                 document_id, user_id, kb_id, extraction.pages, extraction.engine,
             )
         else:
-            if settings.MODE != "local":
-                raise RuntimeError(
-                    "Hosted PDF parsing requires the isolated converter service"
-                )
-            await self._process_opendataloader(document_id, user_id, kb_id, s3_source_key)
+            raise RuntimeError("Hosted PDF parsing requires the isolated converter service")
 
     async def _process_office(self, document_id: str, user_id: str, kb_id: str, s3_source_key: str, ext: str):
-        """Office files go through the converter when available; local mode falls back to LibreOffice."""
-        if settings.CONVERTER_URL:
-            presigned_url = await self._s3.generate_presigned_get(s3_source_key)
-            pdf_upload_url = await self._s3.generate_presigned_put(f"{user_id}/{document_id}/converted.pdf")
-            extraction = await self._converter.extract(presigned_url, ext, pdf_upload_url)
-            await self._pages.store_extracted_pages(
-                document_id, user_id, kb_id, extraction.pages, f"libreoffice+{extraction.engine}",
-            )
-            return
-        if settings.MODE != "local":
-            raise RuntimeError(
-                "Hosted Office parsing requires the isolated converter service"
-            )
-        if settings.PDF_BACKEND == "mistral":
-            if not settings.MISTRAL_API_KEY:
-                raise ValueError("MISTRAL_API_KEY not configured")
-            pdf_key = await self._convert_to_pdf_s3(document_id, user_id, s3_source_key, ext)
-            await self._quota.check_user_page_limit(user_id, 1)
-            presigned_url = await self._s3.generate_presigned_get(pdf_key)
-            ocr_result = await self._mistral.ocr(presigned_url)
-            await self._pages.store_mistral_result(document_id, user_id, kb_id, ocr_result)
-            return
-        await self._process_office_local(document_id, user_id, kb_id, s3_source_key, ext)
-
-    # ── OpenDataLoader local extraction ───────────────────────────────────
-
-    async def _process_opendataloader(self, document_id: str, user_id: str, kb_id: str, s3_source_key: str):
-        """Extract PDF via opendataloader-pdf in local mode only."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            pdf_path = Path(tmpdir) / "source.pdf"
-            await self._s3.download_to_file(s3_source_key, str(pdf_path))
-            pages_with_images = await asyncio.to_thread(
-                _extract_pdf_in_process,
-                str(pdf_path),
-            )
-
-        await self._store_local_extraction(
-            document_id, user_id, kb_id, pages_with_images, "opendataloader",
-        )
-
-    # ── Office local fallback (no converter) ──────────────────────────────
-
-    async def _convert_to_pdf_s3(self, document_id: str, user_id: str, s3_source_key: str, ext: str) -> str:
-        """Convert an Office file to PDF locally and upload it. Returns the PDF's S3 key."""
-        if settings.MODE != "local":
-            raise RuntimeError(
-                "Hosted Office conversion requires the isolated converter service"
-            )
-        pdf_key = f"{user_id}/{document_id}/converted.pdf"
-        with tempfile.TemporaryDirectory() as tmpdir:
-            source_path = Path(tmpdir) / f"source.{ext}"
-            await self._s3.download_to_file(s3_source_key, str(source_path))
-            pdf_path = await convert_office_to_pdf(source_path, tmpdir)
-            await self._s3.upload_file(pdf_key, str(pdf_path), "application/pdf")
-        return pdf_key
-
-    async def _process_office_local(self, document_id: str, user_id: str, kb_id: str, s3_source_key: str, ext: str):
-        """Convert an Office file to PDF locally, then extract with opendataloader."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            source_path = Path(tmpdir) / f"source.{ext}"
-            await self._s3.download_to_file(s3_source_key, str(source_path))
-            pdf_path = await convert_office_to_pdf(source_path, tmpdir)
-            pages_with_images = await asyncio.to_thread(
-                _extract_pdf_in_process,
-                str(pdf_path),
-            )
-
-        await self._store_local_extraction(
-            document_id, user_id, kb_id, pages_with_images, "libreoffice+opendataloader",
-        )
-
-    async def _store_local_extraction(
-        self, document_id: str, user_id: str, kb_id: str,
-        pages_with_images: list[tuple[int, str, list[dict]]], parser: str,
-    ):
-        assets, page_elements = await self._pages.build_pdf_assets(document_id, pages_with_images)
-        page_contents = [(num, md) for num, md, _ in pages_with_images]
+        if not settings.CONVERTER_URL:
+            raise RuntimeError("Hosted Office parsing requires the isolated converter service")
+        presigned_url = await self._s3.generate_presigned_get(s3_source_key)
+        pdf_upload_url = await self._s3.generate_presigned_put(f"{user_id}/{document_id}/converted.pdf")
+        extraction = await self._converter.extract(presigned_url, ext, pdf_upload_url)
         await self._pages.store_extracted_pages(
-            document_id, user_id, kb_id, page_contents, parser,
-            page_elements=page_elements, assets=assets,
+            document_id, user_id, kb_id, extraction.pages, f"libreoffice+{extraction.engine}",
         )
-        await self._pages.upload_assets(user_id, assets)
-
-    # ── HTML processing ───────────────────────────────────────────────────
 
     async def _process_html(self, document_id: str, user_id: str, kb_id: str, s3_source_key: str):
         """Parse HTML with the webmd parser, store markdown + tagged HTML."""
@@ -204,8 +114,6 @@ class OCRService:
         chunks = await asyncio.to_thread(chunk_text, result.content)
         await self._pages.store_html(document_id, user_id, kb_id, result.content, chunks)
 
-    # ── Spreadsheet processing ────────────────────────────────────────────
-
     async def _process_spreadsheet(self, document_id: str, user_id: str, kb_id: str, s3_source_key: str, ext: str):
         with tempfile.TemporaryDirectory() as tmpdir:
             source_path = Path(tmpdir) / f"source.{ext}"
@@ -213,8 +121,6 @@ class OCRService:
             sheets = await asyncio.to_thread(parse_sheets, str(source_path), ext)
 
         await self._pages.store_sheets(document_id, user_id, kb_id, sheets)
-
-    # ── Queries ───────────────────────────────────────────────────────────
 
     async def _fetch_document(self, document_id: str, user_id: str) -> asyncpg.Record | None:
         return await self._pool.fetchrow(

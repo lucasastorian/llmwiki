@@ -1,8 +1,4 @@
-"""WebSocket tenant isolation tests.
-
-Proves that document change events are never leaked across tenants.
-The broadcast key is (user_id, kb_id) — both must match for delivery.
-"""
+"""Document change events are delivered only when both user_id and kb_id match."""
 
 import asyncio
 import json
@@ -28,7 +24,6 @@ _EVENT = {"event": "UPDATE", "id": "doc-123"}
 
 
 class TestBroadcastIsolation:
-    """Unit tests for DocumentWSManager — no DB or HTTP needed."""
 
     @pytest.fixture
     def manager(self):
@@ -69,18 +64,15 @@ class TestBroadcastIsolation:
         ws_kb_b.send_json.assert_not_called()
 
     async def test_subscribing_to_other_users_kb_receives_nothing(self, manager):
-        """Alice subscribes to Bob's KB ID — she should never receive Bob's events."""
         ws_alice = self._mock_ws()
         await manager.connect(USER_A_ID, str(KB_B_ID), ws_alice)
 
-        # Bob's document changes in Bob's KB
         await manager.broadcast(USER_B_ID, str(KB_B_ID), _EVENT)
 
-        # Alice's connection is keyed (user_a, kb_b), event is for (user_b, kb_b) — no match
+        # Alice is keyed (user_a, kb_b); the event is for (user_b, kb_b).
         ws_alice.send_json.assert_not_called()
 
     async def test_bidirectional_isolation(self, manager):
-        """Events for Alice don't reach Bob, and vice versa."""
         ws_alice = self._mock_ws()
         ws_bob = self._mock_ws()
         await manager.connect(USER_A_ID, str(KB_A_ID), ws_alice)
@@ -97,7 +89,6 @@ class TestBroadcastIsolation:
         ws_bob.send_json.assert_not_called()
 
     async def test_multiple_connections_same_tenant(self, manager):
-        """Multiple tabs for the same user+kb all receive the event."""
         ws1 = self._mock_ws()
         ws2 = self._mock_ws()
         await manager.connect(USER_A_ID, str(KB_A_ID), ws1)
@@ -134,7 +125,6 @@ class TestBroadcastIsolation:
 
 
 class TestWebSocketAuth:
-    """Integration tests for WebSocket authentication flow."""
 
     @pytest.fixture
     def ws_client(self):
@@ -163,17 +153,14 @@ class TestWebSocketAuth:
             manager._connections.clear()
 
     def test_valid_token_connects_and_stays_open(self, ws_client):
-        """Valid token should authenticate and keep the connection open."""
         token = make_token(USER_A_ID)
         with ws_client.websocket_connect(f"/v1/ws/documents/{KB_A_ID}") as ws:
             ws.send_text(token)
-            # After auth, the server enters a receive loop. Sending another
-            # message should NOT raise — proving the connection stayed open.
+            # Sending after auth only succeeds if the server kept the connection open.
             ws.send_text("ping")
             ws.close()
 
     def test_invalid_token_rejected_with_4001(self, ws_client):
-        """Garbage token should close the connection with code 4001."""
         from starlette.websockets import WebSocketDisconnect
         with ws_client.websocket_connect(f"/v1/ws/documents/{KB_A_ID}") as ws:
             ws.send_text("garbage-token")
@@ -182,7 +169,6 @@ class TestWebSocketAuth:
             assert exc_info.value.code == 4001
 
     def test_wrong_audience_rejected_with_4001(self, ws_client):
-        """Token with wrong audience should close the connection with code 4001."""
         from starlette.websockets import WebSocketDisconnect
         token = make_token(USER_A_ID, aud="wrong-audience")
         with ws_client.websocket_connect(f"/v1/ws/documents/{KB_A_ID}") as ws:
@@ -192,7 +178,6 @@ class TestWebSocketAuth:
             assert exc_info.value.code == 4001
 
     def test_foreign_kb_rejected_with_4003(self, ws_client):
-        """A valid user cannot register a socket against another user's KB."""
         from starlette.websockets import WebSocketDisconnect
         token = make_token(USER_A_ID)
         with ws_client.websocket_connect(f"/v1/ws/documents/{KB_B_ID}") as ws:
@@ -202,7 +187,6 @@ class TestWebSocketAuth:
             assert exc_info.value.code == 4003
 
     def test_malformed_kb_id_rejected_with_4003(self, ws_client):
-        """Malformed KB ids are rejected before the socket is registered."""
         from starlette.websockets import WebSocketDisconnect
         token = make_token(USER_A_ID)
         with ws_client.websocket_connect("/v1/ws/documents/not-a-uuid") as ws:
@@ -213,11 +197,7 @@ class TestWebSocketAuth:
 
 
 class TestNotifyTriggerPayload:
-    """Verify the Postgres NOTIFY trigger includes correct tenant identifiers.
-
-    Tests the real trigger function (from 003_document_notify.sql) to ensure
-    the payload includes user_id and knowledge_base_id for tenant-scoped routing.
-    """
+    """Exercises the real NOTIFY trigger from 003_document_notify.sql."""
 
     @pytest.fixture
     async def notify_listener(self, pool):
@@ -234,7 +214,6 @@ class TestNotifyTriggerPayload:
         await pool.release(conn)
 
     async def test_insert_trigger_includes_user_id(self, pool, notify_listener):
-        """INSERT into documents fires NOTIFY with correct user_id and kb_id."""
         row = await pool.fetchrow(
             "INSERT INTO documents (knowledge_base_id, user_id, filename, path, "
             "file_type, status, content, version) "
@@ -244,7 +223,6 @@ class TestNotifyTriggerPayload:
         )
         doc_id = row["id"]
 
-        # Give the notification a moment to arrive
         payload = await asyncio.wait_for(notify_listener.get(), timeout=2)
         assert payload["event"] == "INSERT"
         assert payload["id"] == doc_id
@@ -252,7 +230,6 @@ class TestNotifyTriggerPayload:
         assert payload["knowledge_base_id"] == str(KB_A_ID)
 
     async def test_update_trigger_includes_user_id(self, pool, notify_listener):
-        """UPDATE on documents fires NOTIFY with correct user_id and kb_id."""
         from tests.integration.isolation.conftest import DOC_B_ID
         await pool.execute(
             "UPDATE documents SET content = 'updated' WHERE id = $1", DOC_B_ID,
@@ -266,7 +243,6 @@ class TestNotifyTriggerPayload:
 
 
 class TestHandleNotifyRouting:
-    """Verify _handle_notify correctly routes to the broadcast manager."""
 
     async def test_valid_payload_broadcasts_to_correct_scope(self):
         _, _handle_notify = _import_ws()

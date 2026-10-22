@@ -98,7 +98,7 @@ async def test_reconcile_backfills_chunks_for_indexed_text(tmp_path):
     )
     doc_id = await _insert_indexed_text(db, content)
 
-    # Without the fix the file is listed but unsearchable: no chunks, no FTS rows.
+    # A file init only listed has no chunks or FTS rows, so it is unsearchable.
     assert await _chunk_count(db, doc_id) == 0
     assert await _fts_hits(db, "policy") == 0
 

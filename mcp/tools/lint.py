@@ -1,5 +1,3 @@
-"""Lint tool — deterministic hygiene checks for wiki pages and sources."""
-
 from __future__ import annotations
 
 import re
@@ -52,8 +50,6 @@ class LintContext:
 
 
 class LintHandler:
-    """Runs deterministic checks across a knowledge base."""
-
     def __init__(self, fs: VaultFS, kb: dict):
         self.fs = fs
         self.kb = kb
@@ -103,8 +99,6 @@ class LintHandler:
 
         return self._format_report(issues, docs)
 
-    # ----- selection -------------------------------------------------------
-
     def _filter_docs(self, docs: list[dict], path: str, scope: Scope) -> list[dict]:
         if scope == "wiki":
             docs = [d for d in docs if self._is_wiki_page(d)]
@@ -117,8 +111,6 @@ class LintHandler:
             return True
         glob_pat = path if path.startswith("/") else "/" + path
         return glob_match(doc_path, glob_pat)
-
-    # ----- per-page checks -------------------------------------------------
 
     async def _lint_wiki_page(self, doc: dict, ctx: LintContext, include_graph: bool) -> list[LintIssue]:
         path = self._doc_path(doc)
@@ -275,12 +267,8 @@ class LintHandler:
             return []
         return [LintIssue("warn", "orphan-page", self._doc_path(doc), "wiki page has no incoming links or citations")]
 
-    # ----- knowledge-base-wide checks --------------------------------------
-
     async def _lint_kb_wide(self, path: str, scope: Scope) -> list[LintIssue]:
-        """Graph-wide checks. Each issue is kept only when its path matches the
-        run's `path` filter, so narrowing the run narrows these too (rather than
-        silently dropping the check)."""
+        """Graph-wide checks, filtered by the run's `path` so narrowing the run narrows them too."""
         issues: list[LintIssue] = []
         if scope in ("all", "sources"):
             issues.extend(i for i in await self._lint_uncited_sources() if self._path_matches(i.path, path))
@@ -301,8 +289,6 @@ class LintHandler:
             LintIssue("warn", "stale-page", f"{row['path']}{row['filename']}", f"page is stale since {row.get('stale_since') or '?'}")
             for row in rows
         ]
-
-    # ----- report ----------------------------------------------------------
 
     def _format_report(self, issues: list[LintIssue], docs: list[dict]) -> str:
         if not issues:
@@ -332,8 +318,6 @@ class LintHandler:
         if len(issues) > _MAX_ISSUES_PER_GROUP:
             lines.append(f"- ... {len(issues) - _MAX_ISSUES_PER_GROUP} more")
         return lines
-
-    # ----- lookups & helpers ----------------------------------------------
 
     def _source_lookup(self, docs: list[dict]) -> dict[str, dict]:
         lookup: dict[str, dict] = {}
@@ -377,12 +361,7 @@ class LintHandler:
         return [k for k in keys if k]
 
     def _has_mid_document_footnotes(self, content: str) -> bool:
-        """True when a footnote definition is followed by non-footnote prose.
-
-        Uses the same tail-compatibility rule as the write tool's append logic
-        (`_is_footnote_suffix_line`), so "grouped at the end" means the same
-        thing in both places.
-        """
+        """True when a footnote definition is followed by non-footnote prose, using append's tail rule."""
         lines = content.rstrip().splitlines()
         for idx, line in enumerate(lines):
             if _FOOTNOTE_DEF_RE.match(line):

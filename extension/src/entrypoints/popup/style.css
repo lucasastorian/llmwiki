@@ -1,5 +1,9 @@
 @import "tailwindcss";
 
+:root {
+  color-scheme: light;
+}
+
 @keyframes save-check-in {
   0%   { transform: scale(0.4); opacity: 0; }
   60%  { transform: scale(1.18); opacity: 1; }

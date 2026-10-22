@@ -15,8 +15,6 @@ RUN uv pip install --system --require-hashes -r requirements.lock
 RUN pip-audit -r requirements.lock --strict --desc
 COPY . ./converter/
 
-RUN mkdir -p /tmp/conversions && chown converter:converter /tmp/conversions
-
 USER converter
 EXPOSE 8000
 CMD python -m uvicorn converter.main:app --host 0.0.0.0 --port ${PORT:-8000}

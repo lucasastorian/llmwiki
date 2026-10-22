@@ -51,8 +51,7 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =>
       );
     }
 
-    // A popup reopened during an active save gets its own job handle attached
-    // to the same promise rather than launching a duplicate transfer.
+    // A reopened popup attaches a new job id to the in-flight save instead of a duplicate transfer.
     void save
       .then((result) => jobs.set(message.jobId, { state: "success", result }))
       .catch((error: unknown) => {
@@ -97,7 +96,6 @@ function scheduleCleanup(delay: number): void {
       5_000,
       "The background did not close the PDF save context",
     ).catch(() => {
-      // If shutdown failed, continue serving jobs in this still-live context.
       closing = false;
     });
   }, delay);

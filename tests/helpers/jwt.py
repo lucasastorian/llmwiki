@@ -26,11 +26,7 @@ def _expected_issuer() -> str:
 
 
 def seed_jwks_cache():
-    """Pre-seed the auth module's JWKS cache with our test key.
-
-    Also marks the cache as freshly fetched so the staleness/refresh path
-    doesn't try to hit a real Supabase JWKS endpoint during tests.
-    """
+    """Seed the JWKS cache with the test key, marked fresh so no real JWKS fetch happens."""
     import auth
     from jwt.algorithms import ECAlgorithm
     jwk_dict = ECAlgorithm.to_jwk(_public_key, as_dict=True)

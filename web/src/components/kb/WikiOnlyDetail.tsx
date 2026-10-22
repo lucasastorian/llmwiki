@@ -16,119 +16,15 @@ import { apiFetch } from '@/lib/api'
 import { useUserStore } from '@/stores'
 import type { DocumentListItem, WikiNode } from '@/lib/types'
 import {
-  enrichTreeWithProgress, findCurrentLesson, flattenLessons, flattenPages, lessonStatus, resolveWikiHref,
+  enrichTreeWithProgress, findCurrentLesson, findFirstPath, flattenLessons, flattenPages, lessonStatus, resolveWikiHref,
+  wikiRelativePath,
 } from '@/lib/wikiTree'
 import { isOwnWrite } from '@/lib/highlights/ownWrites'
 import { parsePlanTasks, type PlanSummary } from '@/lib/planTasks'
 import { useCourseProgress } from '@/hooks/useCourseProgress'
+import { useWikiTree } from '@/components/kb/kb-detail/useWikiTree'
 
 const isLocal = process.env.NEXT_PUBLIC_MODE === 'local'
-
-function buildTreeFromDocs(docs: DocumentListItem[]): WikiNode[] {
-  const sorted = [...docs].sort((a, b) => (a.sort_order ?? 999) - (b.sort_order ?? 999))
-  const topLevel: Array<{ title: string; path: string; slug: string; docNumber: number | null }> = []
-  const childPages = new Map<string, Array<{ title: string; path: string; docNumber: number | null }>>()
-
-  for (const doc of sorted) {
-    const relative = (doc.path + doc.filename).replace(/^\/wiki\/?/, '')
-    const parts = relative.split('/')
-    const title =
-      doc.title ||
-      parts[parts.length - 1].replace(/\.(md|txt|json)$/, '').replace(/[-_]/g, ' ')
-
-    if (parts.length === 1) {
-      const slug = parts[0].replace(/\.(md|txt|json)$/, '')
-      topLevel.push({ title, path: relative, slug, docNumber: doc.document_number })
-    } else {
-      const folder = parts[0]
-      if (!childPages.has(folder)) childPages.set(folder, [])
-      childPages.get(folder)!.push({ title, path: relative, docNumber: doc.document_number })
-    }
-  }
-
-  const tree: WikiNode[] = []
-  const usedFolders = new Set<string>()
-
-  for (const parent of topLevel) {
-    const children = childPages.get(parent.slug)
-    if (children && children.length > 0) {
-      usedFolders.add(parent.slug)
-      tree.push({
-        title: parent.title,
-        path: parent.path,
-        docNumber: parent.docNumber,
-        children: children.map((c) => ({ title: c.title, path: c.path, docNumber: c.docNumber })),
-      })
-    } else {
-      tree.push({ title: parent.title, path: parent.path, docNumber: parent.docNumber })
-    }
-  }
-
-  for (const [folder, children] of childPages) {
-    if (usedFolders.has(folder)) continue
-    const folderTitle = folder.replace(/[-_]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
-    tree.push({
-      title: folderTitle,
-      children: children.map((c) => ({ title: c.title, path: c.path, docNumber: c.docNumber })),
-    })
-  }
-
-  const slug = (n: WikiNode) => n.path?.replace(/\.(md|txt|json)$/, '').split('/')[0] ?? ''
-  tree.sort((a, b) => {
-    const sa = slug(a), sb = slug(b)
-    if (sa === 'overview') return -1
-    if (sb === 'overview') return 1
-    if (sa === 'plan') return -1
-    if (sb === 'plan') return 1
-    if (sa === 'log') return 1
-    if (sb === 'log') return -1
-    return a.title.localeCompare(b.title)
-  })
-
-  return tree
-}
-
-function enrichTreeWithDocNumbers(tree: WikiNode[], docs: DocumentListItem[]): WikiNode[] {
-  const pathToDocNumber = new Map<string, number | null>()
-  for (const doc of docs) {
-    const relative = (doc.path + doc.filename).replace(/^\/wiki\/?/, '')
-    pathToDocNumber.set(relative, doc.document_number)
-  }
-  function enrich(nodes: WikiNode[]): WikiNode[] {
-    return nodes.map((node) => ({
-      ...node,
-      docNumber: node.path ? (pathToDocNumber.get(node.path) ?? null) : null,
-      children: node.children ? enrich(node.children) : undefined,
-    }))
-  }
-  return enrich(tree)
-}
-
-// index.json keeps listing pages after they're deleted (the agent syncs it
-// lazily); drop tree entries whose document no longer exists.
-function pruneMissingPages(nodes: WikiNode[], existing: Set<string>): WikiNode[] {
-  const pruned: WikiNode[] = []
-  for (const node of nodes) {
-    const children = node.children ? pruneMissingPages(node.children, existing) : undefined
-    if (node.path && !existing.has(node.path)) {
-      if (children?.length) pruned.push({ ...node, path: undefined, docNumber: null, children })
-      continue
-    }
-    pruned.push({ ...node, children })
-  }
-  return pruned
-}
-
-function findFirstPath(nodes: WikiNode[]): { path: string; docNumber: number | null } | null {
-  for (const node of nodes) {
-    if (node.path) return { path: node.path, docNumber: node.docNumber ?? null }
-    if (node.children) {
-      const found = findFirstPath(node.children)
-      if (found) return found
-    }
-  }
-  return null
-}
 
 export function WikiOnlyDetail({
   kbId,
@@ -167,24 +63,14 @@ export function WikiOnlyDetail({
     () => documents.filter((d) => !d.path.startsWith('/wiki/') && !d.archived),
     [documents],
   )
-  const wikiPathSet = React.useMemo(() => {
-    const set = new Set<string>()
-    for (const d of wikiDocs) {
-      set.add((d.path + d.filename).replace(/^\/wiki\/?/, ''))
-    }
-    return set
-  }, [wikiDocs])
+  const wikiPathSet = React.useMemo(() => new Set(wikiDocs.map(wikiRelativePath)), [wikiDocs])
 
   const pParam = searchParams.get('p')
   const urlWikiDocNumber = pParam ? parseInt(pParam, 10) : null
   const [wikiActivePath, setWikiActivePath] = React.useState<string | null>(null)
   const handledUrlDocNumberRef = React.useRef<number | null>(null)
 
-  // Applies ?p= to the active path exactly once per URL value (deep links, back/forward).
-  // `documents` churns constantly (WS/poll, optimistic course-progress writes) — re-running
-  // on churn would re-assert a stale URL and snap in-app navigation back. useSearchParams
-  // also lags our own history.replaceState writes, so a churn-triggered run can observe the
-  // pre-navigation ?p= — trust only values that match the live URL.
+  // Once per URL value: `documents` churn plus useSearchParams lagging replaceState would snap navigation back.
   React.useEffect(() => {
     if (urlWikiDocNumber == null || !documents.length) return
     if (urlWikiDocNumber === handledUrlDocNumberRef.current) return
@@ -199,7 +85,7 @@ export function WikiOnlyDetail({
       return
     }
     handledUrlDocNumberRef.current = urlWikiDocNumber
-    setWikiActivePath((doc.path + doc.filename).replace(/^\/wiki\/?/, ''))
+    setWikiActivePath(wikiRelativePath(doc))
   }, [courseMode, documents, updateParam, urlWikiDocNumber])
 
   // Browser back/forward can return from a page deep link to the wiki root.
@@ -210,48 +96,7 @@ export function WikiOnlyDetail({
     setWikiActivePath(null)
   }, [courseMode, urlWikiDocNumber])
 
-  const indexDoc = wikiDocs.find((d) => d.filename === 'index.json' && d.path === '/wiki/')
-  const scaffoldFiles = React.useMemo(() => new Set(['index.json', 'overview.md', 'log.md']), [])
-  const hasNavigableWiki = React.useMemo(
-    () => wikiDocs.some((d) => d.path === '/wiki/' ? !scaffoldFiles.has(d.filename) : true),
-    [wikiDocs, scaffoldFiles],
-  )
-  const [wikiTree, setWikiTree] = React.useState<WikiNode[]>([])
-  const [indexLoaded, setIndexLoaded] = React.useState(false)
-  // Fingerprint of every field the tree is built from — `wikiDocs` itself gets
-  // a new identity on any websocket churn (highlight saves bump versions) and
-  // would refetch index.json on every event.
-  const wikiTreeFingerprint = React.useMemo(
-    () => wikiDocs.map((d) => [d.id, d.path, d.filename, d.title, d.document_number, d.sort_order].join(':')).join('|'),
-    [wikiDocs],
-  )
-
-  React.useEffect(() => {
-    let cancelled = false
-    setIndexLoaded(false)
-    if (indexDoc && token) {
-      apiFetch<{ content: string }>(`/v1/documents/${indexDoc.id}/content`, token)
-        .then((res) => {
-          if (cancelled) return
-          try {
-            const parsed = JSON.parse(res.content)
-            setWikiTree(enrichTreeWithDocNumbers(parsed.tree || [], wikiDocs))
-          } catch {
-            setWikiTree(buildTreeFromDocs(wikiDocs.filter((d) => d.id !== indexDoc.id)))
-          }
-          setIndexLoaded(true)
-        })
-        .catch(() => {
-          if (cancelled) return
-          setWikiTree(buildTreeFromDocs(wikiDocs.filter((d) => d.id !== indexDoc.id)))
-          setIndexLoaded(true)
-        })
-    } else {
-      setWikiTree(buildTreeFromDocs(wikiDocs))
-      setIndexLoaded(true)
-    }
-    return () => { cancelled = true }
-  }, [indexDoc?.id, indexDoc?.version, token, wikiTreeFingerprint])
+  const { wikiTree, indexLoaded, hasNavigableWiki } = useWikiTree(wikiDocs, token)
 
   const planDoc = React.useMemo(
     () => wikiDocs.find((d) => d.path === '/wiki/' && d.filename === 'plan.md') ?? null,
@@ -275,20 +120,15 @@ export function WikiOnlyDetail({
     return () => { cancelled = true }
   }, [courseMode, planDoc?.id, planDoc?.version, token])
 
-  const prunedTree = React.useMemo(
-    () => (loading ? wikiTree : pruneMissingPages(wikiTree, wikiPathSet)),
-    [loading, wikiTree, wikiPathSet],
-  )
-
   React.useEffect(() => {
-    if (courseMode && indexLoaded && !wikiActivePath && urlWikiDocNumber == null && prunedTree.length && !loading) {
-      const first = findFirstPath(prunedTree)
+    if (courseMode && indexLoaded && !wikiActivePath && urlWikiDocNumber == null && wikiTree.length && !loading) {
+      const first = findFirstPath(wikiTree)
       if (first) {
         setWikiActivePath(first.path)
         if (first.docNumber != null) updateParam('p', String(first.docNumber))
       }
     }
-  }, [courseMode, indexLoaded, prunedTree, wikiActivePath, urlWikiDocNumber, loading, updateParam])
+  }, [courseMode, indexLoaded, wikiTree, wikiActivePath, urlWikiDocNumber, loading, updateParam])
 
   const [pageContent, setPageContent] = React.useState('')
   const [pageTitle, setPageTitle] = React.useState('')
@@ -297,16 +137,15 @@ export function WikiOnlyDetail({
 
   const activeWikiDoc = React.useMemo(() => {
     if (!wikiActivePath) return null
-    return wikiDocs.find((d) => (d.path + d.filename).replace(/^\/wiki\/?/, '') === wikiActivePath) ?? null
+    return wikiDocs.find((d) => wikiRelativePath(d) === wikiActivePath) ?? null
   }, [wikiActivePath, wikiDocs])
 
   const activeWikiVersion = activeWikiDoc?.version ?? -1
   const activeWikiDocId = activeWikiDoc?.id ?? null
 
-  // ─── Course progress (derived from the lessons' metadata.course.status) ─────
   const displayTree = React.useMemo(
-    () => (courseMode ? enrichTreeWithProgress(prunedTree, wikiDocs) : prunedTree),
-    [courseMode, prunedTree, wikiDocs],
+    () => (courseMode ? enrichTreeWithProgress(wikiTree, wikiDocs) : wikiTree),
+    [courseMode, wikiTree, wikiDocs],
   )
   const lessons = React.useMemo(() => (courseMode ? flattenLessons(displayTree) : []), [courseMode, displayTree])
   const completedCount = React.useMemo(() => lessons.filter((l) => l.status === 'complete').length, [lessons])
@@ -316,7 +155,7 @@ export function WikiOnlyDetail({
   )
   const overviewLesson = React.useMemo(() => {
     if (!courseMode) return null
-    const doc = wikiDocs.find((d) => (d.path + d.filename).replace(/^\/wiki\/?/, '') === 'overview.md')
+    const doc = wikiDocs.find((d) => wikiRelativePath(d) === 'overview.md')
     return doc ? { title: doc.title || 'Overview', path: 'overview.md' } : null
   }, [courseMode, wikiDocs])
 
@@ -340,7 +179,6 @@ export function WikiOnlyDetail({
     return overviewLesson
   }, [activeLessonIdx, lessons, overviewLesson])
 
-  // The forward control: the next lesson, or "Finish" on the last lesson (returns to the hub).
   const forward = React.useMemo(() => {
     if (activeLessonIdx < 0) return null
     const next = lessons[activeLessonIdx + 1]
@@ -353,7 +191,6 @@ export function WikiOnlyDetail({
     return target?.path ? { title: target.title, path: target.path } : null
   }, [courseMode, displayTree, lessons])
 
-  // ─── Wiki pager (course mode has its own lesson pager) ──────────────────────
   const pagerNeighbors = React.useMemo(() => {
     if (courseMode || !wikiActivePath) return { prev: null, next: null }
     const pages = flattenPages(displayTree)
@@ -377,8 +214,7 @@ export function WikiOnlyDetail({
     }
     setPageTitle(activeWikiDoc.title || activeWikiDoc.filename.replace(/\.(md|txt)$/, ''))
     const isLiveUpdate = pageLoadedPath === wikiActivePath
-    // Highlight saves bump the doc version without changing content; skip the
-    // refetch when the bump came from this tab's own write.
+    // Highlight saves bump the version without changing content.
     if (isLiveUpdate && isOwnWrite(activeWikiDoc.id, activeWikiDoc.version)) return
     if (!isLiveUpdate) {
       setPageLoading(true)
@@ -403,11 +239,10 @@ export function WikiOnlyDetail({
 
   const handleWikiSelect = React.useCallback((path: string, docNumber?: number | null) => {
     setWikiActivePath(path)
-    const num = docNumber ?? wikiDocs.find((d) => (d.path + d.filename).replace(/^\/wiki\/?/, '') === path)?.document_number ?? null
+    const num = docNumber ?? wikiDocs.find((d) => wikiRelativePath(d) === path)?.document_number ?? null
     if (num != null) {
       // Our own URL write — mark handled so the sync effect never re-applies it.
       handledUrlDocNumberRef.current = num
-      // pushState so each page is a back-button stop.
       updateParam('p', String(num), 'push')
     }
   }, [updateParam, wikiDocs])
@@ -418,8 +253,7 @@ export function WikiOnlyDetail({
     updateParam('p', null, 'push')
   }, [updateParam])
 
-  // Advancing completes the lesson being read (locks are a progression cue, not
-  // enforcement — a deep-linked read still counts) and moves to the next.
+  // Locks are a progression cue, not enforcement, so a deep-linked read still completes.
   const handleForward = React.useCallback(() => {
     if (!forward) return
     if (activeWikiDoc && lessonStatus(activeWikiDoc) !== 'complete') {
@@ -435,7 +269,6 @@ export function WikiOnlyDetail({
     [handleWikiSelect, wikiActivePath, wikiPathSet],
   )
 
-  // ─── Page deletion (structural pages are protected, like the MCP delete tool) ─
   const [confirmingDelete, setConfirmingDelete] = React.useState(false)
   const rootRef = React.useRef<HTMLDivElement>(null)
 
@@ -464,7 +297,6 @@ export function WikiOnlyDetail({
       handleWikiSelect(target.path)
       return
     }
-    // No neighbor (course mode or last page) — let the default pick take over.
     setWikiActivePath(null)
     updateParam('p', null)
   }, [activeWikiDoc, token, pagerNeighbors, setDocuments, handleWikiSelect, updateParam])

@@ -4,7 +4,7 @@ import asyncpg
 class ScopedDB:
     __slots__ = ("_conn", "_user_id")
 
-    def __init__(self, pool: asyncpg.Pool, conn: asyncpg.Connection, user_id: str):
+    def __init__(self, conn: asyncpg.Connection, user_id: str):
         assert user_id
         self._conn = conn
         self._user_id = user_id

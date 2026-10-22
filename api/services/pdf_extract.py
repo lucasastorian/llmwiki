@@ -1,8 +1,4 @@
-"""PDF extraction via opendataloader-pdf.
-
-Shared module used by both the hosted OCR service and the local processor.
-No server-specific dependencies (no asyncpg, S3, httpx).
-"""
+"""PDF extraction via opendataloader-pdf, kept free of server dependencies (asyncpg, S3, httpx)."""
 
 import base64
 import json
@@ -122,7 +118,7 @@ def _element_to_markdown(el: dict, depth: int = 0) -> str:
         return _text_block_to_markdown(el, depth)
 
     if t == "image":
-        # Don't include the data URI in markdown — images are stored separately
+        # Images are stored separately, never inlined as data URIs.
         return ""
 
     if t == "caption":
@@ -149,11 +145,7 @@ def _parse_data_uri(data_uri: str) -> tuple[bytes, str] | None:
 def _elements_to_pages(
     elements: list[dict], total_pages: int,
 ) -> list[tuple[int, str, list[dict]]]:
-    """Group JSON elements by page number and reconstruct markdown per page.
-
-    Returns a list of (page_num, markdown, images) for every page up to total_pages.
-    Each image dict has: {"id": str, "bytes": bytes, "format": str}
-    """
+    """Rebuild (page_num, markdown, images) for every page up to total_pages."""
     if not isinstance(total_pages, int) or total_pages < 0:
         total_pages = 0
     total_pages = min(total_pages, MAX_EXTRACT_PAGES)
@@ -244,13 +236,7 @@ def _run_extractor(pdf_path: str, output_dir: str) -> None:
 
 
 def extract_pdf(pdf_path: str) -> list[tuple[int, str, list[dict]]]:
-    """Run opendataloader-pdf and return per-page markdown with images.
-
-    Returns list of (page_num, markdown, images) where images is a list of
-    {"id": str, "bytes": bytes, "format": str} dicts.
-
-    Raises RuntimeError if extraction fails (Java missing, corrupt PDF, etc.).
-    """
+    """Return per-page (page_num, markdown, images); raises RuntimeError if extraction fails."""
     try:
         with tempfile.TemporaryDirectory() as extract_dir:
             _run_extractor(pdf_path, extract_dir)

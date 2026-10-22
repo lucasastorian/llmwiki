@@ -3,21 +3,57 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
-import logging
 import re
-from urllib.parse import urljoin
+from collections.abc import Iterator
+from html import unescape
+from itertools import groupby
+from urllib.parse import urljoin, urlsplit
 
-from bs4 import BeautifulSoup, Comment
-from bs4.element import NavigableString, Tag
+from bs4 import BeautifulSoup
+from bs4.element import NavigableString, PageElement, PreformattedString, Tag
 from infra import safe_fetch
 
+from .dom import remove_elements
 from .forms import FormExtractor
-from .models import Element, Image, MappedHighlight, ParseResult, TextAnchor
-
-logger = logging.getLogger(__name__)
+from .helpers import (
+    JS_WHITESPACE,
+    can_close_emphasis,
+    can_open_emphasis,
+    code_fence,
+    escape_line_continuation,
+    escape_markdown_text,
+    from_utf16_units,
+    inline_code,
+    is_ambiguous_delimiter,
+    is_pending_ordinal,
+    parse_inline_style,
+    replace_lone_surrogates,
+    to_utf16_units,
+)
+from .models import (
+    AnchorHaystack,
+    Element,
+    ElementKind,
+    EmphasisFrame,
+    Image,
+    MappedHighlight,
+    ParseResult,
+    TablePlacement,
+    TextAnchor,
+)
+from .parse_limit_exceeded_error import ParseLimitExceededError
+from .plaintext_builder import BLOCK_SEPARATOR, CELL_SEPARATOR, LIST_SEPARATOR, PlaintextBuilder
+from .table_layout import place_cells
 
 MAX_TABLE_SPAN = 1000
 MAX_TABLE_CELLS = 100_000
+# Deeper subtrees are flattened to text blocks so both recursive walkers stay well inside Python's recursion limit.
+MAX_RENDER_DEPTH = 128
+# Quotes and lists re-prefix every line of their content per level, so their nesting is capped far lower.
+MAX_BLOCK_NESTING = 32
+# Cumulative cap on rendered characters (text, destinations, indents, resolved URLs), so amplification cannot run away.
+MAX_OUTPUT_CHARS = 20_000_000
+MIN_CONTENT_ONLY_PLAINTEXT = 200
 
 
 BLOCK_TAGS = {
@@ -32,11 +68,11 @@ ITALIC_TAGS = {"i", "em"}
 
 REMOVE_TAGS = {
     "script", "style", "noscript", "svg", "iframe", "canvas",
-    "video", "audio", "map", "object", "embed",
+    "video", "audio", "map", "object", "embed", "template",
 }
 
 SANITIZE_DROP_TAGS = REMOVE_TAGS | {
-    "base", "link", "meta", "template",
+    "base", "link", "meta",
 }
 
 SANITIZE_GLOBAL_ATTRS = {
@@ -63,6 +99,8 @@ SANITIZE_ATTRS_BY_TAG = {
     "ul": {"type"},
 }
 
+LINK_SCHEMES = {"http", "https", "mailto"}
+
 SANITIZE_URL_ATTRS = {"href", "src", "cite"}
 SANITIZE_ALLOWED_URL_SCHEMES = {"http", "https", "mailto", "tel"}
 SANITIZE_ALLOWED_DATA_IMAGE_TYPES = {
@@ -73,14 +111,15 @@ NOISE_TAGS = {"nav", "footer", "aside"}
 
 NOISE_CLASSES = {
     "sidebar", "navigation", "nav", "menu", "footer", "header",
-    "advertisement", "ad", "ads", "banner", "cookie", "popup",
+    "advertisement", "ad", "ads", "cookie", "popup",
     "modal", "overlay", "social", "share", "comment", "comments",
     "related", "recommended", "trending", "popular",
+    "navbar", "mobile-nav", "dropdown-menu", "mega-menu", "w-nav",
 }
 
 NOISE_IDS = {
     "sidebar", "navigation", "nav", "menu", "footer", "header",
-    "comments", "ad", "ads", "banner",
+    "comments", "ad", "ads",
 }
 
 TRACKED_BLOCKS = {
@@ -88,14 +127,58 @@ TRACKED_BLOCKS = {
     "p", "table", "ul", "ol", "blockquote", "pre", "form",
 }
 
+HEADING_TAGS = {"h1", "h2", "h3", "h4", "h5", "h6"}
+FORM_FIELD_TAGS = {"input", "button", "select", "textarea"}
+CELL_FLATTENED_TAGS = (TRACKED_BLOCKS | BLOCK_TAGS | {"tr", "td", "th"}) - {"br", "pre"}
+FLATTEN_BOUNDARY_TAGS = TRACKED_BLOCKS | BLOCK_TAGS | {"li", "tr", "td", "th"}
+# Walkers only read these through their row/item children, so a flattened one must stop being one.
+STRUCTURAL_CONTAINER_TAGS = {"ul", "ol", "table", "thead", "tbody", "tfoot", "tr"}
+PREFIXING_CONTAINER_TAGS = {"blockquote", "ul", "ol"}
+TABLE_CELL_TAGS = {"td", "th"}
+TABLE_PART_TAGS = {"thead", "tbody", "tfoot", "tr", "td", "th", "caption", "colgroup", "col"}
+NOISE_HEADER_HEADINGS = {"h1", "h2"}
+
+# In-band markers resolved by _normalize_output; _clean_text scrubs them from source text.
+HARD_BREAK = "\x00"
+INDENT = "\x02"
+CODE_MARK = "\x03"
+IMAGE_EDGE = "\x05"
+EMPHASIS_OPEN = "\x06"
+EMPHASIS_CLOSE = "\x07"
+INLINE_CODE_MARK = "\x08"
+
 _ws = re.compile(r"[ \t]+")
-_newlines = re.compile(r"\n{3,}")
+_html_ws = re.compile(r"[ \t\n\r\f]+")
+_control_chars = re.compile(r"[\x00-\x08\x0b\x0e-\x1f\x7f-\x9f]")
+_inline_ws_chars = JS_WHITESPACE.replace("\n", "")
+# The lookbehinds pin each match to the start of its run; without them every position of a long run is retried.
+_hard_break_run = re.compile(
+    f"(?<![{_inline_ws_chars}{HARD_BREAK}])[{_inline_ws_chars}{HARD_BREAK}]*{HARD_BREAK}[{_inline_ws_chars}{HARD_BREAK}]*"
+)
+_edge_hard_break = re.compile(f"{HARD_BREAK}(?=\n|$)|(?<=\n){HARD_BREAK}|^{HARD_BREAK}")
+_image_edge = re.compile(f"(?<![{_inline_ws_chars}])[{_inline_ws_chars}]*{IMAGE_EDGE}[{_inline_ws_chars}]*")
+_line_prefix = re.compile(f"[{INDENT}> \t]*")
+_blank_runs = re.compile(r"\n{3,}")
+_code_placeholder = re.compile(f"{CODE_MARK}(\\d+){CODE_MARK}")
+_inline_code_run = re.compile(f"(?:{INLINE_CODE_MARK}\\d+{INLINE_CODE_MARK})+")
+_emphasis_marker = re.compile(f"[{EMPHASIS_OPEN}{EMPHASIS_CLOSE}]")
+_heading_closing_hashes = re.compile(r"(\s)(#+)$")
+# Viewer headings stop at h3, so deeper ATX headings render as paragraphs.
+_non_paragraph_start = re.compile(f"(?:{EMPHASIS_OPEN}\\*{{1,3}})*(?:#{{1,3}} |{CODE_MARK}|[-+*] |\\d+[.)] |\\||>|---(?:\n|$)|!\\[|\\[!\\[)")
+_unsafe_link_destination = re.compile(r"[\s()<>]")
+_url_noise = re.compile(r"[\x00-\x20\x7f]")
+_url_scheme = re.compile(r"([A-Za-z][A-Za-z0-9+.\-]*):")
+# markdown-it decodes these entity forms inside link destinations.
+_destination_entity = re.compile(r"&(?=[A-Za-z#][A-Za-z0-9]{1,31};)")
+_js_ws_run = re.compile(f"[{JS_WHITESPACE}]+")
+_xml_declaration = re.compile(r"^\s*<\?xml[^>]*>")
 
 
 class Parser:
 
     def __init__(self, content: str, url: str = "", content_only: bool = False):
-        self.soup = BeautifulSoup(content, "lxml")
+        self._content = self._repair_markup(content)
+        self.soup = BeautifulSoup(self._content, "lxml")
         self.url = url
         self.content_only = content_only
         self.images: list[Image] = []
@@ -104,11 +187,184 @@ class Parser:
         self._suppress_tracking: bool = False
         self._block_nodes: dict[str, list[Tag]] = {}
         self._parsed: bool = False
-        self._remove_noise()
+        self._is_line_start: bool = True
+        self._line_start_digits: str = ""
+        self._is_in_heading: bool = False
+        self._is_in_table_cell: bool = False
+        self._code_blocks: list[str] = []
+        self._inline_codes: list[str] = []
+        self._rendered_form_ids: set[int] = set()
+        self._hoisted_list_item_ids: set[int] = set()
+        self._atx_heading_ids: set[int] = set()
+        self._is_in_link: bool = False
+        self._list_depth: int = 0
+        self._lists_started_by_depth: dict[int, int] = {}
+        self._styles: dict[int, dict[str, str]] = {}
+        self._table_placements: dict[int, TablePlacement] = {}
+        self._output_chars: int = 0
+        self._prepare_dom()
+
+    @staticmethod
+    def _repair_markup(content: str) -> str:
+        """Drop a leading XML declaration (which trips bs4's XML sniffing) and unencodable lone surrogates."""
+        return replace_lone_surrogates(_xml_declaration.sub("", content, count=1))
+
+    def _prepare_dom(self) -> None:
+        """Filter, bound and index the tree once, so both walkers read the same final DOM."""
+        self._remove_unrendered()
+        self._flatten_deep_subtrees()
+        self._place_table_cells()
+        self._index_elements()
+
+    def _remove_unrendered(self) -> None:
+        """Physically drop what no reader sees (non-content, hidden, content-only noise), so no handler can leak it."""
+        remove_elements([node for node in self.soup.descendants if self._is_unrendered(node)])
+        if self.content_only:
+            self._remove_noise()
+
+    def _remove_noise(self) -> None:
+        """Judged on the visible tree only, so a heading hidden inside a site header does not make it an article header."""
+        heading_holder_ids = self._heading_holder_ids()
+        remove_elements([
+            node for node in self.soup.descendants if isinstance(node, Tag) and self._is_noise(node, heading_holder_ids)
+        ])
+
+    def _heading_holder_ids(self) -> set[int]:
+        """Ids of elements with an h1/h2 descendant, found in one bottom-up sweep instead of a find() per element."""
+        holder_ids: set[int] = set()
+        tags = [node for node in self.soup.descendants if isinstance(node, Tag)]
+        for tag in reversed(tags):
+            if tag.name in NOISE_HEADER_HEADINGS or id(tag) in holder_ids:
+                holder_ids.add(id(tag.parent))
+        return holder_ids
+
+    def _is_unrendered(self, node: PageElement) -> bool:
+        if isinstance(node, PreformattedString):
+            return True
+        if not isinstance(node, Tag):
+            return False
+        if node.name in REMOVE_TAGS:
+            return True
+        declarations = parse_inline_style(str(node["style"])) if node.has_attr("style") else {}
+        return self._is_hidden(node, declarations)
+
+    def _flatten_deep_subtrees(self) -> None:
+        for subtree in self._subtrees_too_deep():
+            self._flatten_subtree(subtree)
+
+    def _subtrees_too_deep(self) -> list[Tag]:
+        """Outermost subtrees past the render depth or the quote/list nesting cap; a table cut mid-structure goes whole."""
+        subtrees: dict[int, Tag] = {}
+        stack: list[tuple[Tag, int, int]] = [(self.soup, 0, 0)]
+        while stack:
+            tag, depth, nesting = stack.pop()
+            for child in tag.children:
+                if not isinstance(child, Tag):
+                    continue
+                child_nesting = nesting + (child.name in PREFIXING_CONTAINER_TAGS)
+                if depth + 1 >= MAX_RENDER_DEPTH or child_nesting > MAX_BLOCK_NESTING:
+                    subtree = self._flattening_root(child)
+                    subtrees[id(subtree)] = subtree
+                else:
+                    stack.append((child, depth + 1, child_nesting))
+        return list(subtrees.values())
+
+    @staticmethod
+    def _flattening_root(cutoff: Tag) -> Tag:
+        """The owning table when the cut lands on its rows or cells, since walkers only read a table through them."""
+        root = cutoff
+        while root.name in TABLE_PART_TAGS and isinstance(root.parent, Tag):
+            root = root.parent
+        return root if root.name == "table" else cutoff
+
+    def _flatten_subtree(self, subtree: Tag) -> None:
+        """Replace a too-deep subtree's content with one flat block per text run, keeping images."""
+        blocks = self._flattened_blocks(subtree)
+        remove_elements(list(subtree.contents))
+        if subtree.name in STRUCTURAL_CONTAINER_TAGS:
+            subtree.name = "div"
+        for block in blocks:
+            container = self.soup.new_tag("div")
+            for is_text, parts in groupby(block, key=lambda part: isinstance(part, str)):
+                if is_text:
+                    container.append(self.soup.new_string("".join(parts)))
+                else:
+                    container.extend(parts)
+            subtree.append(container)
+
+    def _flattened_blocks(self, subtree: Tag) -> list[list[str | Tag]]:
+        """Text runs and image copies of a subtree, split wherever a block starts or ends."""
+        blocks: list[list[str | Tag]] = [[]]
+        stack: list[tuple[PageElement, bool]] = [(child, False) for child in reversed(subtree.contents)]
+        while stack:
+            node, is_block_end = stack.pop()
+            if is_block_end:
+                blocks.append([])
+            elif isinstance(node, NavigableString):
+                blocks[-1].append(str(node))
+            elif isinstance(node, Tag):
+                self._push_flattened_tag(node, blocks, stack)
+        return [block for block in blocks if any(not isinstance(part, str) or part.strip() for part in block)]
+
+    def _push_flattened_tag(
+        self, node: Tag, blocks: list[list[str | Tag]], stack: list[tuple[PageElement, bool]],
+    ) -> None:
+        if node.name == "img":
+            blocks[-1].append(self.soup.new_tag("img", attrs=dict(node.attrs)))
+            return
+        if node.name in FLATTEN_BOUNDARY_TAGS:
+            blocks.append([])
+            stack.append((node, True))
+        stack.extend((child, False) for child in reversed(node.contents))
+
+    def _place_table_cells(self) -> None:
+        """Lay out every table once; one whose spanned grid would exceed the cell budget becomes a block per cell."""
+        tables = [node for node in self.soup.descendants if isinstance(node, Tag) and node.name == "table"]
+        for table in tables:
+            rows = self._table_rows(table)
+            placement = place_cells([[self._cell_spans(cell) for cell in row] for row in rows], MAX_TABLE_CELLS)
+            if placement:
+                self._table_placements[id(table)] = placement
+            else:
+                self._convert_to_blocks([table, *(cell for row in rows for cell in row)])
+
+    @staticmethod
+    def _convert_to_blocks(tags: list[Tag]) -> None:
+        for tag in tags:
+            tag.name = "div"
+
+    def _index_elements(self) -> None:
+        """Scrub control chars from attributes and parse inline styles."""
+        for tag in self.soup.descendants:
+            if not isinstance(tag, Tag):
+                continue
+            self._scrub_attributes(tag)
+            declarations = parse_inline_style(str(tag["style"])) if tag.has_attr("style") else {}
+            if declarations:
+                self._styles[id(tag)] = declarations
+
+    @staticmethod
+    def _scrub_attributes(tag: Tag) -> None:
+        """Attribute values feed URLs, alt text and labels; the in-band markers must never come from them."""
+        for name, value in tag.attrs.items():
+            if isinstance(value, str):
+                if _control_chars.search(value):
+                    tag.attrs[name] = _control_chars.sub("", value)
+            elif any(_control_chars.search(item) for item in value):
+                tag.attrs[name] = [_control_chars.sub("", item) for item in value]
 
     def _resolve_url(self, src: str) -> str:
+        """`src` made absolute against the page URL, or "" when it does not parse as a URL."""
         if not src:
             return ""
+        try:
+            resolved = self._join_url(src)
+            urlsplit(resolved)
+        except ValueError:
+            return ""
+        return resolved
+
+    def _join_url(self, src: str) -> str:
         if src.startswith("//"):
             return "https:" + src
         if src.startswith(("http://", "https://", "data:")):
@@ -117,49 +373,28 @@ class Parser:
             return urljoin(self.url, src)
         return src
 
-    def _remove_noise(self) -> None:
-        for tag_name in REMOVE_TAGS:
-            for tag in self.soup.find_all(tag_name):
-                tag.decompose()
-
-        for tag in self.soup.find_all(style=re.compile(r'display\s*:\s*none', re.I)):
-            tag.decompose()
-
-        for comment in self.soup.find_all(string=lambda t: isinstance(t, Comment)):
-            comment.extract()
-
-        if self.content_only:
-            to_remove = [
-                tag for tag in self.soup.find_all(["nav", "footer", "aside", "header"])
-                if tag.parent is not None and self._is_noise(tag)
-            ]
-            for tag in to_remove:
-                tag.decompose()
-
     @staticmethod
-    def _is_hidden(el: Tag) -> bool:
-        if not isinstance(el, Tag):
-            return False
-
-        if el.has_attr("hidden"):
+    def _is_hidden(el: Tag, declarations: dict[str, str]) -> bool:
+        if el.has_attr("hidden") and not Parser._is_react_streamed_segment(el):
             return True
 
         if el.get("aria-hidden") == "true":
             return True
 
-        style = (el.get("style") or "").lower().replace(" ", "")
-        return "display:none" in style or "visibility:hidden" in style
+        return declarations.get("display") == "none" or declarations.get("visibility") == "hidden"
 
     @staticmethod
-    def _is_noise(el: Tag) -> bool:
-        if not isinstance(el, Tag):
-            return False
+    def _is_react_streamed_segment(el: Tag) -> bool:
+        """React streaming SSR parks finished content in `<div hidden id="S:n">` until a script swaps it in."""
+        return el.name == "div" and str(el.get("id", "")).startswith("S:")
 
+    @staticmethod
+    def _is_noise(el: Tag, heading_holder_ids: set[int]) -> bool:
         if el.name in NOISE_TAGS:
             return True
 
         if el.name == "header":
-            return Parser._is_noise_header(el)
+            return Parser._is_noise_header(el, heading_holder_ids)
 
         el_id = (el.get("id") or "").lower()
         if el_id in NOISE_IDS:
@@ -176,14 +411,8 @@ class Parser:
         return role in {"navigation", "banner", "complementary", "contentinfo"}
 
     @staticmethod
-    def _is_noise_header(el: Tag) -> bool:
-        """Drop site chrome headers while preserving article headers.
-
-        News sites commonly place the article title and byline in
-        ``<article><header>...``. Treating every header as noise strips the
-        headline from web clips. Global mastheads usually carry banner/nav
-        roles or live outside article/main content.
-        """
+    def _is_noise_header(el: Tag, heading_holder_ids: set[int]) -> bool:
+        """Drop site-chrome headers but keep headline headers (article headers hold the headline and byline)."""
         role = (el.get("role") or "").lower()
         if role in {"banner", "navigation"}:
             return True
@@ -201,36 +430,47 @@ class Parser:
         if el_id in chrome_tokens or class_set.intersection(chrome_tokens):
             return True
 
-        if el.find_parent(["article", "main"]) and el.find(["h1", "h2"]):
-            return False
+        return id(el) not in heading_holder_ids
 
-        return not bool(el.find(["h1", "h2"]))
+    def _is_bold(self, el: Tag) -> bool:
+        is_styled_bold = self._is_bold_weight(self._styles.get(id(el), {}).get("font-weight", ""))
+        return el.name in BOLD_TAGS if is_styled_bold is None else is_styled_bold
 
-    @staticmethod
-    def _is_bold(el: Tag) -> bool:
-        if not isinstance(el, Tag):
-            return False
-        if el.name in BOLD_TAGS:
-            return True
-        style = (el.get("style") or "").lower()
-        return "font-weight:700" in style or "font-weight:bold" in style
+    def _is_italic(self, el: Tag) -> bool:
+        is_styled_italic = self._is_italic_style(self._styles.get(id(el), {}).get("font-style", ""))
+        return el.name in ITALIC_TAGS if is_styled_italic is None else is_styled_italic
 
     @staticmethod
-    def _is_italic(el: Tag) -> bool:
-        if not isinstance(el, Tag):
-            return False
-        if el.name in ITALIC_TAGS:
+    def _is_bold_weight(weight: str) -> bool | None:
+        """Whether a `font-weight` value bolds, or None when absent or not statically known (`inherit`, `var()`)."""
+        if weight in {"bold", "bolder"}:
             return True
-        style = (el.get("style") or "").lower()
-        return "font-style:italic" in style
+        if weight in {"normal", "lighter"}:
+            return False
+        try:
+            return float(weight) >= 600
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _is_italic_style(style: str) -> bool | None:
+        """Whether a `font-style` value italicises, or None when absent or not statically known."""
+        if style == "italic" or style.startswith("oblique"):
+            return True
+        if style == "normal":
+            return False
+        return None
 
     @staticmethod
     def _clean_text(text: str) -> str:
+        """Collapse HTML whitespace the way a browser renders inline text."""
         text = text.replace("\u200b", "").replace("\ufeff", "").replace("\xa0", " ")
-        text = _ws.sub(" ", text)
-        return text
+        text = _control_chars.sub("", text)
+        return _html_ws.sub(" ", text)
 
     def _get_markdown_wrapper(self, el: Tag) -> str:
+        if self._is_in_heading:
+            return ""
         bold = self._is_bold(el)
         italic = self._is_italic(el)
         if bold and italic:
@@ -242,47 +482,127 @@ class Parser:
         return ""
 
     def _process_text(self, node: NavigableString) -> str:
-        return self._clean_text(str(node))
+        text = self._clean_text(str(node))
+        if not text.strip():
+            if self._line_start_digits:
+                self._end_line_start()
+            return text
+        escaped = self._escape_text(text)
+        self._advance_line_start(text)
+        return escaped
+
+    def _escape_text(self, text: str) -> str:
+        if self._line_start_digits:
+            return escape_line_continuation(text, self._line_start_digits)
+        return escape_markdown_text(text, self._is_line_start)
+
+    def _advance_line_start(self, text: str) -> None:
+        """Text split across nodes can still assemble an ordered-list marker, so a digits-only line start stays open."""
+        if self._is_line_start and is_pending_ordinal(self._line_start_digits + text):
+            self._line_start_digits += text
+            return
+        self._end_line_start()
+
+    def _start_line(self) -> None:
+        self._is_line_start = True
+        self._line_start_digits = ""
+
+    def _end_line_start(self) -> None:
+        self._is_line_start = False
+        self._line_start_digits = ""
 
     def _process_heading(self, el: Tag) -> str:
         level = int(el.name[1])
         prefix = "#" * level + " "
-        text = self._process_children(el).strip()
-        text = text.replace("**", "").replace("*", "")
-        if text:
-            return f"\n\n{prefix}{text}\n\n"
-        return ""
+        was_in_heading = self._is_in_heading
+        self._is_in_heading = True
+        text = _image_edge.sub("", self._process_children(el)).strip()
+        self._is_in_heading = was_in_heading
+        if "\n" in text or _non_paragraph_start.match(text):
+            return f"\n\n{text}\n\n"
+        text = _heading_closing_hashes.sub(r"\1\\\2", text.replace(HARD_BREAK, " ").strip())
+        if not text:
+            return BLOCK_SEPARATOR
+        self._atx_heading_ids.add(id(el))
+        return f"\n\n{prefix}{text}\n\n"
 
     def _process_link(self, el: Tag) -> str:
         href = el.get("href", "")
-        text = self._process_children(el).strip()
+        was_in_link = self._is_in_link
+        self._is_in_link = True
+        content = self._process_children(el)
+        self._is_in_link = was_in_link
+        lead, text, trail = self._split_inline_edges(content)
 
-        if not text or not href or href.startswith("javascript:"):
-            return text
+        # Markdown links cannot nest; the outermost one keeps the href.
+        if was_in_link or not text or "\n" in text or not href or href.startswith("#"):
+            return content
+        destination = self._resolve_url(href)
+        if not destination or not self._has_link_scheme(destination):
+            return content
 
-        if href.startswith("#"):
-            return text
-
-        href = self._resolve_url(href)
-        return f"[{text}]({href})"
-
-    def _process_list(self, el: Tag, ordered: bool = False) -> str:
-        items = []
-        for i, li in enumerate(el.find_all("li", recursive=False)):
-            item_text = self._process_children(li).strip()
-            if item_text:
-                item_text = re.sub(r'\n\s*\n', '\n', item_text)
-                if ordered:
-                    items.append(f"{i + 1}. {item_text}")
-                else:
-                    items.append(f"- {item_text}")
-
-        if items:
-            return "\n\n" + "\n".join(items) + "\n\n"
-        return ""
+        return f"{lead}[{text}]({self._link_destination(destination)}){trail}"
 
     @staticmethod
-    def _safe_span(value) -> int:
+    def _has_link_scheme(href: str) -> bool:
+        """Relative or http(s)/mailto once entity-decoded; browsers ignore whitespace and control chars in a scheme."""
+        scheme = _url_scheme.match(_url_noise.sub("", unescape(href)))
+        return scheme is None or scheme.group(1).lower() in LINK_SCHEMES
+
+    @staticmethod
+    def _link_destination(href: str) -> str:
+        href = _destination_entity.sub("&amp;", href)
+        if not _unsafe_link_destination.search(href):
+            return href
+        return "<" + href.replace("\n", "").replace("<", "%3C").replace(">", "%3E") + ">"
+
+    @staticmethod
+    def _split_inline_edges(content: str) -> tuple[str, str, str]:
+        """Split off edge whitespace, hard breaks and image edges, which must sit outside emphasis/link delimiters."""
+        edge_chars = f"{_inline_ws_chars}{HARD_BREAK}{IMAGE_EDGE}"
+        core = content.strip(edge_chars)
+        if not core:
+            return content, "", ""
+        lead = content[:len(content) - len(content.lstrip(edge_chars))]
+        trail = content[len(content.rstrip(edge_chars)):]
+        return lead, core, trail
+
+    def _process_list(self, el: Tag, ordered: bool = False) -> str:
+        is_alternate = self._next_list_is_alternate()
+        self._list_depth += 1
+        items = []
+        for i, li in enumerate(el.find_all("li", recursive=False)):
+            self._start_line()
+            item_text = self._normalize_nested_block(self._process_children(li))
+            if item_text:
+                if _non_paragraph_start.match(item_text):
+                    self._hoisted_list_item_ids.add(id(li))
+                marker = self._list_marker(i + 1 if ordered else None, is_alternate)
+                items.append(marker + self._indent_continuation(item_text, INDENT * len(marker)))
+        self._list_depth -= 1
+        self._start_line()
+
+        return "\n\n" + "\n".join(items) + "\n\n"
+
+    def _next_list_is_alternate(self) -> bool:
+        """Alternate markers per nesting depth: Markdown merges same-marker lists separated only by blank lines."""
+        count = self._lists_started_by_depth.get(self._list_depth, 0)
+        self._lists_started_by_depth[self._list_depth] = count + 1
+        return count % 2 == 1
+
+    @staticmethod
+    def _list_marker(number: int | None, is_alternate: bool) -> str:
+        if number is None:
+            return "* " if is_alternate else "- "
+        return f"{number}) " if is_alternate else f"{number}. "
+
+    @staticmethod
+    def _indent_continuation(text: str, prefix: str) -> str:
+        first, *rest = text.split("\n")
+        return "\n".join([first, *(prefix + line if line else line for line in rest)])
+
+    @staticmethod
+    def _safe_span(value: str | None) -> int:
         try:
             if not value:
                 return 1
@@ -290,120 +610,143 @@ class Parser:
         except (ValueError, TypeError):
             return 1
 
-    @staticmethod
-    def _fill_span(grid: list[list[str | None]], row: int, col: int, span_rows: int, span_cols: int) -> None:
-        """Mark the cells covered by a row/col span (other than its anchor) as empty."""
-        for r in range(row, row + span_rows):
-            for c in range(col, col + span_cols):
-                if (r, c) != (row, col):
-                    grid[r][c] = ""
-
     _LAYOUT_BLOCK_TAGS = {"p", "h1", "h2", "h3", "h4", "h5", "h6", "div", "ul", "ol", "blockquote", "pre", "table", "br"}
 
     def _is_layout_table(self, el: Tag) -> bool:
         """Detect tables used for page layout rather than tabular data."""
         if el.get("role") in ("presentation", "layout"):
             return True
-        if el.find("th"):
+        cells = [cell for row in self._table_rows(el) for cell in row]
+        if not cells or any(cell.name == "th" for cell in cells):
             return False
-        cells = el.find_all(["td", "th"], recursive=True)
-        if not cells:
-            return False
-        return any(cell.find(self._LAYOUT_BLOCK_TAGS) for cell in cells)
+        return any(self._has_layout_block(cell) for cell in cells)
+
+    @classmethod
+    def _has_layout_block(cls, cell: Tag) -> bool:
+        """Scanned by hand: bs4's find() builds a matcher per call, which dominated wide-table parses."""
+        return any(isinstance(node, Tag) and node.name in cls._LAYOUT_BLOCK_TAGS for node in cell.descendants)
+
+    @staticmethod
+    def _table_rows(table: Tag) -> list[list[Tag]]:
+        """Rows this table owns, not those of tables nested in it, each with its direct td/th cells."""
+        rows: list[list[Tag]] = []
+        stack: list[PageElement] = list(reversed(table.contents))
+        while stack:
+            node = stack.pop()
+            if not isinstance(node, Tag) or node.name == "table":
+                continue
+            if node.name == "tr":
+                rows.append([
+                    cell for cell in node.children
+                    if isinstance(cell, Tag) and cell.name in TABLE_CELL_TAGS
+                ])
+                continue
+            stack.extend(reversed(node.contents))
+        return rows
 
     def _process_table(self, el: Tag) -> str:
-        raw_rows = []
-        for tr in el.find_all("tr"):
-            cells = []
-            for td in tr.find_all(["td", "th"]):
-                text = self._process_children(td).strip()
-                text = text.replace("|", "\\|").replace("\n", " ")
-                text = _ws.sub(" ", text)
-                rowspan = self._safe_span(td.get("rowspan"))
-                colspan = self._safe_span(td.get("colspan"))
-                cells.append((text, rowspan, colspan))
-            if cells:
-                raw_rows.append(cells)
+        texts = [[self._process_cell(cell) for cell in row] for row in self._table_rows(el)]
+        return self._table_markdown(self._spanned_grid(texts, self._table_placements[id(el)]))
 
-        if not raw_rows:
-            return ""
+    def _cell_spans(self, cell: Tag) -> tuple[int, int]:
+        return self._safe_span(cell.get("rowspan")), self._safe_span(cell.get("colspan"))
 
-        num_rows = len(raw_rows)
-        widest_row = max(sum(cs for _, _, cs in row) for row in raw_rows)
-        max_cols = max(1, min(widest_row, MAX_TABLE_CELLS // num_rows))
-        grid: list[list[str | None]] = [[None] * max_cols for _ in range(num_rows)]
-        span_budget = MAX_TABLE_CELLS
-
-        for i, row in enumerate(raw_rows):
-            col = 0
-            for text, rowspan, colspan in row:
-                while col < max_cols and grid[i][col] is not None:
-                    col += 1
-                if col >= max_cols:
-                    break
-                grid[i][col] = text
-                span_rows = min(rowspan, num_rows - i)
-                span_cols = min(colspan, max_cols - col)
-                if span_rows * span_cols <= span_budget:
-                    span_budget -= span_rows * span_cols
-                    self._fill_span(grid, i, col, span_rows, span_cols)
-                col += colspan
-
-        for i in range(num_rows):
-            for j in range(max_cols):
-                if grid[i][j] is None:
-                    grid[i][j] = ""
-
+    @staticmethod
+    def _spanned_grid(texts: list[list[str]], placement: TablePlacement) -> list[list[str]]:
+        """Cells at their spanned columns, minus rows and columns with no content."""
+        grid = [[""] * placement.width for _ in texts]
+        for row, (row_texts, row_columns) in enumerate(zip(texts, placement.columns, strict=True)):
+            for text, column in zip(row_texts, row_columns, strict=True):
+                grid[row][column] = text
         grid = [row for row in grid if any(cell.strip() for cell in row)]
+        filled_columns = [j for j in range(placement.width) if any(row[j].strip() for row in grid)]
+        return [[row[j] for j in filled_columns] for row in grid]
+
+    @staticmethod
+    def _table_markdown(grid: list[list[str]]) -> str:
         if not grid:
-            return ""
-
-        cols_with_content = [
-            j for j in range(len(grid[0]))
-            if any(grid[i][j].strip() for i in range(len(grid)))
-        ]
-        if not cols_with_content:
-            return ""
-        grid = [[row[j] for j in cols_with_content] for row in grid]
-
-        num_cols = len(grid[0])
-        lines = []
-        for i, row in enumerate(grid):
-            lines.append("| " + " | ".join(row) + " |")
-            if i == 0:
-                lines.append("|" + "|".join(["---"] * num_cols) + "|")
-
+            return BLOCK_SEPARATOR
+        width = len(grid[0])
+        lines = ["| " + " | ".join(grid[0]) + " |", "|" + "|".join(["---"] * width) + "|"]
+        lines.extend("| " + " | ".join(row) + " |" for row in grid[1:])
         return "\n\n" + "\n".join(lines) + "\n\n"
 
+    def _process_cell(self, td: Tag) -> str:
+        was_in_cell = self._is_in_table_cell
+        self._is_in_table_cell = True
+        text = self._process_children(td)
+        self._is_in_table_cell = was_in_cell
+        text = self._expand_inline_code(text).replace(HARD_BREAK, " ").replace("|", "\\|").replace("\n", " ")
+        return _ws.sub(" ", text).strip()
+
     def _process_blockquote(self, el: Tag) -> str:
-        text = self._process_children(el).strip()
-        if text:
-            lines = text.split("\n")
-            quoted = "\n".join(f"> {line}" for line in lines)
-            return f"\n\n{quoted}\n\n"
-        return ""
+        text = self._normalize_nested_block(self._process_children(el))
+        if not text:
+            return BLOCK_SEPARATOR
+        quoted = "\n".join(f">{INDENT}{line}" if line else ">" for line in text.split("\n"))
+        return f"\n\n{quoted}\n\n"
 
     def _process_pre(self, el: Tag) -> str:
-        text = el.get_text()
-        if text.strip():
-            return f"\n\n```\n{text}\n```\n\n"
-        return ""
+        code = self._pre_code(el)
+        if not code.strip():
+            return BLOCK_SEPARATOR
+        if self._is_in_table_cell:
+            return f" {self._inline_code_placeholder(self._clean_text(code).strip())} "
+        self._charge_output(len(code))
+        self._code_blocks.append(code)
+        return f"\n\n{CODE_MARK}{len(self._code_blocks) - 1}{CODE_MARK}\n\n"
+
+    @staticmethod
+    def _pre_code(el: Tag) -> str:
+        """Preformatted text verbatim, minus control characters and leading/trailing blank lines."""
+        parts: list[str] = []
+        for descendant in el.descendants:
+            if isinstance(descendant, NavigableString):
+                parts.append(str(descendant))
+            elif isinstance(descendant, Tag) and descendant.name == "br":
+                parts.append("\n")
+        code = "".join(parts).replace("\r\n", "\n").replace("\r", "\n")
+        return _control_chars.sub("", code).strip("\n")
+
+    def _process_inline_code(self, el: Tag) -> str:
+        lead, code, trail = self._split_inline_edges(self._clean_text(el.get_text()))
+        if not code:
+            return lead
+        self._end_line_start()
+        return f"{lead}{self._inline_code_placeholder(code)}{trail}"
+
+    def _inline_code_placeholder(self, code: str) -> str:
+        self._charge_output(len(code))
+        self._inline_codes.append(code)
+        return f"{INLINE_CODE_MARK}{len(self._inline_codes) - 1}{INLINE_CODE_MARK}"
+
+    def _expand_inline_code(self, text: str) -> str:
+        """Adjacent code spans merge into one, since their backtick fences would otherwise fuse."""
+        return _inline_code_run.sub(self._merged_inline_code, text)
+
+    def _merged_inline_code(self, match: re.Match[str]) -> str:
+        indexes = match.group().strip(INLINE_CODE_MARK).split(INLINE_CODE_MARK * 2)
+        code = "".join(self._inline_codes[int(index)] for index in indexes)
+        rendered = inline_code(code)
+        self._charge_output(len(rendered) - len(code))
+        return rendered
 
     def _process_hr(self) -> str:
         return "\n\n---\n\n"
 
     def _process_br(self) -> str:
-        return "\n"
+        return HARD_BREAK
 
     def _process_img(self, el: Tag) -> str:
         alt = el.get("alt", "")
-        src = el.get("src", "")
+        src_url = self._resolve_url(el.get("src", ""))
         candidates = self._parse_srcset(el.get("srcset"))
 
-        if not src and not candidates:
+        if not src_url and not candidates:
             return ""
 
-        abs_url = self._resolve_url(src) if src else candidates[0][0]
+        abs_url = src_url or candidates[0][0]
+        self._charge_output(len(src_url))
         candidate_urls = self._candidate_image_urls(abs_url, candidates)
         inferred_width, inferred_height = self._infer_dimensions_from_url(candidate_urls[0])
         ref = f"IMG{len(self.images) + 1}"
@@ -416,23 +759,32 @@ class Parser:
             candidate_urls=candidate_urls,
         )
         self.images.append(img)
+        self._end_line_start()
 
-        return f"![{self._escape_md_link_text(alt)}](llmwiki-image://{ref})"
+        return f"{IMAGE_EDGE}![{self._escape_md_link_text(self._clean_text(alt))}](llmwiki-image://{ref}){IMAGE_EDGE}"
 
     def _parse_srcset(self, value: object) -> list[tuple[str, int | None]]:
-        if not value:
-            return []
+        """Resolved candidates, charged one by one so a long base URL cannot balloon them before the budget sees it."""
         candidates: list[tuple[str, int | None]] = []
+        for url, width in self._srcset_candidates(value):
+            self._charge_output(len(url))
+            candidates.append((url, width))
+        return candidates
+
+    def _srcset_candidates(self, value: object) -> Iterator[tuple[str, int | None]]:
+        if not value:
+            return
         for raw in str(value).split(","):
             parts = raw.strip().split()
             if not parts:
                 continue
             url = self._resolve_url(parts[0])
+            if not url:
+                continue
             width: int | None = None
             if len(parts) > 1 and parts[1].endswith("w"):
                 width = self._parse_dimension(parts[1][:-1])
-            candidates.append((url, width))
-        return candidates
+            yield url, width
 
     @staticmethod
     def _candidate_image_urls(src: str, srcset: list[tuple[str, int | None]]) -> list[str]:
@@ -443,14 +795,8 @@ class Parser:
                 reverse=True,
             )
         ]
-        urls: list[str] = []
-        # Bloomberg and other publishers sometimes put a tiny/sentinel URL in
-        # src and the real images in srcset. Try srcset first when present,
-        # then fall back to src for pages that only expose src.
-        for url in [*ordered_srcset, src]:
-            if url and url not in urls:
-                urls.append(url)
-        return urls
+        # Some publishers (e.g. Bloomberg) put a sentinel URL in src and the real image in srcset.
+        return list(dict.fromkeys(url for url in [*ordered_srcset, src] if url))
 
     @staticmethod
     def _infer_dimensions_from_url(url: str) -> tuple[int | None, int | None]:
@@ -483,59 +829,55 @@ class Parser:
                 parts.append(result)
         return "".join(parts)
 
-    def _process_node(self, node) -> str:
+    def _process_node(self, node: PageElement) -> str:
+        """Render a node, charging the budget for whatever its rendering adds beyond what its descendants charged."""
+        charged_before = self._output_chars
+        result = self._render_node(node)
+        self._charge_output(len(result) - (self._output_chars - charged_before))
+        return result
+
+    def _charge_output(self, chars: int) -> None:
+        if chars <= 0:
+            return
+        self._output_chars += chars
+        if self._output_chars > MAX_OUTPUT_CHARS:
+            raise self._limit_error()
+
+    @staticmethod
+    def _limit_error() -> ParseLimitExceededError:
+        return ParseLimitExceededError(
+            f"Page is too large to convert: rendering it would exceed {MAX_OUTPUT_CHARS:,} characters.",
+        )
+
+    def _render_node(self, node: PageElement) -> str:
         if isinstance(node, NavigableString):
             return self._process_text(node)
 
         if not isinstance(node, Tag):
             return ""
 
-        if self._is_hidden(node):
-            return ""
+        is_block = node.name in TRACKED_BLOCKS or node.name in BLOCK_TAGS
+        if is_block:
+            self._start_line()
+        result = self._process_tag(node)
+        if is_block:
+            self._start_line()
+        return result
 
-        if self.content_only and self._is_noise(node):
-            return ""
-
+    def _process_tag(self, node: Tag) -> str:
         tag = node.name
 
+        if self._is_in_table_cell and tag in CELL_FLATTENED_TAGS:
+            return f" {self._process_children(node)} "
+
         if tag in TRACKED_BLOCKS:
-            was_suppressed = self._suppress_tracking
-            self._suppress_tracking = True
-
-            if tag in {"h1", "h2", "h3", "h4", "h5", "h6"}:
-                result = self._process_heading(node)
-            elif tag == "ul":
-                result = self._process_list(node, ordered=False)
-            elif tag == "ol":
-                result = self._process_list(node, ordered=True)
-            elif tag == "table":
-                if self._is_layout_table(node):
-                    self._suppress_tracking = was_suppressed
-                    return self._process_children(node)
-                result = self._process_table(node)
-            elif tag == "blockquote":
-                result = self._process_blockquote(node)
-            elif tag == "pre":
-                result = self._process_pre(node)
-            elif tag == "form":
-                inner = self._process_children(node)
-                result = self.forms.process_form(node, inner)
-            elif tag == "p":
-                content = self._process_children(node).strip()
-                result = f"\n\n{content}\n\n" if content else ""
-            else:
-                result = ""
-
-            self._suppress_tracking = was_suppressed
-
-            stripped = result.strip()
-            if stripped and not self._suppress_tracking:
-                self._segments.append((stripped, node))
-
-            return result
+            return self._process_tracked_block(node)
 
         if tag == "a":
             return self._process_link(node)
+
+        if tag == "code":
+            return self._process_inline_code(node)
 
         if tag == "li":
             return self._process_children(node)
@@ -549,38 +891,93 @@ class Parser:
         if tag == "img":
             return self._process_img(node)
 
-        if tag == "input":
-            return self.forms.process_input(node)
-
-        if tag == "button":
-            return self.forms.process_button(node)
-
-        if tag == "select":
-            return self.forms.process_select(node)
-
-        if tag == "textarea":
-            return self.forms.process_textarea(node)
+        if tag in FORM_FIELD_TAGS:
+            return self._process_form_field(node)
 
         if tag in BLOCK_TAGS:
             seg_before = len(self._segments)
             content = self._process_children(node).strip()
-            if content:
-                if not self._suppress_tracking and len(self._segments) == seg_before:
-                    self._segments.append((content, node))
-                return f"\n\n{content}\n\n"
-            return ""
+            if not content:
+                return BLOCK_SEPARATOR
+            if not self._suppress_tracking and len(self._segments) == seg_before:
+                self._segments.append((content, node))
+            return f"\n\n{content}\n\n"
 
         wrapper = self._get_markdown_wrapper(node)
         if wrapper:
             content = self._process_children(node)
-            if content.strip():
-                return f"{wrapper}{content.strip()}{wrapper}"
+            lead, core, trail = self._split_inline_edges(content)
+            if core and "\n" not in core:
+                return f"{lead}{EMPHASIS_OPEN}{wrapper}{core}{wrapper}{EMPHASIS_CLOSE}{trail}"
             return content
 
         return self._process_children(node)
 
+    def _process_tracked_block(self, node: Tag) -> str:
+        tag = node.name
+        was_suppressed = self._suppress_tracking
+        self._suppress_tracking = True
+
+        if tag in HEADING_TAGS:
+            result = self._process_heading(node)
+        elif tag == "ul":
+            result = self._process_list(node, ordered=False)
+        elif tag == "ol":
+            result = self._process_list(node, ordered=True)
+        elif tag == "table":
+            if self._is_layout_table(node):
+                self._suppress_tracking = was_suppressed
+                return self._process_children(node)
+            result = self._process_table(node)
+        elif tag == "blockquote":
+            result = self._process_blockquote(node)
+        elif tag == "pre":
+            result = self._process_pre(node)
+        elif tag == "form":
+            result = self._process_form(node)
+        elif tag == "p":
+            content = self._process_children(node).strip()
+            result = f"\n\n{content}\n\n" if content else BLOCK_SEPARATOR
+        else:
+            result = ""
+
+        self._suppress_tracking = was_suppressed
+
+        stripped = result.strip()
+        if stripped and not self._suppress_tracking:
+            self._segments.append((stripped, node))
+
+        return result
+
+    def _process_form(self, node: Tag) -> str:
+        inner = self._process_children(node).strip()
+        if not inner:
+            return BLOCK_SEPARATOR
+        self._rendered_form_ids.add(id(node))
+        header = escape_markdown_text(self._clean_text(self.forms.form_header(node)).strip(), is_line_start=True)
+        return f"\n\n{header}\n\n{inner}\n\n"
+
+    def _process_form_field(self, node: Tag) -> str:
+        label = self._form_field_label(node, self.forms)
+        if not label:
+            return ""
+        self._end_line_start()
+        return escape_markdown_text(label, is_line_start=False)
+
+    @classmethod
+    def _form_field_label(cls, node: Tag, forms: FormExtractor) -> str:
+        if node.name == "input":
+            label = forms.process_input(node)
+        elif node.name == "button":
+            label = forms.process_button(node)
+        elif node.name == "select":
+            label = forms.process_select(node)
+        else:
+            label = forms.process_textarea(node)
+        return cls._clean_text(label).strip()
+
     @staticmethod
-    def _infer_kind(node: Tag) -> str:
+    def _infer_kind(node: Tag) -> ElementKind:
         tag = node.name
         if tag in {"h1", "h2", "h3", "h4", "h5", "h6"}:
             return "heading"
@@ -599,14 +996,13 @@ class Parser:
         return "text"
 
     @staticmethod
-    def _generate_id(idx: int, content: str, kind: str) -> str:
+    def _generate_id(idx: int, content: str, kind: ElementKind) -> str:
         prefix = kind[0] if kind else "x"
         digest = hashlib.sha1(content.encode()).hexdigest()[:8]
         return f"webmd-{prefix}{idx}-{digest}"
 
-    def _build_elements(self, content: str) -> list[Element]:
+    def _build_elements(self) -> list[Element]:
         elements: list[Element] = []
-        current_offset = 0
 
         for idx, (seg_content, node) in enumerate(self._segments):
             normalized = self._normalize_output(seg_content)
@@ -615,23 +1011,7 @@ class Parser:
 
             kind = self._infer_kind(node)
             elem_id = self._generate_id(idx, normalized, kind)
-
-            start = content.find(normalized, current_offset)
-            if start != -1:
-                end = start + len(normalized)
-                current_offset = end
-            else:
-                start = None
-                end = None
-
-            elem = Element(
-                id=elem_id,
-                content=normalized,
-                kind=kind,
-                content_start_offset=start,
-                content_end_offset=end,
-            )
-            elements.append(elem)
+            elements.append(Element(id=elem_id, content=normalized, kind=kind))
 
             self._block_nodes[elem_id] = [node]
 
@@ -645,8 +1025,6 @@ class Parser:
                     node["id"] = elem.id
                 node["data-webmd-block"] = elem.id
 
-    # ── DOM URL rewriting ──────────────────────────────────
-
     _URL_ATTRS = {
         "a": ["href"],
         "img": ["src", "srcset"],
@@ -658,7 +1036,7 @@ class Parser:
     }
 
     def _rewrite_dom_urls(self) -> None:
-        """Resolve all relative URLs in the DOM to absolute using self.url."""
+        """Resolve all relative URLs in the DOM to absolute using self.url; unparseable ones are left as written."""
         if not self.url:
             return
         for tag_name, attrs in self._URL_ATTRS.items():
@@ -672,25 +1050,24 @@ class Parser:
                     if attr == "srcset":
                         el[attr] = self._resolve_srcset(val)
                     else:
-                        el[attr] = self._resolve_url(val)
+                        el[attr] = self._resolve_url(val) or val
+                        self._charge_output(len(el[attr]))
 
     def _resolve_srcset(self, srcset: str) -> str:
-        """Resolve each URL in a srcset attribute."""
         parts = []
         for entry in srcset.split(","):
             entry = entry.strip()
             if not entry:
                 continue
             tokens = entry.split(None, 1)
-            tokens[0] = self._resolve_url(tokens[0])
+            tokens[0] = self._resolve_url(tokens[0]) or tokens[0]
+            self._charge_output(len(tokens[0]))
             parts.append(" ".join(tokens))
         return ", ".join(parts)
 
-    # ── Image embedding ────────────────────────────────────
-
-    _MAX_IMG_BYTES = 5 * 1024 * 1024    # 5 MB per image
-    _MAX_TOTAL_BYTES = 20 * 1024 * 1024  # 20 MB total
-    _EMBED_TIMEOUT = 10                   # seconds per image
+    _MAX_IMG_BYTES = 5 * 1024 * 1024
+    _MAX_TOTAL_BYTES = 20 * 1024 * 1024
+    _EMBED_TIMEOUT_SECONDS = 10
     _EMBED_CONCURRENCY = 8
     _MAX_EMBED_IMAGES = 32
 
@@ -716,7 +1093,7 @@ class Parser:
                     fetched = await safe_fetch.fetch_public_image(
                         src,
                         max_bytes=self._MAX_IMG_BYTES,
-                        timeout=self._EMBED_TIMEOUT,
+                        timeout=self._EMBED_TIMEOUT_SECONDS,
                         headers={"User-Agent": "Mozilla/5.0"},
                     )
                     if not fetched:
@@ -774,9 +1151,7 @@ class Parser:
         return ", ".join(entries) if entries else None
 
     def _sanitize_dom(self) -> None:
-        for tag_name in SANITIZE_DROP_TAGS:
-            for tag in self.soup.find_all(tag_name):
-                tag.decompose()
+        remove_elements(self.soup.find_all(SANITIZE_DROP_TAGS))
 
         for tag in self.soup.find_all(True):
             allowed_attrs = SANITIZE_GLOBAL_ATTRS | SANITIZE_ATTRS_BY_TAG.get(tag.name, set())
@@ -824,173 +1199,223 @@ class Parser:
         return str(self.soup)
 
     def _normalize_output(self, text: str) -> str:
-        text = _newlines.sub("\n\n", text)
-        lines = [line.strip() for line in text.split("\n")]
-        text = "\n".join(lines)
-        text = re.sub(r'\n{3,}', '\n\n', text)
-        return text.strip()
+        text = self._normalize_block(text).replace(INDENT, " ")
+        text = self._resolve_emphasis(self._expand_inline_code(text))
+        return "\n".join(self._expand_code_block(line) for line in text.split("\n"))
 
-    # ── Plaintext extraction ───────────────────────────────
-    #
-    # Produces a canonical plaintext used to locate highlights at save time so
-    # each highlight gets a stable plaintext-relative anchor (text_start,
-    # text_end). The wiki viewer must implement an EQUIVALENT walker over its
-    # ProseMirror doc — `editor.state.doc.textBetween(...)` won't match.
-    #
-    # Rules (applied identically on server and client):
-    #   - blocks (h1-h6, p, blockquote, pre, form, div, section, …): wrapped in
-    #     `\n\n` separators; trim inner content
-    #   - lists: each item on its own line joined by `\n`, list wrapped in `\n\n`
-    #   - tables: each row is cells joined by ` `, rows joined by `\n`
-    #   - images: empty string (the ProseMirror Image node is a leaf with no
-    #     text content; alt text is metadata, not visible plaintext)
-    #   - inline (a, span, b, strong, i, em, u, s, code, …): just children text
-    #   - br: `\n`; hr: `\n\n`
-    #   - script/style/iframe/video/audio: dropped
+    @classmethod
+    def _resolve_emphasis(cls, text: str) -> str:
+        """Resolve emphasis markers in one pass, innermost pairs first, keeping delimiters only where markdown-it pairs them as written."""
+        frames = [EmphasisFrame(delimiter="")]
+        cursor = 0
+        for marker in _emphasis_marker.finditer(text):
+            if marker.start() > cursor:
+                frames[-1].parts.append(text[cursor:marker.start()])
+            cursor = marker.end()
+            if marker.group() == EMPHASIS_OPEN:
+                window = text[cursor:cursor + 3]
+                run = len(window) - len(window.lstrip("*"))
+                frames.append(EmphasisFrame(delimiter="*" * run))
+                cursor += run
+            elif len(frames) > 1:
+                cls._close_emphasis(frames, text[cursor] if cursor < len(text) else " ")
+        if cursor < len(text):
+            frames[-1].parts.append(text[cursor:])
+        while len(frames) > 1:
+            unclosed = frames.pop()
+            frames[-1].parts.append("".join(unclosed.parts))
+        return "".join(frames[0].parts)
 
-    _PLAIN_BLOCK_TAGS = {
-        "h1", "h2", "h3", "h4", "h5", "h6",
-        "p", "blockquote", "pre", "form", "fieldset",
-        "div", "section", "article", "main",
-        "figure", "figcaption", "address",
-    }
-
-    def _to_plaintext(self) -> str:
-        root = self.soup.body if self.soup.body else self.soup
-        raw = self._plaintext_node(root)
-        return self._normalize_plaintext(raw)
-
-    def _plaintext_node(self, node) -> str:
-        if isinstance(node, NavigableString):
-            return self._clean_text(str(node))
-        if not isinstance(node, Tag):
-            return ""
-        if self._is_hidden(node):
-            return ""
-        if self.content_only and self._is_noise(node):
-            return ""
-
-        tag = node.name
-
-        if tag in REMOVE_TAGS:
-            return ""
-
-        if tag == "br":
-            return "\n"
-
-        if tag == "hr":
-            return "\n\n"
-
-        if tag == "img":
-            # Images are leaf nodes in ProseMirror; their alt text is not
-            # rendered in the visible plaintext flow. Drop here so the client
-            # walker (which sees the Image node, not the alt) matches.
-            return ""
-
-        if tag in {"a", "span", "b", "strong", "i", "em", "u", "s", "code", "small", "sub", "sup", "mark", "label"}:
-            return self._plaintext_children(node)
-
-        if tag in {"input", "button", "select", "textarea"}:
-            return ""
-
-        if tag in {"ul", "ol"}:
-            items: list[str] = []
-            for li in node.find_all("li", recursive=False):
-                text = self._plaintext_children(li).strip()
-                if text:
-                    items.append(text)
-            if items:
-                return "\n\n" + "\n".join(items) + "\n\n"
-            return ""
-
-        if tag == "li":
-            return self._plaintext_children(node)
-
-        if tag == "table":
-            if self._is_layout_table(node):
-                return self._plaintext_children(node)
-            rows: list[str] = []
-            for tr in node.find_all("tr"):
-                cells: list[str] = []
-                for cell in tr.find_all(["td", "th"]):
-                    txt = self._plaintext_children(cell).strip()
-                    if txt:
-                        cells.append(txt)
-                if cells:
-                    rows.append(" ".join(cells))
-            if rows:
-                return "\n\n" + "\n".join(rows) + "\n\n"
-            return ""
-
-        if tag in self._PLAIN_BLOCK_TAGS:
-            children = self._plaintext_children(node).strip()
-            if children:
-                return f"\n\n{children}\n\n"
-            return ""
-
-        return self._plaintext_children(node)
-
-    def _plaintext_children(self, node: Tag) -> str:
-        return "".join(self._plaintext_node(child) for child in node.children)
+    @classmethod
+    def _close_emphasis(cls, frames: list[EmphasisFrame], after: str) -> None:
+        frame = frames.pop()
+        parent = frames[-1]
+        content = "".join(frame.parts)[:-len(frame.delimiter)]
+        before = parent.parts[-1][-1] if parent.parts else (parent.delimiter[-1:] or " ")
+        # A delimiter run that can both open and close may pair with an outer run instead of its own.
+        if frame.has_ambiguous or not cls._is_emphasis_parseable(content, before, after):
+            if content:
+                parent.parts.append(content)
+            parent.has_ambiguous = parent.has_ambiguous or frame.has_ambiguous
+            return
+        parent.parts.append(f"{frame.delimiter}{content}{frame.delimiter}")
+        if is_ambiguous_delimiter(before, content[0]) or is_ambiguous_delimiter(content[-1], after):
+            parent.has_ambiguous = True
 
     @staticmethod
-    def _normalize_plaintext(text: str) -> str:
-        text = text.replace("\r\n", "\n").replace("\r", "\n")
-        text = _ws.sub(" ", text)
-        # Collapse 3+ newlines to 2 (paragraph break)
-        text = re.sub(r"\n{3,}", "\n\n", text)
-        # Strip per-line trailing/leading whitespace introduced by collapsing
-        text = "\n".join(line.strip() for line in text.split("\n"))
-        text = re.sub(r"\n{3,}", "\n\n", text)
-        return text.strip()
+    def _is_emphasis_parseable(visible: str, before: str, after: str) -> bool:
+        """Whether markdown-it opens and closes emphasis here: no fused neighbour runs, no leading image, flanking met."""
+        if not visible or visible.startswith("!["):
+            return False
+        if before in f"*{EMPHASIS_CLOSE}" or after in f"*{EMPHASIS_OPEN}":
+            return False
+        return can_open_emphasis(before, visible[0]) and can_close_emphasis(visible[-1], after)
 
-    # ── Highlight locator ──────────────────────────────────
-    #
-    # Given canonical plaintext and a highlight payload (textContent +
-    # optional prefix/suffix from the extension's DOM capture), find the best
-    # (text_start, text_end) in plaintext.
-    #
-    # Cross-block highlights are tricky: the extension's `range.toString()`
-    # may collapse newlines into spaces, but plaintext keeps `\n\n` between
-    # blocks. We work around this by building a normalized search string
-    # (whitespace collapsed) plus an index map back to original plaintext
-    # offsets. The locator searches in the normalized string; persisted
-    # offsets are in the original plaintext.
+    def _normalize_nested_block(self, text: str) -> str:
+        """Charged as work: each enclosing quote or list re-normalizes and re-prefixes the same text."""
+        self._charge_output(len(text))
+        return self._normalize_block(text)
+
+    @classmethod
+    def _normalize_block(cls, text: str) -> str:
+        """Resolve hard breaks and image edges, drop stray whitespace outside structural prefixes, collapse blank runs."""
+        text = _hard_break_run.sub(HARD_BREAK, text)
+        text = _edge_hard_break.sub("", text).replace(HARD_BREAK, "\\\n")
+        text = _image_edge.sub("", text)
+        text = "\n".join(cls._normalize_line(line) for line in text.split("\n"))
+        return _blank_runs.sub("\n\n", text).strip("\n")
+
+    @staticmethod
+    def _normalize_line(line: str) -> str:
+        """Strip line-edge whitespace outside the structural prefix, Unicode too since markdown-it only trims ASCII."""
+        prefix = _line_prefix.match(line).group()
+        structure = prefix.replace(" ", "").replace("\t", "")
+        content = line[len(prefix):].strip(JS_WHITESPACE)
+        return structure + content if content else structure.rstrip(INDENT)
+
+    def _expand_code_block(self, line: str) -> str:
+        """Replace a code placeholder with a fenced block, repeating the line's container prefix on every code line."""
+        match = _code_placeholder.search(line)
+        if not match:
+            return line
+        code = self._code_blocks[int(match.group(1))]
+        first_prefix = line[:match.start()]
+        prefix = re.sub(r"[^> ]", " ", first_prefix)
+        fence = code_fence(code)
+        self._charge_output(len(prefix) * code.count("\n") + 2 * len(fence))
+        body = [prefix + code_line if code_line else prefix.rstrip() for code_line in code.split("\n")]
+        return "\n".join([first_prefix + fence, *body, prefix + fence])
+
+    def _to_plaintext(self) -> str:
+        """Canonical highlight-anchor plaintext: what canonicalPlaintext.ts reads off the viewer's render of the Markdown."""
+        builder = PlaintextBuilder()
+        root = self.soup.body if self.soup.body else self.soup
+        self._plaintext_node(root, builder, BLOCK_SEPARATOR, is_in_heading=False)
+        return builder.result()
+
+    def _plaintext_node(self, node: PageElement, builder: PlaintextBuilder, separator: str, is_in_heading: bool) -> None:
+        if isinstance(node, NavigableString):
+            builder.text(self._clean_text(str(node)))
+            return
+        if not isinstance(node, Tag):
+            return
+        self._plaintext_tag(node, builder, separator, is_in_heading)
+
+    def _plaintext_tag(self, node: Tag, builder: PlaintextBuilder, separator: str, is_in_heading: bool) -> None:
+        tag = node.name
+        if separator == CELL_SEPARATOR and tag in CELL_FLATTENED_TAGS:
+            self._plaintext_block(node, builder, separator, is_in_heading)
+        elif tag == "br":
+            self._plaintext_br(builder, separator, is_in_heading)
+        elif tag == "hr":
+            builder.block(separator)
+        elif tag == "img":
+            if self._has_image_source(node):
+                builder.block(separator)
+        elif tag == "code":
+            builder.text(self._clean_text(node.get_text()))
+        elif tag == "pre":
+            self._plaintext_pre(node, builder, separator)
+        elif tag in FORM_FIELD_TAGS:
+            builder.text(self._form_field_label(node, FormExtractor()))
+        elif tag == "form":
+            self._plaintext_form(node, builder, separator, is_in_heading)
+        elif tag in {"ul", "ol"}:
+            self._plaintext_list(node, builder, separator, is_in_heading)
+        elif tag == "table":
+            self._plaintext_table(node, builder, separator, is_in_heading)
+        elif tag in HEADING_TAGS:
+            self._plaintext_block(node, builder, separator, is_in_heading=id(node) in self._atx_heading_ids)
+        elif tag != "li" and (tag in BLOCK_TAGS or tag in TRACKED_BLOCKS):
+            self._plaintext_block(node, builder, separator, is_in_heading)
+        else:
+            self._plaintext_children(node, builder, separator, is_in_heading)
+
+    def _plaintext_children(self, node: Tag, builder: PlaintextBuilder, separator: str, is_in_heading: bool) -> None:
+        for child in node.children:
+            self._plaintext_node(child, builder, separator, is_in_heading)
+
+    def _plaintext_block(self, node: Tag, builder: PlaintextBuilder, separator: str, is_in_heading: bool) -> None:
+        builder.block(separator)
+        self._plaintext_children(node, builder, separator, is_in_heading)
+        builder.block(separator)
+
+    @staticmethod
+    def _plaintext_br(builder: PlaintextBuilder, separator: str, is_in_heading: bool) -> None:
+        """ATX headings and table cells cannot hold a hard break, so the Markdown writer turns those into spaces."""
+        if is_in_heading or separator == CELL_SEPARATOR:
+            builder.text(" ")
+            return
+        builder.hard_break()
+
+    def _has_image_source(self, node: Tag) -> bool:
+        return bool(self._resolve_url(node.get("src", "")) or next(self._srcset_candidates(node.get("srcset")), None))
+
+    def _plaintext_pre(self, node: Tag, builder: PlaintextBuilder, separator: str) -> None:
+        code = self._pre_code(node)
+        if not code.strip():
+            return
+        if separator == CELL_SEPARATOR:
+            builder.text(self._clean_text(code))
+            return
+        builder.block(separator)
+        builder.verbatim(code)
+        builder.block(separator)
+
+    def _plaintext_form(self, node: Tag, builder: PlaintextBuilder, separator: str, is_in_heading: bool) -> None:
+        builder.block(separator)
+        if id(node) in self._rendered_form_ids:
+            builder.text(self._clean_text(FormExtractor.form_header(node)))
+            builder.block(separator)
+        self._plaintext_children(node, builder, separator, is_in_heading)
+        builder.block(separator)
+
+    def _plaintext_list(self, node: Tag, builder: PlaintextBuilder, separator: str, is_in_heading: bool) -> None:
+        """An item not opening with a paragraph is hoisted out of the list by ProseMirror, splitting it there."""
+        builder.block(separator)
+        follows_hoisted = False
+        for li in node.find_all("li", recursive=False):
+            is_hoisted = id(li) in self._hoisted_list_item_ids
+            item_separator = separator if is_hoisted or follows_hoisted else LIST_SEPARATOR
+            builder.block(item_separator)
+            self._plaintext_children(li, builder, separator if is_hoisted else LIST_SEPARATOR, is_in_heading)
+            follows_hoisted = is_hoisted
+        builder.block(separator)
+
+    def _plaintext_table(self, node: Tag, builder: PlaintextBuilder, separator: str, is_in_heading: bool) -> None:
+        if self._is_layout_table(node):
+            self._plaintext_children(node, builder, separator, is_in_heading)
+            return
+        builder.block(separator)
+        for row in self._table_rows(node):
+            builder.block(LIST_SEPARATOR)
+            for cell in row:
+                builder.block(CELL_SEPARATOR)
+                self._plaintext_children(cell, builder, CELL_SEPARATOR, is_in_heading)
+        builder.block(separator)
 
     _MIN_AUTO_LOCATE_LEN = 4       # below this, require prefix/suffix match
-    _MAX_OCCURRENCES = 500          # cap to bound pathological searches
+    _MAX_OCCURRENCES = 500
 
     @staticmethod
     def _normalize_anchor_text(text: str) -> str:
-        text = text.replace("​", "").replace("﻿", "").replace("\xa0", " ")
-        text = text.replace("\r\n", "\n").replace("\r", "\n")
-        text = _ws.sub(" ", text)
-        text = " ".join(text.split())
-        return text
+        text = text.replace("\u200b", "").replace("\ufeff", "").replace("\xa0", " ")
+        return _js_ws_run.sub(" ", text).strip(JS_WHITESPACE)
 
     @staticmethod
     def _normalize_with_index_map(plaintext: str) -> tuple[str, list[int]]:
-        """Build a whitespace-collapsed version of plaintext alongside a list
-        mapping each character in the normalized string back to its original
-        position in plaintext. Trailing position appended so callers can map
-        an end-exclusive offset.
-        """
+        """Collapse whitespace (selections flatten block breaks) with an offset map back, plus an end sentinel."""
         out: list[str] = []
         index_map: list[int] = []
-        prev_was_ws = True  # treat start as preceded by whitespace (skip leading)
+        prev_was_ws = True  # skips leading whitespace
         i = 0
         n = len(plaintext)
         while i < n:
             ch = plaintext[i]
-            if ch in (" ", "\t", "\n", "\r"):
-                if not prev_was_ws and out:
-                    out.append(" ")
-                    index_map.append(i)
-                prev_was_ws = True
+            if ch in ("\u200b", "\ufeff"):
                 i += 1
                 continue
-            if ch == "\xa0":
-                # Non-breaking space behaves like a space in normalization
+            if ch in JS_WHITESPACE:
                 if not prev_was_ws and out:
                     out.append(" ")
                     index_map.append(i)
@@ -1001,13 +1426,11 @@ class Parser:
             index_map.append(i)
             prev_was_ws = False
             i += 1
-        # Append trailing index so an end-exclusive offset has a mapping
         index_map.append(n)
         normalized = "".join(out)
-        # Trim trailing space (and its index entry) if present
         if normalized.endswith(" "):
             normalized = normalized[:-1]
-            # remove the trailing-space's index entry, keep the trailing-end
+            # drop the space's entry, keep the end sentinel
             index_map = index_map[:-2] + index_map[-1:]
         return normalized, index_map
 
@@ -1055,15 +1478,28 @@ class Parser:
     def _locate_highlight(
         cls, plaintext: str, anchor_payload: dict,
     ) -> TextAnchor | None:
-        text_content = anchor_payload.get("textContent") or ""
+        return cls._locate_in_haystack(cls._anchor_haystack(plaintext), anchor_payload)
+
+    @classmethod
+    def _anchor_haystack(cls, plaintext: str) -> AnchorHaystack:
+        units = to_utf16_units(plaintext)
+        normalized, index_map = cls._normalize_with_index_map(units)
+        return AnchorHaystack(units=units, normalized=normalized, index_map=index_map)
+
+    @classmethod
+    def _locate_in_haystack(
+        cls, haystack: AnchorHaystack, anchor_payload: dict,
+    ) -> TextAnchor | None:
+        """Locate in UTF-16 code units, the unit the browser's offsets and windows use."""
         prefix = anchor_payload.get("prefix")
         suffix = anchor_payload.get("suffix")
+        units = haystack.units
+        normalized_haystack = haystack.normalized
+        index_map = haystack.index_map
 
-        normalized_needle = cls._normalize_anchor_text(text_content)
+        normalized_needle = cls._normalize_anchor_text(to_utf16_units(anchor_payload.get("textContent") or ""))
         if not normalized_needle:
             return None
-
-        normalized_haystack, index_map = cls._normalize_with_index_map(plaintext)
 
         occurrences = cls._all_occurrences(
             normalized_haystack, normalized_needle, cap=cls._MAX_OCCURRENCES,
@@ -1074,32 +1510,31 @@ class Parser:
         if len(occurrences) == 1:
             chosen = occurrences[0]
         else:
+            unit_prefix = to_utf16_units(prefix) if prefix else prefix
+            unit_suffix = to_utf16_units(suffix) if suffix else suffix
             scored = [
                 (cls._score_context(
-                    normalized_haystack, occ, len(normalized_needle), prefix, suffix,
+                    normalized_haystack, occ, len(normalized_needle), unit_prefix, unit_suffix,
                 ), occ)
                 for occ in occurrences
             ]
             best_score, chosen = max(scored, key=lambda t: t[0])
 
-            # For short matches without strong context, leave unlocated rather
-            # than guess. False positives on common phrases are worse than
-            # falling back to runtime text search at render time.
+            # A wrong guess on a short phrase is worse than the viewer's runtime text-search fallback.
             if (
                 len(normalized_needle) < cls._MIN_AUTO_LOCATE_LEN
                 and best_score == 0
             ):
                 return None
 
-        # Map back from normalized offsets to original plaintext offsets.
         text_start = index_map[chosen] if chosen < len(index_map) else chosen
         end_norm_idx = chosen + len(normalized_needle)
-        text_end = index_map[end_norm_idx] if end_norm_idx < len(index_map) else len(plaintext)
+        text_end = index_map[end_norm_idx] if end_norm_idx < len(index_map) else len(units)
 
         return TextAnchor(
             text_start=text_start,
             text_end=text_end,
-            text_content=plaintext[text_start:text_end],
+            text_content=from_utf16_units(units[text_start:text_end]),
             prefix=prefix,
             suffix=suffix,
         )
@@ -1108,14 +1543,16 @@ class Parser:
     def map_highlights(
         cls, plaintext: str, highlights: list[dict],
     ) -> list[MappedHighlight]:
-        """Map each highlight payload to a plaintext-relative anchor.
-        Highlights that fail to locate are returned with `text_anchor=None`."""
+        """Map each highlight payload to a plaintext anchor, or `text_anchor=None` when unlocatable."""
+        if not highlights:
+            return []
+        haystack = cls._anchor_haystack(plaintext)
         results: list[MappedHighlight] = []
-        for h in highlights or []:
+        for h in highlights:
             if not isinstance(h, dict):
                 continue
             anchor_data = h.get("anchor") or {}
-            text_anchor = cls._locate_highlight(plaintext, anchor_data) if anchor_data else None
+            text_anchor = cls._locate_in_haystack(haystack, anchor_data) if anchor_data else None
             results.append(MappedHighlight(payload=h, text_anchor=text_anchor))
         return results
 
@@ -1123,30 +1560,35 @@ class Parser:
         if self._parsed:
             raise RuntimeError("Parser instances are single-use; create a new Parser to parse again.")
         self._parsed = True
-        self.images = []
-        self.forms = FormExtractor()
-        self._segments = []
-        self._block_nodes = {}
-        self._suppress_tracking = False
         root = self.soup.body if self.soup.body else self.soup
         raw = self._process_node(root)
+        # Plaintext must see the same raw URLs (e.g. form actions) the Markdown was built from.
+        plaintext = self._to_plaintext()
+        if self.content_only and len(plaintext) < MIN_CONTENT_ONLY_PLAINTEXT:
+            return self._parse_whole_page(highlights or [])
+
         content = self._normalize_output(raw)
-        elements = self._build_elements(content)
+        if len(content) > MAX_OUTPUT_CHARS:
+            raise self._limit_error()
+        elements = self._build_elements()
         self._stamp_dom(elements)
         self._rewrite_dom_urls()
-
-        plaintext = self._to_plaintext()
-        mapped = self.map_highlights(plaintext, highlights or [])
 
         return ParseResult(
             content=content,
             images=self.images,
-            form_elements=self.forms.elements,
             url=self.url,
-            elements=elements,
             plaintext=plaintext,
-            highlights=mapped,
+            highlights=self.map_highlights(plaintext, highlights or []),
         )
+
+    def _parse_whole_page(self, highlights: list[dict]) -> ParseResult:
+        """A thin content-only result usually means the noise filter ate the article, so the whole page wins."""
+        whole_page = Parser(self._content, url=self.url)
+        result = whole_page.parse(highlights)
+        self.soup = whole_page.soup
+        self.images = whole_page.images
+        return result
 
     def markdown(self) -> str:
         return self.parse().content

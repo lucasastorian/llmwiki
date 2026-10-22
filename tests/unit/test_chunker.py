@@ -1,5 +1,3 @@
-"""Unit tests for the text chunker."""
-
 from services.chunker import _estimate_tokens, chunk_pages, chunk_text
 
 
@@ -102,25 +100,18 @@ class TestEstimateTokens:
 
 
 class TestEnforceMaxCharsAssignsPerPieceStartChar:
-    """Regression: oversized chunks split via _enforce_max_chars used to
-    share the original paragraph's start_char across every piece, breaking
-    text-anchor → chunk mapping. Each piece must now have its own offset."""
+    """Each piece split by _enforce_max_chars gets its own start_char for text-anchor mapping."""
 
     def test_oversized_chunk_splits_with_per_piece_offsets(self):
         from services.chunker import MAX_CHUNK_CHARS
-        # Build a paragraph that exceeds MAX_CHUNK_CHARS so _enforce_max_chars
-        # will split it. Use distinct repeated sentences so we can identify
-        # piece boundaries.
         sentence = "All this happened, more or less. " * 6
         paragraph = (sentence * 200).strip()
         assert len(paragraph) > MAX_CHUNK_CHARS
 
         chunks = chunk_text(paragraph, page=7, start_char_offset=1000)
         oversized_originals = [c for c in chunks if len(c.content) > MAX_CHUNK_CHARS]
-        assert oversized_originals == []  # everything was split
+        assert oversized_originals == []
 
-        # If a single oversized paragraph became multiple chunks, their
-        # start_chars must be strictly increasing — not all 1000.
         starts = [c.start_char for c in chunks]
         assert starts[0] == 1000
         assert len(set(starts)) == len(starts), (
@@ -131,7 +122,6 @@ class TestEnforceMaxCharsAssignsPerPieceStartChar:
             assert b > a
 
     def test_under_limit_chunks_unchanged(self):
-        """Sanity: chunks under MAX_CHUNK_CHARS keep their original start_char."""
         # Long enough to clear the chunker's minimum-token threshold.
         text = "This is a properly sized paragraph with enough words to actually be chunked. " * 4
         chunks = chunk_text(text.strip(), page=1, start_char_offset=500)

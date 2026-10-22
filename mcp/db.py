@@ -26,8 +26,7 @@ async def _set_rls(conn, user_id: str, claims: dict | None = None):
         jwt_claims.setdefault("sub", user_id)
     else:
         jwt_claims = {"sub": user_id}
-    # Pin the role rather than trusting the token claim — these connections are
-    # always user-scoped, and auth.role() drives RLS policy evaluation.
+    # Pin the role instead of trusting the token claim: auth.role() drives RLS evaluation.
     jwt_claims["role"] = "authenticated"
     await conn.execute("SET LOCAL ROLE authenticated")
     await conn.execute("SELECT set_config('request.jwt.claims', $1, true)", json.dumps(jwt_claims))
@@ -51,11 +50,6 @@ async def scoped_query(user_id: str, sql: str, *args, claims: dict | None = None
 async def scoped_queryrow(user_id: str, sql: str, *args, claims: dict | None = None) -> dict | None:
     rows = await scoped_query(user_id, sql, *args, claims=claims)
     return rows[0] if rows else None
-
-
-async def scoped_execute(user_id: str, sql: str, *args, claims: dict | None = None) -> str:
-    async with scoped_connection(user_id, claims) as conn:
-        return await conn.execute(sql, *args)
 
 
 async def service_queryrow(sql: str, *args) -> dict | None:

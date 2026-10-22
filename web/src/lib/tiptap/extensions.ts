@@ -1,6 +1,4 @@
-// Shared TipTap extension setup. Use the same configuration in NoteEditor
-// and MarkdownClipViewer so the parsed-doc shape (and therefore the
-// canonical-plaintext walker output) is identical.
+// Every TipTap surface must share this config so canonical plaintext is identical.
 
 import { mergeAttributes } from '@tiptap/core'
 import StarterKit from '@tiptap/starter-kit'
@@ -14,13 +12,9 @@ import { Markdown } from 'tiptap-markdown'
 import { HighlightDecorations } from '@/lib/highlights/decorationPlugin'
 
 export interface MarkdownExtensionOptions {
-  /** Optional placeholder shown when the doc is empty (editor mode only). */
   placeholder?: string
-  /** Optional resolver for image src — receives the stored relative src,
-   *  returns the URL to display. Used in 2D for relative image refs. */
   imageSrcResolver?: (src: string) => string
-  /** Optional rendered attributes for an image. Used by web clips to preserve
-   *  source display dimensions without writing signed URLs into Markdown. */
+  /** Render-only attributes, so signed URLs and dimensions never reach the Markdown. */
   imageAttrsResolver?: (src: string) => Record<string, unknown>
 }
 
@@ -35,9 +29,7 @@ export function createMarkdownExtensions(options?: MarkdownExtensionOptions) {
           const extraAttrs = original && options.imageAttrsResolver
             ? options.imageAttrsResolver(original)
             : {}
-          // Preserve the original relative src in `data-src` so the storage
-          // round-trip stays clean — only the rendered DOM gets the resolved
-          // (possibly signed) URL. mergeAttributes properly merges class/style.
+          // data-src keeps the stored relative src; only the rendered DOM gets the signed URL.
           return [
             'img',
             mergeAttributes(HTMLAttributes, extraAttrs, { src: resolved, 'data-src': original }),

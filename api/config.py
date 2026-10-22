@@ -11,43 +11,34 @@ class Settings(BaseSettings):
     WORKSPACE_PATH: str = "."
 
     DATABASE_URL: str = ""
-    # Direct (non-pooler) connection used only for the long-lived LISTEN/NOTIFY
-    # socket. Supavisor recycles pooled sessions, which silently kills LISTEN;
-    # a direct connection sidesteps that. Falls back to DATABASE_URL when unset.
+    # Non-pooler URL for LISTEN/NOTIFY: Supavisor recycles pooled sessions, silently killing LISTEN.
     DIRECT_DATABASE_URL: str = ""
     SUPABASE_URL: str = ""
-    SUPABASE_JWT_SECRET: str = ""
-    VOYAGE_API_KEY: str = ""
-    TURBOPUFFER_API_KEY: str = ""
-    EMBEDDING_MODEL: str = "voyage-4-lite"
-    EMBEDDING_DIM: int = 512
     LOGFIRE_TOKEN: str = ""
-    AWS_ACCESS_KEY_ID: str = ""
-    AWS_SECRET_ACCESS_KEY: str = ""
     AWS_REGION: str = "us-east-1"
-    S3_BUCKET: str = "supavault-documents"
+    S3_BUCKET: str = ""
     MISTRAL_API_KEY: str = ""
     CLOUDFLARE_ACCOUNT_ID: str = ""
     CLOUDFLARE_AUTH_TOKEN: str = ""
     CLOUDFLARE_AI_GATEWAY_ID: str = ""
     QUIZ_GRADE_DAILY_LIMIT: int = Field(default=100, ge=1, le=10_000)
-    # Only "mistral" is special-cased; every other value routes PDFs to the
-    # converter service, which selects its parser via its own PDF_ENGINE.
+    # Only "mistral" is special-cased; anything else goes to the converter, which picks its own PDF_ENGINE.
     PDF_BACKEND: str = "opendataloader"
     STAGE: str = "dev"
     APP_URL: str = "http://localhost:3000"
     API_URL: str = "http://localhost:8000"
-    # Comma-separated serialized origins. Override this with the ID shown by
-    # chrome://extensions when using an unpacked development build.
+    # Comma-separated; an unpacked dev build needs its chrome://extensions ID here.
     LOCAL_EXTENSION_ORIGINS: str = (
         "chrome-extension://dibilaenlekndomfbampadehjeahemha"
     )
 
-    QUOTA_MAX_PAGES_PER_DOC: int = 300  # max pages per single document
-    QUOTA_MAX_STORAGE_BYTES: int = 1_073_741_824  # 1 GB per user
+    QUOTA_MAX_PAGES_PER_DOC: int = 300
+    QUOTA_MAX_STORAGE_BYTES: int = 1_073_741_824  # 1 GiB
 
     CONVERTER_URL: str = ""
     CONVERTER_SECRET: str = ""
+    # Must not exceed the converter's MAX_CONCURRENT_EXTRACTIONS, or excess requests exhaust 503 retries.
+    CONVERTER_MAX_CONCURRENCY: int = Field(default=2, ge=1, le=64)
 
     GLOBAL_OCR_ENABLED: bool = True
     GLOBAL_MAX_PAGES: int = 1_000_000
@@ -57,14 +48,8 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def require_isolated_parser_for_hosted_uploads(self) -> "Settings":
-        """Never let the hosted upload service fall back to local parsing.
-
-        ``main.lifespan`` constructs S3 and OCR services when the access key
-        and bucket are configured. Validate the matching condition while
-        settings are loaded, before startup can initialize JWKS, Postgres, or
-        any other network client.
-        """
-        hosted_uploads_enabled = bool(self.AWS_ACCESS_KEY_ID and self.S3_BUCKET)
+        """Fail at settings load, before any network client starts, if hosted uploads would parse in-process."""
+        hosted_uploads_enabled = bool(self.S3_BUCKET)
         if (
             self.MODE == "hosted"
             and hosted_uploads_enabled

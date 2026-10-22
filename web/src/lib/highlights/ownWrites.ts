@@ -1,6 +1,4 @@
-// Every highlight write bumps documents.version, which echoes back over the
-// websocket; remembering our own writes lets the reader skip the pointless
-// content refetch that echo would otherwise trigger.
+// Highlight writes bump documents.version; this lets the reader skip refetching on its own websocket echo.
 const versionsByDocument = new Map<string, Set<number>>()
 
 export function markOwnWrite(documentId: string, version: number): void {

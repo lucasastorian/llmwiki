@@ -8,11 +8,7 @@ from starlette.types import Receive, Scope, Send
 
 
 class CORSMiddleware(_BaseCORSMiddleware):
-    """CORS middleware that passes WebSocket connections through.
-
-    WebSocket auth is handled by JWT verification in the handler, not by
-    origin checks. HTTP requests still get full CORS protection.
-    """
+    """CORS that passes WebSockets through; they authenticate by JWT in the handler, not by origin."""
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] == "websocket":
@@ -53,10 +49,7 @@ async def lifespan(app: FastAPI):
             yield
         return
 
-    # ── Hosted mode ──
-    # Prefetch the Supabase JWKS so the first authenticated request doesn't
-    # pay the cold-cache cost and so a JWKS outage at boot is visible
-    # immediately rather than masked behind the first auth error.
+    # Prefetch so a JWKS outage surfaces at boot, not behind the first auth error.
     from auth import prefetch_jwks
     await prefetch_jwks()
 
@@ -67,7 +60,7 @@ async def lifespan(app: FastAPI):
 
     s3_service = None
     ocr_service = None
-    if settings.AWS_ACCESS_KEY_ID and settings.S3_BUCKET:
+    if settings.S3_BUCKET:
         from services.s3 import S3Service
         s3_service = S3Service()
     if s3_service:
@@ -76,12 +69,11 @@ async def lifespan(app: FastAPI):
 
     app.state.s3_service = s3_service
     app.state.ocr_service = ocr_service
-    app.state.auth_provider = None  # Uses Supabase JWKS auth via deps.py
+    app.state.auth_provider = None  # None selects Supabase JWKS auth
 
     from services.hosted import HostedServiceFactory
     app.state.factory = HostedServiceFactory(pool, s3_service, ocr_service)
 
-    # Real-time document change notifications via WebSocket
     from routes.ws import setup_listener
     listener_task = await setup_listener(settings.listen_database_url)
 
@@ -111,7 +103,6 @@ async def _local_lifespan_inner(app: FastAPI):
 
     from infra.auth.local import LocalAuthProvider
     from infra.db.sqlite import create_pool as create_sqlite_pool
-    from infra.storage.local import LocalStorageService
 
     workspace = Path(settings.WORKSPACE_PATH).resolve()
     workspace.mkdir(parents=True, exist_ok=True)
@@ -124,9 +115,7 @@ async def _local_lifespan_inner(app: FastAPI):
 
     local_user_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, "local"))
     auth_provider = LocalAuthProvider(local_user_id)
-    storage = LocalStorageService(str(workspace), settings.API_URL)
 
-    # Ensure workspace row exists
     cursor = await db.execute("SELECT id FROM workspace LIMIT 1")
     if not await cursor.fetchone():
         ws_id = str(uuid.uuid4())
@@ -138,16 +127,15 @@ async def _local_lifespan_inner(app: FastAPI):
         logger.info("Initialized local workspace: %s", workspace)
 
     app.state.mode = "local"
-    app.state.pool = None  # No asyncpg pool in local mode
+    app.state.pool = None
     app.state.sqlite_db = db
     app.state.s3_service = None
-    app.state.storage_service = storage
     app.state.ocr_service = None
     app.state.auth_provider = auth_provider
     app.state.workspace_path = str(workspace)
 
     from services.local import LocalServiceFactory
-    app.state.factory = LocalServiceFactory(db, storage, local_user_id)
+    app.state.factory = LocalServiceFactory(db)
 
     logger.info("Local mode — workspace: %s", workspace)
     return db
@@ -162,8 +150,7 @@ async def _local_lifespan(app: FastAPI):
     workspace = Path(app.state.workspace_path)
     db_path = str(workspace / ".llmwiki" / "index.db")
 
-    # Each background writer gets its own connection so a commit can't flush
-    # another writer's (or a request handler's) open transaction.
+    # Own connections, so a background commit can't flush a request's open transaction.
     reconcile_db = await create_sqlite_pool(db_path, init_schema=False)
     watcher_db = await create_sqlite_pool(db_path, init_schema=False)
 
@@ -195,9 +182,7 @@ async def _local_lifespan(app: FastAPI):
 
 app = FastAPI(title="LLM Wiki API", lifespan=lifespan)
 
-# Rate limiting — applied as middleware so every authenticated route gets a
-# broad ceiling. Hot endpoints can add tighter `@limiter.limit(...)` overrides.
-# Skip in local mode where there's only one user.
+# Broad ceiling on every route; hot endpoints add tighter `@limiter.limit(...)`.
 if settings.MODE != "local":
     from infra.rate_limit import limiter
     from slowapi import _rate_limit_exceeded_handler
@@ -219,8 +204,7 @@ if settings.MODE == "local":
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[settings.APP_URL],
-    # Local clipping may be initiated by the popup or extension background
-    # worker. Hosted mode keeps its existing, web-app-only CORS policy.
+    # Local clips can come from the extension popup or its background worker.
     allow_origin_regex=local_extension_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
@@ -230,15 +214,12 @@ app.add_middleware(
         "Tus-Resumable", "Tus-Version", "Tus-Max-Size", "Tus-Extension",
         "X-Document-Id",
     ],
-    # Default preflight cache is 600s — on high-latency links every endpoint
-    # re-pays an OPTIONS round-trip every 10 minutes. Browsers cap this
-    # (Chrome 7200s, Firefox 86400s), so ask for the max.
+    # Default is 600s; browsers clamp to their own cap (Chrome 7200s, Firefox 86400s).
     max_age=86400,
 )
 
 if settings.MODE == "local":
-    # This is deliberately outside CORS so Host validation also covers
-    # preflights. Local mode has no auth and supports loopback binding only.
+    # Outermost (added after CORS) so Host validation also covers preflights.
     app.add_middleware(
         LocalHTTPBoundaryMiddleware,
         app_origin=settings.APP_URL,
@@ -267,12 +248,10 @@ if settings.MODE == "local":
     set_workspace_root(settings.WORKSPACE_PATH)
 else:
     from infra.tus import router as tus_router
-    from routes.api_keys import router as api_keys_router
     from routes.graph import router as graph_router
     from routes.public import router as public_router
     from routes.quiz import router as quiz_router
     from routes.ws import router as ws_router
-    app.include_router(api_keys_router)
     app.include_router(tus_router)
     app.include_router(graph_router)
     app.include_router(ws_router)

@@ -103,9 +103,7 @@ export function normalizeFolderPath(path: string): string {
 
 const DISABLED_DOMAINS_KEY = "llmwiki_disabled_domains";
 
-// Domains where the extension never injects, regardless of user preference.
-// The wiki app itself ships its own highlight UI; the content script's pill
-// and popover would collide with it.
+// The wiki app has its own highlight UI that the content script would collide with.
 const BUILT_IN_DISABLED_SUFFIXES = ["llmwiki.app"];
 
 function matchesSuffix(host: string, suffix: string): boolean {

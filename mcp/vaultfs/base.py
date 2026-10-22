@@ -104,12 +104,6 @@ class VaultFS(ABC):
     def delete_from_disk(self, docs: list[dict]) -> None: ...
 
     @abstractmethod
-    async def delete_references(self, source_doc_id: str) -> None: ...
-
-    @abstractmethod
-    async def upsert_reference(self, source_id: str, target_id: str, kb_id: str, ref_type: str, page: int | None) -> None: ...
-
-    @abstractmethod
     async def replace_references(
         self,
         source_id: str,

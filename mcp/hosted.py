@@ -1,5 +1,3 @@
-"""Supavault MCP Server — knowledge vault tools for Claude."""
-
 import importlib.util
 import os
 from pathlib import Path
@@ -49,15 +47,7 @@ if settings.LOGFIRE_TOKEN:
     logfire.instrument_asyncpg()
 
 def _build_allowed_hosts(mcp_url: str) -> list[str]:
-    """Build the allowed_hosts list for TransportSecuritySettings.
-
-    Returns both the bare hostname and the ``host:*`` port-wildcard form so
-    that requests reaching the MCP server inside a container network — where
-    the Host header includes the internal port (e.g. ``llmwiki-mcp:8080``) —
-    are not rejected as 421 Misdirected Request. External requests routed
-    through a reverse proxy on ports 80/443 present a port-less Host header
-    and are matched by the bare entry, so this is backwards compatible.
-    """
+    """Allow the bare host (proxied 80/443) and `host:*`, since in-container Host headers carry the port and would 421."""
     host = urlparse(mcp_url).hostname or "localhost"
     return [host, f"{host}:*"]
 
@@ -80,8 +70,7 @@ mcp = FastMCP(
         enable_dns_rebinding_protection=True,
         allowed_hosts=_build_allowed_hosts(settings.MCP_URL),
     ),
-    # Stateless: in-memory sessions die on every Railway restart/redeploy, and the
-    # idle SSE stream has no keepalive so the edge proxy cuts it — both drop clients.
+    # Stateless: in-memory sessions die on every redeploy, and the edge proxy cuts idle SSE streams.
     stateless_http=True,
 )
 
@@ -108,8 +97,7 @@ async def health(request):
     return PlainTextResponse("OK")
 
 
-# RFC 9728 mounts the metadata at /.well-known/oauth-protected-resource/mcp;
-# ChatGPT also probes the un-suffixed root and treats the 404 as a dead server.
+# RFC 9728 suffixes the metadata path with /mcp; ChatGPT also probes the root and treats a 404 as a dead server.
 def _root_protected_resource_route() -> Route:
     from mcp.server.auth.handlers.metadata import ProtectedResourceMetadataHandler
     from mcp.server.auth.routes import cors_middleware

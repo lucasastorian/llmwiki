@@ -39,8 +39,7 @@ const defaultDependencies: SavePdfDependencies = {
 export function shouldUseBrowserPdfFallback(error: unknown): boolean {
   if (!(error instanceof PdfIngestError)) return false;
   if ([400, 404, 405, 501].includes(error.status)) return true;
-  // URL ingestion caps public downloads at 50 MiB while authenticated TUS
-  // uploads support 100 MiB. Do not confuse that limit with account quota 413s.
+  // URL ingestion caps at 50 MiB but TUS allows 100 MiB; account-quota 413s must not fall back.
   return error.status === 413 && /PDF exceeds the \d+ MB download limit/i.test(error.detail);
 }
 
@@ -50,9 +49,6 @@ export async function savePdfFromTab(
 ): Promise<SaveResult> {
   const { url, apiUrl, accessToken, knowledgeBaseId, path } = request;
 
-  // Public hosted PDFs can travel publisher -> API -> S3. This avoids both the
-  // browser upload and Chrome runtime messaging entirely, and the API records
-  // source_url so repeat saves are deduplicated.
   if (accessToken && isHttpUrl(url) && url.length <= MAX_URL_INGEST_LENGTH) {
     try {
       return await dependencies.ingestPdfFromUrl(
@@ -67,8 +63,7 @@ export async function savePdfFromTab(
     }
   }
 
-  // Private, cookie-authenticated, large, and local PDFs stay as a Blob in the
-  // durable offscreen document. No PDF bytes cross Chrome runtime messaging.
+  // Private, large, and local PDFs: download here so no PDF bytes cross runtime messaging.
   const { response, pdf } = await downloadPdf(
     dependencies.fetchPdf,
     url,
@@ -89,9 +84,7 @@ export async function savePdfFromTab(
     path,
   );
 
-  // Upload endpoints predate URL ingestion, so record the source immediately
-  // afterward. Saving succeeded even if this best-effort dedupe annotation
-  // fails; surfacing an error here would encourage a duplicate retry.
+  // Best-effort: failing here would invite a duplicate retry of an already-saved PDF.
   try {
     await dependencies.setDocumentSourceUrl(apiUrl, accessToken, result.id, url);
   } catch (error) {
@@ -149,8 +142,7 @@ async function downloadPdf(
           throw pdfTooLargeError();
         }
 
-        // Give Blob ArrayBuffer-backed chunks. This also releases the fetch
-        // implementation's buffers as the stream advances.
+        // Copy so the fetch implementation's buffers are released as the stream advances.
         const copy = new ArrayBuffer(value.byteLength);
         new Uint8Array(copy).set(value);
         chunks.push(copy);

@@ -2,10 +2,7 @@ import { AuthClient, type GoTrueClient } from "@supabase/auth-js";
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from "./constants";
 import { AUTH_REQUEST_TIMEOUT_MS, runWithDeadline } from "./deadline";
 
-/**
- * Custom storage adapter for Manifest V3 — service workers have no localStorage.
- * Uses chrome.storage.local which persists across browser restarts.
- */
+/** MV3 service workers have no localStorage. */
 const chromeStorageAdapter = {
   getItem: async (key: string): Promise<string | null> => {
     const result = await chrome.storage.local.get(key);

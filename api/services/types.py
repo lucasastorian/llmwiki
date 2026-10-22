@@ -6,15 +6,32 @@ from typing import Literal
 from uuid import UUID
 
 from domain.quiz_lint import validate_quiz_content
+from html_parser.helpers import replace_lone_surrogates
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 MAX_TEXT_CONTENT_BYTES = 10 * 1024 * 1024
+MAX_WEBCLIP_HTML_CHARS = 4 * 1024 * 1024
 
 
 def _validate_text_content_size(content: str) -> str:
     if len(content.encode("utf-8")) > MAX_TEXT_CONTENT_BYTES:
         raise ValueError("content must be at most 10 MiB when UTF-8 encoded")
     return content
+
+
+def _replace_lone_surrogates(value: object) -> object:
+    """JS strings may hold unpaired surrogates (e.g. a selection splitting an emoji); keep the text, drop the bad unit."""
+    return replace_lone_surrogates(value) if isinstance(value, str) else value
+
+
+@dataclass
+class ChunkRecord:
+    """Chunk fields needed for highlight mapping; a None `start_char` (older chunks) means unknown."""
+    id: str
+    chunk_index: int
+    source_content: str
+    page: int | None
+    start_char: int | None
 
 
 @dataclass
@@ -70,8 +87,7 @@ class CreateNote(BaseModel):
 
 
 class HighlightAnchor(BaseModel):
-    """DOM-relative anchor: where the highlight lives on the live page.
-    Used by the Chrome extension to re-apply highlights on revisit."""
+    """DOM anchor the extension uses to re-apply a highlight on the live page."""
     xpath: str = Field(max_length=2000)
     endXPath: str | None = Field(default=None, max_length=2000)
     startOffset: int = Field(ge=0)
@@ -80,25 +96,22 @@ class HighlightAnchor(BaseModel):
     prefix: str | None = Field(default=None, max_length=200)
     suffix: str | None = Field(default=None, max_length=200)
 
+    _surrogates = field_validator("textContent", "prefix", "suffix", mode="before")(_replace_lone_surrogates)
+
 
 class TextAnchor(BaseModel):
-    """Plaintext-relative anchor: character offsets into the canonical plaintext
-    derived from the parsed markdown. Used by the wiki TipTap viewer to render
-    highlights as ProseMirror decorations.
-
-    Computed at save time by the html_parser when a web clip is saved with
-    highlights — the parser maps each DOM anchor to its plaintext position.
-    """
+    """UTF-16 code-unit offsets (JS string indices) into a clip's canonical parse plaintext, computed at save time for the viewer."""
     textStart: int = Field(ge=0)
     textEnd: int = Field(ge=0)
     textContent: str = Field(max_length=10000)
     prefix: str | None = Field(default=None, max_length=200)
     suffix: str | None = Field(default=None, max_length=200)
 
+    _surrogates = field_validator("textContent", "prefix", "suffix", mode="before")(_replace_lone_surrogates)
+
 
 class PdfRect(BaseModel):
-    """One line-rect of a PDF highlight, in PDF user-space points (1/72").
-    Zoom/rotation independent — viewer converts to viewport coords at render."""
+    """One line-rect of a PDF highlight in zoom/rotation-independent user-space points (1/72")."""
     x: float
     y: float
     width: float = Field(ge=0)
@@ -106,17 +119,17 @@ class PdfRect(BaseModel):
 
 
 class PdfAnchor(BaseModel):
-    """PDF-relative anchor used when Highlight.type == "pdf".
-    Stored once per highlight; one rect per visual line of the selection."""
+    """PDF highlight anchor with one rect per visual line of the selection."""
     page: int = Field(ge=1)
-    # Page-local offsets into normalized extracted page text. Optional for
-    # highlights saved before offset-aware PDF anchoring was introduced.
+    # Offsets into normalized page text; absent on highlights older than offset-aware anchoring.
     textStart: int | None = Field(default=None, ge=0)
     textEnd: int | None = Field(default=None, ge=0)
     textContent: str = Field(max_length=10000)
     prefix: str | None = Field(default=None, max_length=200)
     suffix: str | None = Field(default=None, max_length=200)
     rects: list[PdfRect] = Field(min_length=1, max_length=200)
+
+    _surrogates = field_validator("textContent", "prefix", "suffix", mode="before")(_replace_lone_surrogates)
 
 
 class HighlightReply(BaseModel):
@@ -125,6 +138,8 @@ class HighlightReply(BaseModel):
     author: Literal["user", "agent"] = "agent"
     text: str = Field(max_length=4000)
     createdAt: str = Field(max_length=64)
+
+    _surrogates = field_validator("text", mode="before")(_replace_lone_surrogates)
 
 
 class Highlight(BaseModel):
@@ -137,6 +152,8 @@ class Highlight(BaseModel):
     replies: list[HighlightReply] = Field(default_factory=list, max_length=50)
     color: str = Field(default="yellow", max_length=32)
     createdAt: str = Field(max_length=64)
+
+    _surrogates = field_validator("comment", mode="before")(_replace_lone_surrogates)
 
     @model_validator(mode="after")
     def validate_anchor_shape(self):
@@ -159,21 +176,9 @@ class Highlight(BaseModel):
         return self
 
 
-class ReplaceHighlights(BaseModel):
-    highlights: list[Highlight] = Field(default_factory=list, max_length=500)
-    expectedVersion: int | None = None
-
-
 class UpsertHighlight(BaseModel):
-    """Single-entry idempotent upsert. Server matches by `highlight.id` and
-    replaces the matching entry, or appends if absent. Re-posting the same
-    payload twice is a no-op semantically (same final state)."""
+    """Idempotent upsert: replaces the entry matching `highlight.id`, else appends."""
     highlight: Highlight
-    expectedVersion: int | None = None
-
-
-class DeleteHighlight(BaseModel):
-    """Optional body for the DELETE granular endpoint. Empty body is fine."""
     expectedVersion: int | None = None
 
 
@@ -184,14 +189,14 @@ class CreateFromUrl(BaseModel):
 
 
 class CreateWebClip(BaseModel):
-    # 10 MB is generous for HTML; a typical blog article is <100 KB.
-    # Bounds the BeautifulSoup parsing surface to keep one upload from
-    # DoS-ing the API.
     url: str = Field(max_length=2048)
     title: str = Field(max_length=512)
-    html: str = Field(max_length=10 * 1024 * 1024)
+    # Bounds BeautifulSoup parse cost; a typical article is <100 KB.
+    html: str = Field(max_length=MAX_WEBCLIP_HTML_CHARS)
     path: str = Field(default="/webclipper/", max_length=256)
     highlights: list[Highlight] | None = Field(default=None, max_length=500)
+
+    _surrogates = field_validator("title", "html", mode="before")(_replace_lone_surrogates)
 
 
 class UpdateContent(BaseModel):
@@ -208,8 +213,7 @@ class UpdateMetadata(BaseModel):
     tags: list[str] | None = None
     date: str | None = None
     metadata: dict | None = None
-    # knowledge_base_id is the move target. Server validates ownership of the
-    # target KB and cascades the kb_id update to chunks/pages.
+    # Move target KB.
     knowledge_base_id: str | None = None
 
     def changed_fields(self) -> dict:

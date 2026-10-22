@@ -7,7 +7,6 @@ import { apiFetch } from '@/lib/api'
 import dynamic from 'next/dynamic'
 
 const PdfViewer = dynamic(() => import('@/components/viewer/PdfViewer'), { ssr: false })
-const HtmlViewer = dynamic(() => import('@/components/viewer/HtmlViewer'), { ssr: false })
 const MarkdownClipViewer = dynamic(
   () => import('@/components/viewer/MarkdownClipViewer'),
   { ssr: false },
@@ -69,19 +68,7 @@ export function ImageViewer({ documentId, title }: { documentId: string; title: 
 }
 
 export function HtmlDocViewer({ documentId, title: _title }: { documentId: string; title: string }) {
-  // Renders the parsed markdown of an HTML clip via TipTap, with stored
-  // highlights applied as ProseMirror decorations. The original tagged HTML
-  // remains in S3 for a future "View original" fallback.
   return <MarkdownClipViewer documentId={documentId} className="h-full" />
-}
-
-/** Legacy iframe-based viewer for the original tagged HTML. Kept for the
- *  future "View original" toggle; not the default surface for clips. */
-export function HtmlOriginalViewer({ documentId, title: _title }: { documentId: string; title: string }) {
-  const { url, error } = useDocumentUrl(documentId)
-  if (error) return <ErrorMessage message="Failed to load HTML" />
-  if (!url) return <LoadingSpinner />
-  return <HtmlViewer fileUrl={url} className="h-full" />
 }
 
 export function ContentViewer({ documentId, title, fileType }: { documentId: string; title: string; fileType: string }) {

@@ -19,9 +19,7 @@ _JWKS_TTL_SECONDS = 15 * 60
 _JWKS_MIN_REFRESH_SECONDS = 10
 _jwks_lock = asyncio.Lock()
 
-# Unknown key IDs are attacker-controlled because the JWT header is parsed
-# before signature verification. Keep a small negative cache so repeated misses
-# fail locally, and bound it so random kids cannot grow process memory forever.
+# kid is read before signature verification (attacker-controlled): negative-cache misses, bounded.
 _UNKNOWN_KID_TTL_SECONDS = 30
 _UNKNOWN_KID_CACHE_MAX = 256
 _unknown_kids: OrderedDict[str, float] = OrderedDict()
@@ -55,11 +53,7 @@ async def _fetch_jwks() -> None:
 
 
 async def _refresh_jwks_if_needed(force: bool = False, kid: str | None = None) -> None:
-    """Refresh JWKS at most once per cooldown, including unknown-kid misses.
-
-    ``kid`` lets a waiter re-check whether another request already fetched the
-    key after acquiring the single-flight lock.
-    """
+    """Refresh JWKS at most once per cooldown; ``kid`` lets a lock waiter skip an already-fetched key."""
     global _jwks_last_refresh_attempt
     async with _jwks_lock:
         if kid and kid in _jwks_cache:
@@ -71,8 +65,7 @@ async def _refresh_jwks_if_needed(force: bool = False, kid: str | None = None) -
         if not force and not _jwks_is_stale():
             return
 
-        # Record attempts, not only successful fetches. Otherwise a JWKS outage
-        # turns every authentication request into another outbound HTTP call.
+        # Stamp attempts, not successes, so a JWKS outage doesn't make every request refetch.
         _jwks_last_refresh_attempt = now
         try:
             await _fetch_jwks()

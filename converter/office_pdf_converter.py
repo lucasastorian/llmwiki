@@ -11,8 +11,7 @@ class OfficePdfConverter:
         self._config = config
 
     def convert(self, source_path: Path, tmpdir: str) -> Path:
-        # A per-conversion UserInstallation profile avoids the headless profile-lock
-        # contention that leaves zombie soffice/Java processes under concurrency.
+        # Per-conversion profile avoids lock contention that leaves zombie soffice/Java processes.
         profile = f"file://{tmpdir}/lo-profile"
         process_group.run_in_process_group(
             [

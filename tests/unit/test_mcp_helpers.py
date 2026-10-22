@@ -1,8 +1,4 @@
-"""Unit tests for MCP tool helpers (pure functions only, no DB).
-
-The pure functions are copied here to avoid the mcp package namespace
-collision (local mcp/ dir shadows the pip mcp package).
-"""
+"""Tests copies of the pure MCP helpers, because the local mcp/ dir shadows the pip mcp package."""
 
 from fnmatch import fnmatch
 

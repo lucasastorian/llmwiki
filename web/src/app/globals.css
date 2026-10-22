@@ -9,7 +9,6 @@
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 
-  /* Core UI tokens */
   --color-card: hsl(var(--card));
   --color-card-foreground: hsl(var(--card-foreground));
   --color-popover: hsl(var(--popover));
@@ -27,17 +26,15 @@
   --color-input: hsl(var(--input));
   --color-ring: hsl(var(--ring));
 
-  /* Charts already use full color functions, keep as-is */
+  /* Chart vars are already full color functions, so no hsl() wrapper. */
   --color-chart-1: var(--chart-1);
   --color-chart-2: var(--chart-2);
   --color-chart-3: var(--chart-3);
   --color-chart-4: var(--chart-4);
   --color-chart-5: var(--chart-5);
 
-  /* Accent blue */
   --color-accent-blue: hsl(var(--accent-blue));
 
-  /* Sidebar tokens */
   --color-sidebar: hsl(var(--sidebar));
   --color-sidebar-foreground: hsl(var(--sidebar-foreground));
   --color-sidebar-primary: hsl(var(--sidebar-primary));
@@ -47,7 +44,6 @@
   --color-sidebar-border: hsl(var(--sidebar-border));
   --color-sidebar-ring: hsl(var(--sidebar-ring));
 
-  /* Radii passthrough */
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
@@ -61,7 +57,6 @@
   --radius-sm: calc(var(--radius) - 4px);
   --wiki-highlight: 45 90% 55% / 0.35;
 
-  /* Light theme — warm paper */
   --background: 30 3% 96%;
   --foreground: 20 14% 4%;
   --card: 30 30% 99%;
@@ -97,7 +92,6 @@
 }
 
 .dark {
-  /* Dark theme — lamp light (warm darks, not pure black) */
   --background: 20 14% 4%;
   --foreground: 40 10% 90%;
   --card: 20 12% 8%;
@@ -133,7 +127,7 @@
   --wiki-highlight: 45 80% 50% / 0.25;
 }
 
-/* CSS Custom Highlight API paint for wiki-page highlights (see WikiHighlighter). */
+/* CSS Custom Highlight API: paints ranges without touching the DOM. */
 ::highlight(wiki-highlight) {
   background-color: hsl(var(--wiki-highlight));
 }
@@ -153,24 +147,20 @@
 }
 
 @layer components {
-  /* Surfaces */
   .surface        { @apply bg-card text-card-foreground border border-border rounded-xl shadow-sm; }
   .panel          { @apply bg-background text-foreground border border-border rounded-2xl shadow-lg; }
   .muted-block    { @apply bg-muted text-muted-foreground rounded-md; }
   .separator      { @apply h-px w-full bg-border; }
 
-  /* Layout helpers */
   .stack-2        { @apply flex flex-col gap-2; }
   .stack-3        { @apply flex flex-col gap-3; }
   .stack-4        { @apply flex flex-col gap-4; }
 
-  /* Inline chips/badges (variants via data-role) */
   .chip           { @apply text-xs px-2 py-1 rounded-full ring-1 ring-inset; }
   .chip[data-role="operator"] { @apply bg-muted text-muted-foreground ring-border; }
   .chip[data-role="analyst"]  { @apply bg-muted text-muted-foreground ring-border; }
   .chip[data-role="exec"]     { @apply bg-zinc-800 text-zinc-300 ring-zinc-700; }
 
-  /* Minimal prose styling - tighter, more technical */
   .prose {
     @apply text-[15px] leading-relaxed;
   }
@@ -209,7 +199,6 @@
     @apply text-foreground underline underline-offset-2 decoration-foreground/30 hover:decoration-foreground transition-colors;
   }
 
-  /* Policy page styling — roomier than wiki prose */
   .policy-prose {
     @apply text-[15px] leading-[1.75] text-muted-foreground;
   }
@@ -254,12 +243,10 @@
   .rounded-app-sm { border-radius: var(--radius-sm); }
 }
 
-/* Smooth panel collapse/expand — disabled while user is dragging the separator */
 .panel-transition:not(:has([data-resize-handle-active])) [data-panel] {
   transition: flex-grow 150ms ease-out;
 }
 
-/* Tab content transition */
 @keyframes tab-in {
   from {
     opacity: 0;
@@ -271,8 +258,7 @@
   }
 }
 
-/* fill-mode must not retain the transform: a retained transform makes this a
-   containing block for position:fixed descendants (fullscreen viewers). */
+/* No transform retained by fill-mode: it would become the containing block for position:fixed children. */
 .animate-tab-in {
   animation: tab-in 200ms ease-out backwards;
 }
@@ -283,7 +269,6 @@
   }
 }
 
-/* Ensure overlays, sheets, popovers mirror the radius */
 [data-slot="popover-content"],
 [data-slot="sheet-content"],
 [data-slot="dialog-content"],
@@ -294,7 +279,6 @@
   border-radius: var(--radius);
 }
 
-/* Hide scrollbars but keep scroll functionality */
 .no-scrollbar {
   -ms-overflow-style: none; /* IE and Edge */
   scrollbar-width: none; /* Firefox */
@@ -303,7 +287,6 @@
   display: none; /* Chrome, Safari, Opera */
 }
 
-/* Tiptap editor */
 .ProseMirror p.is-editor-empty:first-child::before {
   content: attr(data-placeholder);
   float: left;
@@ -312,7 +295,6 @@
   height: 0;
 }
 
-/* Tiptap line spacing */
 .ProseMirror {
   line-height: 1.7;
 }
@@ -334,7 +316,6 @@
   margin-bottom: 0.25em;
 }
 
-/* Tiptap tables (scoped to ProseMirror so they don't affect other tables) */
 .ProseMirror table {
   @apply w-full border-collapse my-3;
 }
@@ -361,7 +342,6 @@
   position: relative;
 }
 
-/* Tiptap images */
 .ProseMirror img {
   max-width: 100%;
   max-height: 560px;
@@ -375,7 +355,6 @@
   outline-offset: 2px;
 }
 
-/* Wiki markdown content — polished documentation typography */
 .wiki-content {
   @apply text-[15px] leading-[1.8];
 }
@@ -400,19 +379,16 @@
 .wiki-content strong { @apply font-semibold text-foreground; }
 .wiki-content a { @apply text-accent-blue underline underline-offset-2 decoration-accent-blue/30 hover:decoration-accent-blue transition-colors; }
 
-/* Wiki tables */
 .wiki-content table { @apply w-full border-collapse text-sm; }
 .wiki-content thead { @apply bg-muted/50; }
 .wiki-content th { @apply text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground px-3 py-2 border-b border-border; }
 .wiki-content td { @apply text-sm px-3 py-2 border-b border-border/50; }
 .wiki-content tr:last-child td { @apply border-b-0; }
 
-/* Wiki footnotes section */
 .wiki-content .footnotes { @apply mt-12 pt-6 border-t border-border; }
 .wiki-content .footnotes ol { @apply space-y-2; }
 .wiki-content .footnotes li { @apply text-sm text-muted-foreground; }
 
-/* Blockquote styles (legacy) */
 .markdown-blockquote {
   border-left: 3px solid hsl(var(--accent-blue) / 0.4) !important;
   padding-left: 16px !important;
@@ -427,10 +403,6 @@
   padding-bottom: 4px !important;
 }
 
-/* User highlights — rendered as ProseMirror inline decorations.
-   Source of truth is documents.highlights JSONB; this style is purely visual.
-   box-decoration-break: clone keeps the yellow contiguous when a highlight
-   wraps across line breaks. */
 .llmwiki-hl {
   position: relative;
   background: rgba(255, 224, 84, 0.55);

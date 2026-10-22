@@ -2,7 +2,7 @@
 
 import pytest
 from pydantic import ValidationError
-from services.types import Highlight
+from services.types import MAX_WEBCLIP_HTML_CHARS, CreateWebClip, Highlight
 
 
 def _base(**overrides):
@@ -61,3 +61,11 @@ def test_legacy_pdf_anchor_without_offsets_remains_valid():
     ))
     assert highlight.pdfAnchor is not None
     assert highlight.pdfAnchor.textStart is None
+
+
+def test_web_clip_html_is_capped_at_twice_the_extension_capture_limit() -> None:
+    clip = {"url": "https://example.com", "title": "t"}
+    CreateWebClip(**clip, html="x" * MAX_WEBCLIP_HTML_CHARS)
+    with pytest.raises(ValidationError):
+        CreateWebClip(**clip, html="x" * (MAX_WEBCLIP_HTML_CHARS + 1))
+    assert MAX_WEBCLIP_HTML_CHARS == 4 * 1024 * 1024

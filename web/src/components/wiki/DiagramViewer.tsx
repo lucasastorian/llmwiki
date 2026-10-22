@@ -114,7 +114,6 @@ export function DiagramViewer({ content, type, alt, onClose }: DiagramViewerProp
       tabIndex={-1}
       className="fixed inset-0 z-50 bg-background/90 backdrop-blur-sm flex flex-col outline-none"
     >
-      {/* Controls */}
       <div className="shrink-0 flex items-center justify-between px-4 h-10">
         <div className="flex items-center gap-1 text-xs text-muted-foreground">
           <button onClick={zoomOut} disabled={scale <= MIN_SCALE} className="p-1.5 rounded-md hover:bg-accent hover:text-foreground disabled:opacity-30 cursor-pointer" title="Zoom out">
@@ -132,7 +131,6 @@ export function DiagramViewer({ content, type, alt, onClose }: DiagramViewerProp
         </button>
       </div>
 
-      {/* Canvas */}
       <div
         className="flex-1 overflow-hidden cursor-grab active:cursor-grabbing bg-background"
         onWheel={handleWheel}

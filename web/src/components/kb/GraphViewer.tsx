@@ -39,9 +39,7 @@ interface Props {
   onNavigateToDoc?: (docId: string, sourceKind: string) => void
 }
 
-// d3-force stores simulation state (x/y/vx/vy) on the node objects themselves.
-// Reusing the same objects across renders and remounts is what keeps the
-// layout stable when toggling Sources or navigating away and back.
+// d3-force keeps x/y/vx/vy on the node objects; reusing them keeps the layout stable across remounts.
 const nodeCacheByKb = new Map<string, Map<string, GraphNode>>()
 
 const NODE_RADIUS = 3.5
@@ -70,8 +68,7 @@ export function GraphViewer({ kbId, focusNodeId, onNavigateToDoc }: Props) {
   const [dimensions, setDimensions] = React.useState({ width: 0, height: 0 })
   const [showSources, setShowSources] = React.useState(false)
 
-  // Monotonic sequence: only the latest in-flight fetch may apply its result,
-  // so a slow stale response can never overwrite fresher data.
+  // Only the latest in-flight fetch may apply its result.
   const fetchSeqRef = React.useRef(0)
 
   const fetchGraph = React.useCallback(() => {
@@ -99,15 +96,13 @@ export function GraphViewer({ kbId, focusNodeId, onNavigateToDoc }: Props) {
 
   React.useEffect(() => { fetchGraph() }, [fetchGraph])
 
-  // A cites-only wiki has edges, but the wiki-only default filters them all
-  // out — flip the source layer on rather than claiming nothing is indexed.
+  // A cites-only wiki would look empty under the wiki-only default, so show sources.
   React.useEffect(() => {
     if (!graphData || focusNodeId) return
     const hasWikiLinks = graphData.edges.some((e) => e.type === 'links_to')
     if (!hasWikiLinks && graphData.edges.length > 0) setShowSources(true)
   }, [graphData, focusNodeId])
 
-  // Always track container size — ref is always mounted
   React.useEffect(() => {
     const el = containerRef.current
     if (!el) return
@@ -157,7 +152,6 @@ export function GraphViewer({ kbId, focusNodeId, onNavigateToDoc }: Props) {
     let relevantEdges = graphData.edges
 
     if (focusNodeId) {
-      // Focus mode: show only edges touching the focus node
       const neighborIds = new Set<string>([focusNodeId])
       for (const e of graphData.edges) {
         if (e.source === focusNodeId) neighborIds.add(e.target)
@@ -168,7 +162,6 @@ export function GraphViewer({ kbId, focusNodeId, onNavigateToDoc }: Props) {
         (e) => e.source === focusNodeId || e.target === focusNodeId,
       )
     } else {
-      // Global mode: wiki-to-wiki links; the source layer brings citation edges with it
       const hubTitles = new Set(['overview', 'log'])
       relevantEdges = relevantEdges.filter(
         (e) => e.type === 'links_to' || (showSources && e.type === 'cites'),
@@ -190,8 +183,7 @@ export function GraphViewer({ kbId, focusNodeId, onNavigateToDoc }: Props) {
     const nodes = relevantNodes.map((n) => {
       const cached = cache.get(n.id)
       if (cached) {
-        // Refresh data fields; the server payload carries no x/y/vx/vy, so
-        // the simulation state survives the assign.
+        // Server payload has no x/y/vx/vy, so simulation state survives the assign.
         Object.assign(cached, n)
         return cached
       }
@@ -251,7 +243,7 @@ export function GraphViewer({ kbId, focusNodeId, onNavigateToDoc }: Props) {
       }
       ctx.globalAlpha = 1
     },
-    // hoverNodeState triggers a new function ref so ForceGraph repaints on hover change
+    // A new function ref is what makes ForceGraph repaint on hover.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [hoverNodeState],
   )
@@ -305,7 +297,7 @@ export function GraphViewer({ kbId, focusNodeId, onNavigateToDoc }: Props) {
   const hasNodes = forceGraphData.nodes.length > 0
   const ready = !loading && !error && graphData && hasNodes && hasEdges && dimensions.width > 0
 
-  // Configure forces for better spacing — must run after ForceGraph2D mounts
+  // Must run after ForceGraph2D mounts.
   React.useEffect(() => {
     const fg = graphRef.current
     if (!fg) return
@@ -313,7 +305,6 @@ export function GraphViewer({ kbId, focusNodeId, onNavigateToDoc }: Props) {
     fg.d3Force('link')?.distance(130).strength(0.07)
 
     let cancelled = false
-    // Collision force prevents node overlap
     import('d3-force').then(({ forceCollide, forceX, forceY }) => {
       if (cancelled || graphRef.current !== fg) return
       fg.d3Force('collide', forceCollide((node: any) =>
@@ -328,7 +319,6 @@ export function GraphViewer({ kbId, focusNodeId, onNavigateToDoc }: Props) {
     }
   }, [forceGraphData, ready])
 
-  // Determine overlay content for non-graph states
   let overlay: React.ReactNode = null
   if (loading) {
     overlay = <Loader2 className="size-5 animate-spin text-muted-foreground" />
@@ -389,7 +379,6 @@ export function GraphViewer({ kbId, focusNodeId, onNavigateToDoc }: Props) {
             d3VelocityDecay={0.4}
           />
 
-          {/* Controls */}
           <div className="absolute top-3 right-3 flex items-center gap-3 text-[10px] text-muted-foreground bg-background/80 backdrop-blur-sm px-3 py-1.5 rounded-md border border-border">
             <button
               onClick={() => setShowSources((s) => !s)}
@@ -410,7 +399,6 @@ export function GraphViewer({ kbId, focusNodeId, onNavigateToDoc }: Props) {
             </button>
           </div>
 
-          {/* Hover tooltip — follows cursor */}
           {hoverNodeState && (() => {
             const p = hoverNodeState.path.toLowerCase()
             const category = hoverNodeState.source_kind !== 'wiki'

@@ -1,5 +1,3 @@
-"""Binary extraction pipeline in local_processor: claim guard, PDF, Office, Mistral."""
-
 import asyncio
 import sys
 import threading
@@ -12,8 +10,7 @@ import pytest
 
 
 def _stub_pdf_extract(monkeypatch, extract_fn) -> None:
-    """Inject a fake services.pdf_extract so the lazy import inside _process_pdf
-    resolves without the heavy opendataloader_pdf dependency."""
+    """Stub services.pdf_extract so _process_pdf's lazy import skips the heavy opendataloader_pdf dependency."""
     module = types.ModuleType("services.pdf_extract")
     module.extract_pdf = extract_fn
     monkeypatch.setitem(sys.modules, "services.pdf_extract", module)
@@ -135,7 +132,7 @@ async def test_processing_doc_is_not_reclaimed(tmp_path, monkeypatch):
     assert called is False
     assert await _chunk_count(db, doc_id) == 0
     row = await _doc_row(db, doc_id)
-    assert row["status"] == "processing"  # untouched
+    assert row["status"] == "processing"
 
     await db.close()
 
@@ -387,4 +384,25 @@ async def test_pdf_mistral_backend_stores_pages(tmp_path, monkeypatch):
     assert await _page_count(db, doc_id) == 2
     assert await _chunk_count(db, doc_id) > 0
 
+    await db.close()
+
+
+async def test_html_that_fails_to_parse_marks_failed_instead_of_storing_raw_html(tmp_path, monkeypatch):
+    from domain.local_processor import process_document
+
+    monkeypatch.setattr("html_parser.parser.MAX_OUTPUT_CHARS", 50)
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "page.html").write_text("<p>" + "word " * 100 + "</p>", encoding="utf-8")
+    db = await _init_db(workspace)
+    doc_id = await _insert_doc(db, filename="page.html", file_type="html", relative_path="page.html")
+
+    await process_document(db, doc_id, workspace)
+
+    row = await _doc_row(db, doc_id)
+    cursor = await db.execute("SELECT content FROM documents WHERE id = ?", (doc_id,))
+    content = (await cursor.fetchone())[0]
+    assert row["status"] == "failed"
+    assert "too large" in row["error_message"]
+    assert content is None
     await db.close()

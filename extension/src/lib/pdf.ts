@@ -15,12 +15,7 @@ export function hasPdfSuffix(url: string, title: string | null | undefined): boo
   return title?.toLowerCase().trim().endsWith(".pdf") ?? false;
 }
 
-/**
- * Normalize a PDF tab URL for lookup and deduplication without stripping query
- * parameters. Signed and authenticated PDF links often depend on their full
- * query string; only the viewer-only fragment (for example #page=12) is safe
- * to remove.
- */
+/** Strips only the fragment; signed PDF links need their full query string. */
 export function normalizePdfSourceUrl(href: string): string {
   const value = href.trim();
   try {
@@ -28,7 +23,7 @@ export function normalizePdfSourceUrl(href: string): string {
     url.hash = "";
     return url.toString();
   } catch {
-    return value.split("#", 1)[0];
+    return value.split("#", 1)[0]!;
   }
 }
 
@@ -40,11 +35,10 @@ function pathnameOf(url: string): string {
   }
 }
 
-// Chrome's built-in PDF viewer reports application/pdf as the top document's
-// contentType even when the URL has no .pdf suffix (e.g. arxiv.org/pdf/<id>).
+// Catches PDFs without a .pdf suffix (e.g. arxiv.org/pdf/<id>) via Chrome's viewer contentType.
 async function tabReportsPdfContentType(tabId: number): Promise<boolean> {
   try {
-    const [{ result }] = await withDeadline(
+    const [injection] = await withDeadline(
       chrome.scripting.executeScript({
         target: { tabId },
         func: () => document.contentType,
@@ -52,7 +46,7 @@ async function tabReportsPdfContentType(tabId: number): Promise<boolean> {
       RUNTIME_MESSAGE_TIMEOUT_MS,
       "PDF detection did not finish",
     );
-    return result === "application/pdf";
+    return injection?.result === "application/pdf";
   } catch {
     return false;
   }

@@ -237,10 +237,6 @@ export function NoteToolbar({ editor, backLabel, noteTitle, onTitleChange, onBac
   )
 }
 
-/**
- * Standalone formatting buttons — can be rendered anywhere with an Editor instance.
- * Used by FilesGrid to embed formatting in its unified toolbar.
- */
 export function NoteFormattingButtons({ editor }: { editor: Editor | null }) {
   const [linkOpen, setLinkOpen] = React.useState(false)
   const [linkUrl, setLinkUrl] = React.useState('')

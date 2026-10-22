@@ -1,5 +1,3 @@
-"""Quiz-block validation — shared by the write tools and the lint tool."""
-
 import yaml
 
 MAX_QUESTIONS = 20
@@ -86,6 +84,8 @@ def lint_quiz_blocks(content: str) -> list[str]:
 
 def _lint_block(index: int, source: str) -> list[str]:
     label = f"quiz block {index}"
+    if _uses_aliases(source):
+        return [f"{label}: YAML anchors and aliases are not allowed"]
     try:
         data = yaml.safe_load(source)
     except yaml.YAMLError as e:
@@ -178,3 +178,10 @@ def _lint_text_fields(label: str, question: dict) -> list[str]:
     if not isinstance(rubric, str) or not rubric.strip():
         return [f"{label}: `rubric` must be non-empty text describing how to grade the answer"]
     return []
+
+
+def _uses_aliases(source: str) -> bool:
+    try:
+        return any(isinstance(event, yaml.AliasEvent) for event in yaml.parse(source, Loader=yaml.SafeLoader))
+    except yaml.YAMLError:
+        return False
