@@ -29,7 +29,7 @@
     "tailwindcss": "4.1.18",
     "typescript": "5.9.3",
     "vite": "6.4.4",
-    "vitest": "4.1.11",
+    "vitest": "4.1.12",
     "wxt": "0.21.4"
   },
   "overrides": {
