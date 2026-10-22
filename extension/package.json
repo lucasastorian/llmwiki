@@ -28,12 +28,12 @@
     "postcss": "8.5.26",
     "tailwindcss": "4.1.18",
     "typescript": "5.9.3",
-    "vite": "6.4.3",
+    "vite": "6.4.4",
     "vitest": "4.1.11",
     "wxt": "0.21.4"
   },
   "overrides": {
-    "vite": "6.4.3",
+    "vite": "6.4.4",
     "esbuild": "0.28.1",
     "@babel/core": "7.29.7",
     "rollup": "4.59.0",
