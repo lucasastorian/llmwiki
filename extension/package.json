@@ -24,7 +24,7 @@
     "@types/react-dom": "19.2.3",
     "@wxt-dev/module-react": "1.1.5",
     "autoprefixer": "10.4.24",
-    "happy-dom": "20.9.0",
+    "happy-dom": "21.0.4",
     "postcss": "8.5.26",
     "tailwindcss": "4.1.18",
     "typescript": "5.9.3",
