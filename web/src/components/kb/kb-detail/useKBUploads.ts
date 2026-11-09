@@ -11,6 +11,8 @@ const isLocal = process.env.NEXT_PUBLIC_MODE === 'local'
 const UPLOAD_ACCEPT = '.md,.txt,.pdf,.pptx,.ppt,.docx,.doc,.png,.jpg,.jpeg,.webp,.gif,.svg,.xlsx,.csv,.html,.htm'
 const BINARY_UPLOAD_TYPES = new Set(['pdf', 'pptx', 'ppt', 'docx', 'doc', 'png', 'jpg', 'jpeg', 'webp', 'gif', 'xlsx', 'csv', 'html', 'htm'])
 const TUS_RETRY_DELAYS = [0, 1000, 3000, 5000]
+// Stays under the 100 MB request body cap of proxies in front of the API.
+const TUS_CHUNK_BYTES = 50 * 1024 * 1024
 
 type Params = {
   kbId: string
@@ -49,6 +51,7 @@ export function useKBUploads({ kbId, kbSlug, userId, documents, setDocuments, so
       const upload = new Upload(file, {
         endpoint: `${API_URL}/v1/uploads`,
         retryDelays: TUS_RETRY_DELAYS,
+        chunkSize: TUS_CHUNK_BYTES,
         metadata: { filename: file.name, knowledge_base_id: kbId, path: targetPath },
         headers: { Authorization: `Bearer ${uploadToken}` },
         onBeforeRequest: (request) => {

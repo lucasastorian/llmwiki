@@ -8,7 +8,7 @@ httpx==0.28.1
 pydantic==2.13.4
 pydantic-settings==2.14.2
 python-multipart==0.0.31
-logfire[fastapi,asyncpg]==4.32.1
+logfire[fastapi,asyncpg]==5.4.0
 sentry-sdk[fastapi]==2.59.0
 pyyaml==6.0.3
 aioboto3==15.5.0
@@ -26,3 +26,4 @@ certifi>=2026.10.19
 cryptography==50.0.0
 requests==2.33.1
 urllib3==2.8.0
+opentelemetry-api>=1.45.1
