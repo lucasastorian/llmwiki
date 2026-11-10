@@ -59,6 +59,23 @@ def _find_libreoffice() -> str | None:
     return None
 
 
+def _prepare_office_profile(profile: Path) -> None:
+    # macOS LibreOffice 26.8 headless can miss system/user fonts (tdf#173306).
+    # Its profile font scanner still works. Link installed fonts into this
+    # conversion's disposable profile without modifying the app or user's fonts.
+    if sys.platform != "darwin":
+        return
+    fonts = profile / "user" / "fonts"
+    fonts.mkdir(parents=True, exist_ok=True)
+    for name, directory in (
+        ("system", Path("/System/Library/Fonts")),
+        ("shared", Path("/Library/Fonts")),
+        ("user", Path.home() / "Library" / "Fonts"),
+    ):
+        if directory.is_dir():
+            (fonts / name).symlink_to(directory, target_is_directory=True)
+
+
 def _run_process_group(command: list[str], timeout: int) -> subprocess.CompletedProcess:
     """Run a conversion in a process group so timeout cannot orphan children."""
     popen_options: dict = {
@@ -420,11 +437,13 @@ async def _process_office(db: aiosqlite.Connection, doc_id: str, file_path: Path
 
     tmpdir = Path(await to_thread_joined(tempfile.mkdtemp))
     try:
+        profile = tmpdir / "lo-profile"
+        await to_thread_joined(_prepare_office_profile, profile)
         result = await to_thread_joined(
             _run_process_group,
             [
                 lo,
-                f"-env:UserInstallation=file://{tmpdir}/lo-profile",
+                f"-env:UserInstallation={profile.as_uri()}",
                 "--headless",
                 "--norestore",
                 "--nofirststartwizard",

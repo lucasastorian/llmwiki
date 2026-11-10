@@ -459,3 +459,38 @@ async def test_failed_office_upload_remains_in_document_list(tmp_path, monkeypat
         assert "LibreOffice not installed" in doc["error_message"]
     finally:
         await db.close()
+
+
+def test_macos_office_profile_exposes_installed_fonts(tmp_path, monkeypatch):
+    import domain.local_processor as lp
+
+    monkeypatch.setattr(lp.sys, 'platform', 'darwin')
+    monkeypatch.setattr(Path, 'home', lambda: tmp_path / 'home')
+    user_fonts = tmp_path / 'home/Library/Fonts'
+    user_fonts.mkdir(parents=True)
+    font = user_fonts / 'Korean.ttf'
+    font.write_bytes(b'installed font')
+    original_is_dir = Path.is_dir
+    monkeypatch.setattr(Path, 'is_dir', lambda p: False if str(p) in (
+        '/System/Library/Fonts', '/Library/Fonts',
+    ) else original_is_dir(p))
+
+    profile = tmp_path / 'conversion profile'
+    lp._prepare_office_profile(profile)
+    link = profile / 'user/fonts/user'
+    assert link.is_symlink()
+    assert (link / font.name).read_bytes() == b'installed font'
+    assert not (profile / 'user/fonts/system').exists()
+    assert not (profile / 'user/fonts/shared').exists()
+    import shutil
+    shutil.rmtree(profile)
+    assert font.read_bytes() == b'installed font'
+
+
+def test_office_profile_leaves_other_platforms_unchanged(tmp_path, monkeypatch):
+    import domain.local_processor as lp
+
+    monkeypatch.setattr(lp.sys, 'platform', 'linux')
+    profile = tmp_path / 'profile'
+    lp._prepare_office_profile(profile)
+    assert not profile.exists()
