@@ -240,3 +240,46 @@ async def test_failed_copy_metadata_leaves_no_second_path(service, tmp_path: Pat
 
     assert (tmp_path / "a.md").read_text() == "A"
     assert not (tmp_path / "c.md").exists()
+
+
+@pytest.mark.parametrize('extension', ['docx', 'doc', 'pptx', 'ppt'])
+@pytest.mark.parametrize('namespace', ['local', USER_ID])
+async def test_office_preview_serves_converted_pdf(service, tmp_path, extension, namespace):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from routes import files
+
+    svc, db = service
+    doc_id = await _seed(db, f'source.{extension}', extension)
+    (tmp_path / f'source.{extension}').write_bytes(b'PK original office file')
+    key = f'{namespace}/{doc_id}/converted.pdf'
+    converted = tmp_path / '.llmwiki' / 'cache' / key
+    converted.parent.mkdir(parents=True)
+    converted.write_bytes(b'%PDF-1.7 converted preview')
+
+    result = await svc.get_url(doc_id)
+    assert result['url'].endswith(f'/v1/files/{key}')
+    files.set_workspace_root(str(tmp_path))
+    app = FastAPI()
+    app.include_router(files.router)
+    with TestClient(app) as client:
+        response = client.get(f'/v1/files/{key}')
+    assert response.status_code == 200
+    assert response.headers['content-type'] == 'application/pdf'
+    assert response.content == converted.read_bytes()
+
+
+async def test_office_preview_without_conversion_does_not_return_docx(service):
+    from fastapi import HTTPException
+
+    svc, db = service
+    doc_id = await _seed(db, 'source.docx', 'docx')
+    with pytest.raises(HTTPException) as exc:
+        await svc.get_url(doc_id)
+    assert exc.value.status_code == 409
+
+
+async def test_pdf_preview_still_returns_original(service):
+    svc, db = service
+    doc_id = await _seed(db, 'source.pdf', 'pdf')
+    assert (await svc.get_url(doc_id))['url'].endswith('/v1/files/source.pdf')

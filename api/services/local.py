@@ -10,7 +10,7 @@ import uuid
 from pathlib import Path
 
 from config import settings
-from domain.file_types import SIMPLE_TEXT_TYPES
+from domain.file_types import OFFICE_TYPES, SIMPLE_TEXT_TYPES
 from domain.watcher import mark_written
 from fastapi import HTTPException
 from infra.db.sqlite import SQLiteChunkRepository, SQLiteDocumentRepository, serialized_write
@@ -282,13 +282,17 @@ class LocalDocumentService(DocumentService):
         ext = doc["filename"].rsplit(".", 1)[-1].lower() if "." in doc["filename"] else doc.get("file_type", "")
 
         for check_ext, cache_suffix in [
-            ({"pptx", "ppt", "docx", "doc"}, "converted.pdf"),
+            (OFFICE_TYPES, "converted.pdf"),
             ({"html", "htm"}, "tagged.html"),
         ]:
             if ext in check_ext:
-                cache_key = f"{doc.get('user_id', 'local')}/{doc['id']}/{cache_suffix}"
-                if (_workspace_root() / ".llmwiki" / "cache" / cache_key).is_file():
-                    return {"url": f"{api_url}/v1/files/{cache_key}"}
+                # Local extraction writes under local/<id>; retain older user-keyed caches.
+                for namespace in dict.fromkeys(("local", doc.get("user_id") or "local")):
+                    cache_key = f"{namespace}/{doc['id']}/{cache_suffix}"
+                    if (_workspace_root() / ".llmwiki" / "cache" / cache_key).is_file():
+                        return {"url": f"{api_url}/v1/files/{cache_key}"}
+                if ext in OFFICE_TYPES:
+                    raise HTTPException(status_code=409, detail="Converted PDF unavailable. Reprocess the document.")
 
         relative = doc.get("relative_path") or (doc["path"].rstrip("/") + "/" + doc["filename"]).lstrip("/")
         return {"url": f"{api_url}/v1/files/{relative}"}
