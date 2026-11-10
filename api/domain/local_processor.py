@@ -8,6 +8,7 @@ import os
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import uuid
 from datetime import UTC, datetime
@@ -47,7 +48,15 @@ def _copy_file(source: Path, destination: Path) -> None:
 
 
 def _find_libreoffice() -> str | None:
-    return shutil.which("libreoffice") or shutil.which("soffice")
+    executable = shutil.which("libreoffice") or shutil.which("soffice")
+    if executable:
+        return executable
+    if sys.platform == "darwin":
+        for applications in (Path("/Applications"), Path.home() / "Applications"):
+            candidate = applications / "LibreOffice.app/Contents/MacOS/soffice"
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return str(candidate)
+    return None
 
 
 def _run_process_group(command: list[str], timeout: int) -> subprocess.CompletedProcess:
