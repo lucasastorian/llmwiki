@@ -279,7 +279,7 @@ async def test_office_without_libreoffice_marks_failed(tmp_path, monkeypatch):
         db, filename="deck.docx", file_type="docx", relative_path="deck.docx",
     )
 
-    monkeypatch.setattr(lp.shutil, "which", lambda name: None)
+    monkeypatch.setattr(lp, "_find_libreoffice", lambda: None)
 
     await process_document(db, doc_id, workspace)
 
@@ -406,3 +406,91 @@ async def test_html_that_fails_to_parse_marks_failed_instead_of_storing_raw_html
     assert "too large" in row["error_message"]
     assert content is None
     await db.close()
+
+
+@pytest.mark.parametrize("installation", ["/Applications", "/Users/test/Applications"])
+def test_find_libreoffice_macos_app_bundle(monkeypatch, installation):
+    import domain.local_processor as lp
+
+    expected = Path(installation) / "LibreOffice.app/Contents/MacOS/soffice"
+    monkeypatch.setattr(lp.sys, "platform", "darwin")
+    monkeypatch.setattr(lp.shutil, "which", lambda name: None)
+    monkeypatch.setattr(Path, "home", lambda: Path("/Users/test"))
+    monkeypatch.setattr(Path, "is_file", lambda path: path == expected)
+    monkeypatch.setattr(lp.os, "access", lambda path, mode: path == expected)
+    assert lp._find_libreoffice() == str(expected)
+
+
+def test_find_libreoffice_prefers_path(monkeypatch):
+    import domain.local_processor as lp
+
+    monkeypatch.setattr(lp.shutil, "which", lambda name: "/custom/libreoffice")
+    assert lp._find_libreoffice() == "/custom/libreoffice"
+
+
+def test_find_libreoffice_rejects_non_executable_bundle(monkeypatch):
+    import domain.local_processor as lp
+
+    monkeypatch.setattr(lp.sys, "platform", "darwin")
+    monkeypatch.setattr(lp.shutil, "which", lambda name: None)
+    monkeypatch.setattr(Path, "is_file", lambda path: True)
+    monkeypatch.setattr(lp.os, "access", lambda path, mode: False)
+    assert lp._find_libreoffice() is None
+
+
+@pytest.mark.parametrize("path", [None, "/"])
+async def test_failed_office_upload_remains_in_document_list(tmp_path, monkeypatch, path):
+    import domain.local_processor as lp
+    from infra.db.sqlite import SQLiteDocumentRepository
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    db = await _init_db(workspace)
+    try:
+        (workspace / "deck.docx").write_bytes(b"PK fake docx")
+        doc_id = await _insert_doc(
+            db, filename="deck.docx", file_type="docx", relative_path="deck.docx",
+        )
+        monkeypatch.setattr(lp, "_find_libreoffice", lambda: None)
+        await lp.process_document(db, doc_id, workspace)
+        docs = await SQLiteDocumentRepository(db).list_by_kb("local", path=path)
+        doc = next(doc for doc in docs if doc["id"] == doc_id)
+        assert doc["status"] == "failed"
+        assert "LibreOffice not installed" in doc["error_message"]
+    finally:
+        await db.close()
+
+
+def test_macos_office_profile_exposes_installed_fonts(tmp_path, monkeypatch):
+    import domain.local_processor as lp
+
+    monkeypatch.setattr(lp.sys, 'platform', 'darwin')
+    monkeypatch.setattr(Path, 'home', lambda: tmp_path / 'home')
+    user_fonts = tmp_path / 'home/Library/Fonts'
+    user_fonts.mkdir(parents=True)
+    font = user_fonts / 'Korean.ttf'
+    font.write_bytes(b'installed font')
+    original_is_dir = Path.is_dir
+    monkeypatch.setattr(Path, 'is_dir', lambda p: False if str(p) in (
+        '/System/Library/Fonts', '/Library/Fonts',
+    ) else original_is_dir(p))
+
+    profile = tmp_path / 'conversion profile'
+    lp._prepare_office_profile(profile)
+    link = profile / 'user/fonts/user'
+    assert link.is_symlink()
+    assert (link / font.name).read_bytes() == b'installed font'
+    assert not (profile / 'user/fonts/system').exists()
+    assert not (profile / 'user/fonts/shared').exists()
+    import shutil
+    shutil.rmtree(profile)
+    assert font.read_bytes() == b'installed font'
+
+
+def test_office_profile_leaves_other_platforms_unchanged(tmp_path, monkeypatch):
+    import domain.local_processor as lp
+
+    monkeypatch.setattr(lp.sys, 'platform', 'linux')
+    profile = tmp_path / 'profile'
+    lp._prepare_office_profile(profile)
+    assert not profile.exists()

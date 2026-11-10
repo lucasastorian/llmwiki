@@ -88,14 +88,14 @@ class SQLiteDocumentRepository:
         if path:
             cursor = await self._db.execute(
                 f"SELECT {_DOC_COLUMNS} FROM documents "
-                "WHERE path = ? AND status != 'failed' "
+                "WHERE path = ? "
                 "ORDER BY filename",
                 (path,),
             )
         else:
             cursor = await self._db.execute(
                 f"SELECT {_DOC_COLUMNS} FROM documents "
-                "WHERE status != 'failed' ORDER BY filename",
+                "ORDER BY filename",
             )
         rows = await cursor.fetchall()
         return [_row_to_dict(cursor, r) for r in rows]

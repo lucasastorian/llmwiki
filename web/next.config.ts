@@ -5,6 +5,15 @@ import { withSentryConfig } from "@sentry/nextjs";
 const nextConfig: NextConfig = {
   output: "standalone",
   outputFileTracingRoot: path.join(__dirname),
+  webpack(config) {
+    // PDF.js's unminified bundle reuses Webpack runtime names, which collide
+    // with Next's eval-based development bundles (vercel/next.js#89177).
+    config.resolve.alias = {
+      ...config.resolve.alias,
+      "pdfjs-dist$": "pdfjs-dist/build/pdf.min.mjs",
+    };
+    return config;
+  },
   experimental: {
     // The /api rewrite proxies uploads; the API accepts 100 MiB, so the
     // proxy cap (default 10 MiB) must sit above it.
