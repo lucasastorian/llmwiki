@@ -1,4 +1,5 @@
 import re
+from dataclasses import replace
 from datetime import date
 
 import yaml
@@ -8,14 +9,15 @@ from vaultfs.base import DuplicateDocumentError, StorageQuotaExceededError
 from mcp.server.fastmcp import Context, FastMCP
 
 from .helpers import deep_link, resolve_path
+from .patch import FileUpdate, PatchError, PatchParser, apply_hunks, render_diff
 from .quiz_lint import QUIZ_SCHEMA_HINT, lint_quiz_blocks
 from .references import update_references
+from .types import PlannedPage
 
 _ASSET_EXTENSIONS = {".svg", ".csv", ".json", ".xml", ".html"}
 _FILE_EXT_RE = re.compile(r"\.(md|txt|svg|csv|json|xml|html)$", re.IGNORECASE)
 _FRONTMATTER_RE = re.compile(r"\A---[ \t]*\n(.+?\n)---[ \t]*\n", re.DOTALL)
 _FOOTNOTE_DEF_RE = re.compile(r"^\[\^([^\]]+)\]:", re.MULTILINE)
-_CONTEXT_LINES = 5
 _MAX_TEXT_CONTENT_BYTES = 10 * 1024 * 1024
 TEXT_BACKED_TYPES = frozenset({"md", "txt", "svg", "csv", "json", "xml"})
 
@@ -41,6 +43,10 @@ def _quiz_block_error(content: str) -> str | None:
         return None
     details = "\n".join(f"- {error}" for error in errors)
     return f"Error: invalid ```quiz block(s) — nothing was written.\n{details}\n{QUIZ_SCHEMA_HINT}"
+
+
+def _content_error(content: str) -> str | None:
+    return _content_size_error(content) or _quiz_block_error(content)
 
 
 def _parse_frontmatter(content: str) -> dict:
@@ -219,13 +225,9 @@ class WriteHandler:
         title = self._humanize_title(title)
         content = _ensure_wiki_frontmatter(content, title, tags, date_str, dir_path, filename, file_type)
 
-        size_error = _content_size_error(content)
-        if size_error:
-            return size_error
-
-        quiz_error = _quiz_block_error(content)
-        if quiz_error:
-            return quiz_error
+        content_error = _content_error(content)
+        if content_error:
+            return content_error
 
         effective_tags = _effective_tags(content, tags) or []
         if not effective_tags:
@@ -236,7 +238,7 @@ class WriteHandler:
         if existing and not overwrite:
             return (
                 f"Error: `{dir_path}{filename}` already exists. "
-                f"Use the `edit` tool to modify it, or pass `overwrite=true` to replace it entirely."
+                f"Use the `patch` tool to modify it, or pass `overwrite=true` to replace it entirely."
             )
 
         try:
@@ -282,7 +284,7 @@ class WriteHandler:
             except DuplicateDocumentError:
                 return (
                     f"Error: `{dir_path}{filename}` already exists. "
-                    f"Use the `edit` tool to modify it, or pass `overwrite=true` to replace it entirely."
+                    f"Use the `patch` tool to modify it, or pass `overwrite=true` to replace it entirely."
                 )
             except StorageQuotaExceededError as e:
                 return f"Error: {e}"
@@ -300,56 +302,27 @@ class WriteHandler:
             saved_date,
         ) + impact
 
-    async def edit(self, path: str, old_string: str, new_string: str) -> str:
-        """Replace exact text in an existing document."""
-        if not old_string:
-            return "Error: old_string is required for edit."
-
-        dir_path, filename = resolve_path(path)
-        doc = await self.fs.get_document(self.kb_id, filename, dir_path)
-        if not doc:
-            return f"Document '{path}' not found."
-
-        read_only_error = _read_only_source_error(path, doc)
-        if read_only_error:
-            return read_only_error
-
-        content = doc.get("content") or ""
-        error = self._validate_single_match(content, old_string)
-        if error:
-            return error
-
-        replace_start = content.index(old_string)
-        new_content = content.replace(old_string, new_string, 1)
-
-        size_error = _content_size_error(new_content)
-        if size_error:
-            return size_error
-
-        quiz_error = _quiz_block_error(new_content)
-        if quiz_error:
-            return quiz_error
-
-        self.fs.write_to_disk(dir_path, filename, new_content)
-        meta = _parse_frontmatter(new_content)
-        fm_date, fm_metadata = _extract_metadata(meta)
+    async def patch(self, patch_text: str, dry_run: bool) -> str:
+        """Apply a patch to one or more pages, writing only after every hunk has matched."""
         try:
-            await self.fs.update_document(
-                str(doc["id"]),
-                new_content,
-                _effective_tags(new_content, None),
-                date=fm_date,
-                metadata=fm_metadata,
-            )
-        except StorageQuotaExceededError as e:
-            return f"Error: {e}"
+            pages, notes = await self._plan_patch(PatchParser().parse(patch_text))
+        except PatchError as e:
+            return f"Error: {e}\nNo pages were changed."
+        if dry_run:
+            return self._format_patch_response(pages, notes, "Dry run — no pages were changed. This patch would make:")
 
-        doc_id = str(doc["id"])
-        await self._sync_references(doc_id, new_content, dir_path)
+        saved: list[PlannedPage] = []
+        for page in pages:
+            error = await self._save(page.doc, page.dir_path, page.filename, page.after)
+            if error:
+                return self._format_partial_patch_error(error, page, saved)
+            saved.append(page)
 
-        snippet = self._extract_context(new_content, replace_start, len(new_string))
-        impact = await self._get_wiki_impact(doc_id, dir_path)
-        return self._format_edit_response(path, dir_path, filename, snippet) + impact
+        impact = "".join([
+            await self._get_wiki_impact(str(page.doc["id"]), page.dir_path, f"`{page.path}`")
+            for page in pages
+        ])
+        return self._format_patch_response(pages, notes, f"Patched {len(pages)} page(s):") + impact
 
     async def append(self, path: str, content: str) -> str:
         """Append content to the end of an existing document."""
@@ -363,34 +336,68 @@ class WriteHandler:
             return read_only_error
 
         new_content = _append_markdown_section(doc.get("content") or "", content)
+        content_error = _content_error(new_content)
+        if content_error:
+            return content_error
 
-        size_error = _content_size_error(new_content)
-        if size_error:
-            return size_error
+        save_error = await self._save(doc, dir_path, filename, new_content)
+        if save_error:
+            return save_error
 
-        quiz_error = _quiz_block_error(new_content)
-        if quiz_error:
-            return quiz_error
+        impact = await self._get_wiki_impact(str(doc["id"]), dir_path)
+        return self._format_append_response(path, dir_path, filename) + impact
 
-        self.fs.write_to_disk(dir_path, filename, new_content)
-        meta = _parse_frontmatter(new_content)
-        fm_date, fm_metadata = _extract_metadata(meta)
+    async def _plan_patch(self, updates: list[FileUpdate]) -> tuple[list[PlannedPage], list[str]]:
+        """Patch every page in memory and validate the results; raise PatchError on the first failure."""
+        pages: dict[str, PlannedPage] = {}
+        notes: list[str] = []
+        for update in updates:
+            dir_path, filename = resolve_path(update.path)
+            key = dir_path + filename
+            page = pages.get(key) or await self._load_patch_page(update.path, dir_path, filename)
+            patched = apply_hunks(key, page.after, update.hunks)
+            notes.extend(patched.notes)
+            pages[key] = replace(page, after=patched.content)
+
+        for page in pages.values():
+            error = _content_error(page.after)
+            if error:
+                raise PatchError(f"{page.path}: {error.removeprefix('Error: ')}")
+        return list(pages.values()), notes
+
+    async def _load_patch_page(self, path: str, dir_path: str, filename: str) -> PlannedPage:
+        doc = await self.fs.get_document(self.kb_id, filename, dir_path)
+        if not doc:
+            raise PatchError(f"page '{path}' not found")
+        read_only_error = _read_only_source_error(path, doc)
+        if read_only_error:
+            raise PatchError(read_only_error.removeprefix("Error: "))
+        content = doc.get("content") or ""
+        return PlannedPage(
+            path=dir_path + filename,
+            dir_path=dir_path,
+            filename=filename,
+            doc=doc,
+            before=content,
+            after=content,
+        )
+
+    async def _save(self, doc: dict, dir_path: str, filename: str, content: str) -> str | None:
+        """Write validated content to disk and the index, then refresh citations; return an error or None."""
+        self.fs.write_to_disk(dir_path, filename, content)
+        fm_date, fm_metadata = _extract_metadata(_parse_frontmatter(content))
         try:
             await self.fs.update_document(
                 str(doc["id"]),
-                new_content,
-                _effective_tags(new_content, None),
+                content,
+                _effective_tags(content, None),
                 date=fm_date,
                 metadata=fm_metadata,
             )
         except StorageQuotaExceededError as e:
             return f"Error: {e}"
-
-        doc_id = str(doc["id"])
-        await self._sync_references(doc_id, new_content, dir_path)
-
-        impact = await self._get_wiki_impact(doc_id, dir_path)
-        return self._format_append_response(path, dir_path, filename) + impact
+        await self._sync_references(str(doc["id"]), content, dir_path)
+        return None
 
     async def _sync_references(self, doc_id: str, content: str, dir_path: str, file_type: str = "md") -> None:
         """Update citation graph and propagate staleness for wiki pages."""
@@ -398,14 +405,14 @@ class WriteHandler:
             await update_references(self.fs, self.kb_id, doc_id, content, dir_path)
             await self.fs.propagate_staleness(doc_id)
 
-    async def _get_wiki_impact(self, doc_id: str, dir_path: str) -> str:
+    async def _get_wiki_impact(self, doc_id: str, dir_path: str, subject: str = "this document") -> str:
         """Return impact surface text for wiki pages, empty string otherwise."""
         if not dir_path.startswith("/wiki/"):
             return ""
         rows = await self.fs.get_backlinks(doc_id)
         if not rows:
             return ""
-        lines = [f"\n**{len(rows)} page(s) reference this document** — consider updating:"]
+        lines = [f"\n**{len(rows)} page(s) reference {subject}** — consider updating:"]
         for r in rows:
             path = f"{r['path']}{r['filename']}"
             title = r["title"] or r["filename"]
@@ -450,15 +457,6 @@ class WriteHandler:
         """Strip non-word characters and replace spaces with dashes."""
         return re.sub(r"[^\w\s\-.]", "", name.replace(" ", "-"))
 
-    def _validate_single_match(self, content: str, old_string: str) -> str | None:
-        """Return an error string if old_string doesn't match exactly once, else None."""
-        count = content.count(old_string)
-        if count == 0:
-            return "Error: no match found for old_string."
-        if count > 1:
-            return f"Error: found {count} matches for old_string. Provide more context to match exactly once."
-        return None
-
     def _format_create_response(self, title: str, tags: list[str], dir_path: str, filename: str, file_type: str, date_str: str | None) -> str:
         link = deep_link(self.kb["slug"], dir_path, filename)
         note_date = date_str or date.today().isoformat()
@@ -469,11 +467,23 @@ class WriteHandler:
             f"[View]({link}){suffix}"
         )
 
-    def _format_edit_response(self, path: str, dir_path: str, filename: str, snippet: str) -> str:
-        link = deep_link(self.kb["slug"], dir_path, filename)
+    def _format_patch_response(self, pages: list[PlannedPage], notes: list[str], heading: str) -> str:
+        parts = [heading]
+        for page in pages:
+            link = deep_link(self.kb["slug"], page.dir_path, page.filename)
+            diff = render_diff(page.path, page.before, page.after)
+            parts.append(f"\n`{page.path}` — [View]({link})\n```diff\n{diff}\n```")
+        if notes:
+            parts.append("\n**Notes:**\n" + "\n".join(f"- {note}" for note in notes))
+        return "\n".join(parts)
+
+    def _format_partial_patch_error(self, error: str, failed: PlannedPage, saved: list[PlannedPage]) -> str:
+        if not saved:
+            return f"{error} (while saving `{failed.path}`)\nNo pages were changed."
+        saved_paths = ", ".join(f"`{page.path}`" for page in saved)
         return (
-            f"Edited `{path}`. Replaced 1 occurrence.\n[View]({link})\n\n"
-            f"**Context after edit:**\n```\n{snippet}\n```"
+            f"{error} (while saving `{failed.path}`)\n"
+            f"Already saved and live: {saved_paths}. `{failed.path}` and any later pages were not changed."
         )
 
     def _format_append_response(self, path: str, dir_path: str, filename: str) -> str:
@@ -487,25 +497,6 @@ class WriteHandler:
         if dir_path.startswith("/wiki/"):
             return "\n\nRemember to cite sources using footnotes: `[^1]: source-file.pdf, p.X`"
         return ""
-
-    def _extract_context(self, content: str, replace_start: int, new_text_len: int) -> str:
-        """Return ~5 lines above and below the edited region."""
-        lines = content.split("\n")
-        start_line = self._char_offset_to_line(lines, replace_start)
-        end_line = self._char_offset_to_line(lines, replace_start + new_text_len)
-        ctx_start = max(0, start_line - _CONTEXT_LINES)
-        ctx_end = min(len(lines), end_line + _CONTEXT_LINES + 1)
-        prefix = "..." if ctx_start > 0 else ""
-        suffix = "..." if ctx_end < len(lines) else ""
-        return prefix + "\n".join(lines[ctx_start:ctx_end]) + suffix
-
-    def _char_offset_to_line(self, lines: list[str], offset: int) -> int:
-        char_count = 0
-        for i, line in enumerate(lines):
-            if char_count + len(line) >= offset:
-                return i
-            char_count += len(line) + 1
-        return len(lines) - 1
 
 
 def register(mcp: FastMCP, get_user_id, fs_factory) -> None:
@@ -529,7 +520,7 @@ def register(mcp: FastMCP, get_user_id, fs_factory) -> None:
             "SVGs and other assets can be embedded in wiki pages via `![Architecture](architecture-diagram.svg)`\n\n"
             "`path` is either a folder (`/wiki/concepts/`, filename derived from `title`) or a full file path "
             "(`/wiki/concepts/attention.md`, filename used as given).\n\n"
-            "Rejects if the page already exists — use `overwrite=true` to replace, or use the `edit` tool to modify."
+            "Rejects if the page already exists — use `overwrite=true` to replace, or use the `patch` tool to modify."
         ),
     )
     async def create(
@@ -548,26 +539,44 @@ def register(mcp: FastMCP, get_user_id, fs_factory) -> None:
         return await handler.create(path, title, content, tags, date_str, overwrite)
 
     @mcp.tool(
-        name="edit",
+        name="patch",
         description=(
-            "Replace exact text in an existing wiki page or note.\n\n"
-            "Works like find-and-replace: provide the exact text to find (`old_string`) and "
-            "the replacement (`new_string`). The match must be unique — if multiple matches are "
-            "found, provide more surrounding context to disambiguate.\n\n"
-            "Read the page first to see its current content before editing."
+            "Change existing wiki pages or notes with a patch — several edits across several pages in one call.\n\n"
+            "```\n"
+            "*** Begin Patch\n"
+            "*** Update File: /wiki/concepts/attention.md\n"
+            "@@ ## Scaling\n"
+            " An unchanged context line (leading space)\n"
+            "-A line to remove\n"
+            "+A line to add\n"
+            "*** Update File: /wiki/overview.md\n"
+            "@@\n"
+            "-Old line\n"
+            "+New line\n"
+            "*** End Patch\n"
+            "```\n\n"
+            "- Hunk lines start with ' ' (context), '-' (remove) or '+' (add) and match whole lines. "
+            "Matching tolerates surrounding whitespace and curly-quote, dash and non-breaking-space variants.\n"
+            "- `@@ <line>` first finds a line matching <line> (e.g. a heading) and searches after it; use it "
+            "when lines repeat. A hunk with only '+' lines is inserted right after its @@ line, or at the end "
+            "of the page without one. `*** End of File` after a hunk pins it to the end of the page.\n"
+            "- Hunks for one page apply top to bottom.\n"
+            "- Every hunk is checked before anything is written: if one fails, no page changes. "
+            "`dry_run=true` returns the diff without writing.\n"
+            "- New pages: `create`. Removing pages: `delete`. Adding to the end of a page: `append`.\n\n"
+            "Read the page first so removed and context lines match its current text."
         ),
     )
-    async def edit(
+    async def patch(
         ctx: Context,
         knowledge_base: str,
-        path: str,
-        old_string: str,
-        new_string: str,
+        patch: str,
+        dry_run: bool = False,
     ) -> str:
         handler, err = await _resolve(ctx, knowledge_base)
         if err:
             return err
-        return await handler.edit(path, old_string, new_string)
+        return await handler.patch(patch, dry_run)
 
     @mcp.tool(
         name="append",

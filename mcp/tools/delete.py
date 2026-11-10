@@ -65,7 +65,7 @@ class DeleteHandler:
             names = ", ".join(f"`{_document_path(d)}`" for d in plan.protected)
             return (
                 f"Cannot delete {names} — these are structural wiki pages. "
-                "Use `edit` or `append` to modify their content instead."
+                "Use `patch` or `append` to modify their content instead."
             )
 
         preview = self._format_preview(plan)

@@ -156,7 +156,7 @@ Once connected over MCP, Claude works the wiki through a small, deliberate set o
 | `search` | Browse files, full-text search across content, or query the citation graph — what cites what, plus stale or uncited pages. |
 | `read` | Read documents — a single file or a glob batch, PDF/office page ranges, optionally with embedded images. |
 | `create` | Create a wiki page, note, or asset (SVG diagram, CSV) with footnote citations back to sources. |
-| `edit` | Find-and-replace exact text in an existing page. |
+| `patch` | Change existing pages with a Codex-style patch — several edits across several pages in one call, all checked before anything is written. |
 | `append` | Add content to the end of a page. |
 | `delete` | Remove pages or sources by path or glob (`overview.md` and any legacy `log.md` are protected). |
 | `lint` | Deterministic hygiene checks — citation resolution, dangling links, orphan and stale pages, frontmatter consistency. |

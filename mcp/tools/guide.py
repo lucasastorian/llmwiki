@@ -10,7 +10,7 @@ You are connected to an **LLM Wiki** — a personal knowledge workspace where yo
 
 1. **Raw Sources** (path: `/`) — uploaded documents (PDFs, notes, images, spreadsheets). Source of truth. Read-only.
 2. **Compiled Wiki** (path: `/wiki/`) — markdown pages YOU create and maintain. You own this layer.
-3. **Tools** — `create_knowledge_base`, `list_knowledge_bases`, `search`, `read`, `create`, `edit`, `append`, `delete` — your interface to both layers.
+3. **Tools** — `create_knowledge_base`, `list_knowledge_bases`, `search`, `read`, `create`, `patch`, `append`, `delete` — your interface to both layers.
 
 Sources normally arrive via the app or browser extension, but `add_source_from_url` (hosted mode) lets you pull a publicly accessible PDF in directly by URL — arXiv abstract or PDF links work as-is. Extraction runs in the background; the document becomes readable/searchable shortly after.
 
@@ -40,7 +40,7 @@ Create this page when the user asks you to plan or track a piece of work. The ap
 - `## ` headings are stages; task lines below a heading belong to that stage.
 - Tasks: `- [ ]` todo · `- [~]` in progress · `- [x]` done · `- [!]` blocked (say why: `- [!] Backfill — blocked: needs approval`).
 - When you finish a task or make a judgment call, add indented bullets under it — `What:` (files, commits) and `Why:` (the reasoning). Flag choices you're unsure about so the user can review them.
-- Update statuses with `edit` as you work. Never delete tasks; supersede them.
+- Update statuses with `patch` as you work. Never delete tasks; supersede them.
 
 ### Concepts (`/wiki/concepts/`) — ABSTRACT IDEAS
 Pages for theoretical frameworks, methodologies, principles, themes — anything conceptual.
@@ -431,7 +431,7 @@ questions:
 - Prompts should use YAML block scalars (`prompt: |`). Rewrite hints containing `": "` or beginning with a quote; those forms are easy to parse incorrectly.
 - A rubric grades ideas, not phrasing. State required ideas, partial understanding, and genuine misconceptions to reject. Explicitly accept alternate correct reasoning. Keep it short enough to check independently.
 - Fact-check explanations against the source, not against the lesson's paraphrase.
-- Writes validate every quiz block; `create`, `edit`, and `append` reject malformed blocks, and `lint` reports `invalid-quiz`.
+- Writes validate every quiz block; `create`, `patch`, and `append` reject malformed blocks, and `lint` reports `invalid-quiz`.
 
 ### Course-level coherence
 

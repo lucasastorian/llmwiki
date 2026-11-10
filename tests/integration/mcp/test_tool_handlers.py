@@ -14,6 +14,12 @@ def _make_kb(kb_id: str) -> dict:
     return {"id": kb_id, "name": "test-workspace", "slug": "test-workspace"}
 
 
+def _patch(*sections: tuple[str, str]) -> str:
+    """Build a patch from (path, hunk body) pairs."""
+    body = "".join(f"*** Update File: {path}\n{hunks}\n" for path, hunks in sections)
+    return f"*** Begin Patch\n{body}*** End Patch"
+
+
 class _ElicitingSession:
     def check_client_capability(self, capability: ClientCapabilities) -> bool:
         return capability.elicitation is not None
@@ -31,7 +37,7 @@ class _AcceptDeleteContext:
 
 class TestWriteReadFlow:
 
-    async def test_edit_tool_schema_uses_anthropic_string_names(self):
+    async def test_write_tools_are_create_patch_and_append(self):
         from tools.write import register
 
         from mcp.server.fastmcp import FastMCP
@@ -39,17 +45,10 @@ class TestWriteReadFlow:
         mcp = FastMCP("test")
         register(mcp, lambda _ctx: "user", lambda _user_id: None)
 
-        tools = await mcp.list_tools()
-        tool = next(tool for tool in tools if tool.name == "edit")
-        properties = tool.inputSchema["properties"]
-        required = tool.inputSchema["required"]
+        tools = {tool.name: tool for tool in await mcp.list_tools()}
 
-        assert "old_string" in properties
-        assert "new_string" in properties
-        assert "old_string" in required
-        assert "new_string" in required
-        assert "old_text" not in properties
-        assert "new_text" not in properties
+        assert set(tools) == {"create", "patch", "append"}
+        assert tools["patch"].inputSchema["required"] == ["knowledge_base", "patch"]
 
     async def test_create_then_read_round_trip(self, fs):
         instance, kb_id = fs
@@ -165,7 +164,7 @@ class TestWriteReadFlow:
         content = await reader.read("replace-me.md", "", None, False)
         assert "new content" in content
 
-    async def test_edit_replaces_text(self, fs):
+    async def test_patch_replaces_lines_and_returns_a_diff(self, workspace, fs):
         instance, kb_id = fs
         from tools.read import ReadHandler
         from tools.write import WriteHandler
@@ -174,15 +173,76 @@ class TestWriteReadFlow:
         writer = WriteHandler(instance, kb)
         reader = ReadHandler(instance, kb)
 
-        await writer.create("/", "Editable", "Hello world, this is a test.", ["tag"], "", False)
-        result = await writer.edit("editable.md", "Hello world", "Goodbye world")
-        assert "Replaced 1 occurrence" in result
+        await writer.create("/", "Editable", "Hello world, this is a test.\nSecond line.", ["tag"], "", False)
+        result = await writer.patch(_patch(("editable.md", "@@\n-Hello world, this is a test.\n+Goodbye world.")), False)
 
+        assert "Patched 1 page(s)" in result
+        assert "-Hello world, this is a test." in result
+        assert "+Goodbye world." in result
         content = await reader.read("editable.md", "", None, False)
-        assert "Goodbye world" in content
+        assert "Goodbye world." in content
         assert "Hello world" not in content
+        assert (workspace / "editable.md").read_text() == "Goodbye world.\nSecond line."
 
-    async def test_edit_and_append_refuse_binary_sources(self, workspace, fs):
+    async def test_patch_updates_several_pages_in_one_call(self, fs):
+        instance, kb_id = fs
+        from tools.write import WriteHandler
+
+        writer = WriteHandler(instance, _make_kb(kb_id))
+        await writer.create("/wiki/", "Alpha", "# Alpha\n\nOld alpha.", ["x"], "", False)
+        await writer.create("/wiki/", "Beta", "# Beta\n\nOld beta.", ["x"], "", False)
+
+        result = await writer.patch(_patch(
+            ("/wiki/alpha.md", "@@\n-Old alpha.\n+New alpha."),
+            ("wiki/beta.md", "@@\n-Old beta.\n+New beta."),
+        ), False)
+
+        assert "Patched 2 page(s)" in result
+        assert "New alpha." in (await instance.get_document(kb_id, "alpha.md", "/wiki/"))["content"]
+        assert "New beta." in (await instance.get_document(kb_id, "beta.md", "/wiki/"))["content"]
+
+    async def test_patch_with_a_failing_hunk_changes_no_page(self, workspace, fs):
+        instance, kb_id = fs
+        from tools.write import WriteHandler
+
+        writer = WriteHandler(instance, _make_kb(kb_id))
+        await writer.create("/wiki/", "Alpha", "# Alpha\n\nOld alpha.", ["x"], "", False)
+        await writer.create("/wiki/", "Beta", "# Beta\n\nOld beta.", ["x"], "", False)
+
+        result = await writer.patch(_patch(
+            ("/wiki/alpha.md", "@@\n-Old alpha.\n+New alpha."),
+            ("/wiki/beta.md", "@@\n-A line that is not there.\n+New beta."),
+        ), False)
+
+        assert "/wiki/beta.md: hunk 1" in result
+        assert "No pages were changed." in result
+        assert "Old alpha." in (await instance.get_document(kb_id, "alpha.md", "/wiki/"))["content"]
+        assert "Old alpha." in (workspace / "wiki" / "alpha.md").read_text()
+
+    async def test_patch_dry_run_writes_nothing(self, workspace, fs):
+        instance, kb_id = fs
+        from tools.write import WriteHandler
+
+        writer = WriteHandler(instance, _make_kb(kb_id))
+        await writer.create("/wiki/", "Alpha", "# Alpha\n\nOld alpha.", ["x"], "", False)
+
+        result = await writer.patch(_patch(("/wiki/alpha.md", "@@\n-Old alpha.\n+New alpha.")), True)
+
+        assert "Dry run" in result
+        assert "+New alpha." in result
+        assert "Old alpha." in (await instance.get_document(kb_id, "alpha.md", "/wiki/"))["content"]
+        assert "Old alpha." in (workspace / "wiki" / "alpha.md").read_text()
+
+    async def test_patch_rejects_missing_pages(self, fs):
+        instance, kb_id = fs
+        from tools.write import WriteHandler
+
+        writer = WriteHandler(instance, _make_kb(kb_id))
+        result = await writer.patch(_patch(("/wiki/nowhere.md", "@@\n-x\n+y")), False)
+
+        assert "page '/wiki/nowhere.md' not found" in result
+
+    async def test_patch_and_append_refuse_binary_sources(self, workspace, fs):
         instance, kb_id = fs
         from tools.write import WriteHandler
 
@@ -190,11 +250,11 @@ class TestWriteReadFlow:
         await instance.create_document(kb_id, "paper.pdf", "Paper", "/", "pdf", "Extracted text.", ["source"])
         writer = WriteHandler(instance, _make_kb(kb_id))
 
-        assert "read-only" in await writer.edit("/paper.pdf", "Extracted", "Changed")
+        assert "read-only" in await writer.patch(_patch(("/paper.pdf", "@@\n-Extracted text.\n+Changed")), False)
         assert "read-only" in await writer.append("/paper.pdf", "more")
         assert (workspace / "paper.pdf").read_bytes() == b"%PDF-1.7 original bytes"
 
-    async def test_edit_keeps_app_metadata_and_tracks_frontmatter_description(self, fs):
+    async def test_patch_keeps_app_metadata_and_tracks_frontmatter_description(self, fs):
         instance, kb_id = fs
         from tools.write import WriteHandler
         from vaultfs.sqlite import SqliteVaultFS
@@ -209,7 +269,7 @@ class TestWriteReadFlow:
         )
         await db.commit()
 
-        await writer.edit("/wiki/lesson.md", "description: First take\n", "")
+        await writer.patch(_patch(("/wiki/lesson.md", "@@\n-description: First take")), False)
 
         cursor = await db.execute("SELECT metadata FROM documents WHERE filename = 'lesson.md'")
         metadata = json.loads((await cursor.fetchone())[0])
@@ -256,7 +316,7 @@ class TestWriteReadFlow:
         doc = await instance.get_document(kb_id, "README.txt", "/notes/")
         assert doc["file_type"] == "txt"
 
-    async def test_edit_clears_the_pages_stale_flag(self, fs):
+    async def test_patch_clears_the_pages_stale_flag(self, fs):
         instance, kb_id = fs
         from tools.write import WriteHandler
         from vaultfs.sqlite import SqliteVaultFS
@@ -267,7 +327,7 @@ class TestWriteReadFlow:
         await db.execute("UPDATE documents SET stale_since = datetime('now') WHERE filename = 'topic.md'")
         await db.commit()
 
-        await writer.edit("/wiki/topic.md", "Old claim.", "New claim.")
+        await writer.patch(_patch(("/wiki/topic.md", "@@\n-Old claim.\n+New claim.")), False)
 
         cursor = await db.execute("SELECT stale_since FROM documents WHERE filename = 'topic.md'")
         assert (await cursor.fetchone())[0] is None
@@ -283,25 +343,18 @@ class TestWriteReadFlow:
         backlinks = await instance.get_backlinks(str(source["id"]))
         assert [b["reference_type"] for b in backlinks] == ["cites"]
 
-    async def test_edit_rejects_no_match(self, fs):
+    async def test_patch_notes_when_its_lines_also_occur_elsewhere(self, fs):
         instance, kb_id = fs
         from tools.write import WriteHandler
 
         writer = WriteHandler(instance, _make_kb(kb_id))
-        await writer.create("/", "Doc", "actual content", ["tag"], "", False)
-        result = await writer.edit("doc.md", "nonexistent text", "replacement")
-        assert "no match" in result.lower()
+        await writer.create("/", "Repeat", "foo\nbar\nfoo", ["tag"], "", False)
+        result = await writer.patch(_patch(("repeat.md", "@@\n-foo\n+baz")), False)
 
-    async def test_edit_rejects_multiple_matches(self, fs):
-        instance, kb_id = fs
-        from tools.write import WriteHandler
+        assert "also occur at line(s) 3" in result
+        assert (await instance.get_document(kb_id, "repeat.md", "/"))["content"] == "baz\nbar\nfoo"
 
-        writer = WriteHandler(instance, _make_kb(kb_id))
-        await writer.create("/", "Repeat", "foo bar foo bar", ["tag"], "", False)
-        result = await writer.edit("repeat.md", "foo", "baz")
-        assert "2 matches" in result
-
-    async def test_edit_keeps_index_synced_to_frontmatter_tags(self, fs):
+    async def test_patch_keeps_index_synced_to_frontmatter_tags(self, fs):
         instance, kb_id = fs
         from tools.search import SearchHandler
         from tools.write import WriteHandler
@@ -318,7 +371,7 @@ class TestWriteReadFlow:
             "",
             False,
         )
-        await writer.edit("wiki/metadata-tags.md", "old body", "new body")
+        await writer.patch(_patch(("wiki/metadata-tags.md", "@@\n-old body\n+new body")), False)
 
         assert "metadata-tags.md" in await searcher.list_documents("*", ["frontmatter-tag"])
         assert "metadata-tags.md" not in await searcher.list_documents("*", ["arg-tag"])
@@ -979,8 +1032,8 @@ class TestSearchDeleteLifecycle:
         read_result = await reader.read("lifecycle.md", "", None, False)
         assert "initial content" in read_result
 
-        edit_result = await writer.edit("lifecycle.md", "initial content", "updated content")
-        assert "Replaced 1" in edit_result
+        patch_result = await writer.patch(_patch(("lifecycle.md", "@@\n-initial content\n+updated content")), False)
+        assert "Patched 1 page(s)" in patch_result
 
         read_result = await reader.read("lifecycle.md", "", None, False)
         assert "updated content" in read_result

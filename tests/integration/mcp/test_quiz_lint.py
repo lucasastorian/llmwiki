@@ -218,15 +218,17 @@ class TestQuizWriteRejection:
 
         assert "Created **Good Lesson**" in result
 
-    async def test_edit_rejects_introducing_invalid_quiz(self, fs):
+    async def test_patch_rejects_introducing_invalid_quiz(self, fs):
         instance, kb_id = fs
         from tools.write import WriteHandler
 
         writer = WriteHandler(instance, _make_kb(kb_id))
         await writer.create("/wiki/", "Lesson", FRONTMATTER + VALID_QUIZ, ["a", "b"], "", False)
 
-        result = await writer.edit("/wiki/lesson.md", "answer: 1", "answer: 9")
-        assert "Error: invalid ```quiz block(s)" in result
+        patch = "*** Begin Patch\n*** Update File: /wiki/lesson.md\n@@\n-    answer: 1\n+    answer: 9\n*** End Patch"
+        result = await writer.patch(patch, False)
+        assert "/wiki/lesson.md: invalid ```quiz block(s)" in result
+        assert "No pages were changed." in result
 
         doc = await instance.get_document(kb_id, "lesson.md", "/wiki/")
         assert "answer: 1" in doc["content"]
